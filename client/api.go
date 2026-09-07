@@ -16,10 +16,11 @@ import (
 // checks. CHRON.CTRL.> is the cross-account control surface — not tenant
 // wire contract — served by chronicle-control in its own account.
 const (
-	LogCreateSubject  = "CHRON.API.LOG.CREATE"
-	SchemaSetSubject  = "CHRON.API.SCHEMA.SET"
-	PingSubject       = "CHRON.API.PING"
-	TenantMintSubject = "CHRON.CTRL.TENANT.MINT"
+	LogCreateSubject   = "CHRON.API.LOG.CREATE"
+	SchemaSetSubject   = "CHRON.API.SCHEMA.SET"
+	ThingRollupSubject = "CHRON.API.THING.ROLLUP"
+	PingSubject        = "CHRON.API.PING"
+	TenantMintSubject  = "CHRON.CTRL.TENANT.MINT"
 )
 
 // LogCreateRequest creates a log: a stream and META entries — no key
@@ -54,6 +55,26 @@ type SchemaSetRequest struct {
 // SchemaSetResponse carries the recorded revision.
 type SchemaSetResponse struct {
 	Revision uint64 `json:"revision"`
+}
+
+// ThingRollupRequest asks the node to compact one thing's history into a
+// fresh snapshot — the on-demand rollup trigger (04-fleet.md § the node's
+// duties). The node applies the effect gate (decision 0011): history its
+// fold has not fully captured into state is refused with the reason, and
+// compaction stays the application's call (SaveVersion).
+type ThingRollupRequest struct {
+	Principal string `json:"principal"`
+	Log       string `json:"log"`
+	Thing     string `json:"thing"`
+}
+
+// ThingRollupResponse says what happened: Rolled with the new snapshot's
+// stream seq, or the reason the node declined — a gate veto, nothing to
+// compact, or a lost race. Declining is an answer, not an error.
+type ThingRollupResponse struct {
+	Rolled bool   `json:"rolled"`
+	Seq    uint64 `json:"seq,omitempty"`
+	Reason string `json:"reason,omitempty"`
 }
 
 // About answers the ping verb.
@@ -130,6 +151,18 @@ func (c *Client) SetSchema(ctx context.Context, log, opType string, schema json.
 		OpType:    opType,
 		Schema:    schema,
 		Effect:    effect,
+	})
+}
+
+// RollupThing asks the node to compact one thing's history now. A
+// response with Rolled false is the node declining — the effect gate, an
+// empty tail, or a lost race — with the reason; only transport and
+// refusal failures are errors.
+func (c *Client) RollupThing(ctx context.Context, log, thing string) (ThingRollupResponse, error) {
+	return request[ThingRollupRequest, ThingRollupResponse](ctx, c.nc, ThingRollupSubject, ThingRollupRequest{
+		Principal: c.author,
+		Log:       log,
+		Thing:     thing,
 	})
 }
 

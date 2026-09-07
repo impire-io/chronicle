@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/nats-io/nats.go/jetstream"
@@ -38,11 +39,12 @@ func (n *node) listLogs(ctx context.Context) ([]string, error) {
 	return logs, nil
 }
 
-// requireRole checks the caller's registry membership. The principal is the
-// caller's assertion — the accepted trust tier: outsiders cannot reach the
-// verb at all (the account boundary), and member-vs-member impersonation
-// waits for op signing by demand.
-func (n *node) requireRole(ctx context.Context, principal, role string) error {
+// requireRole checks the caller's registry membership against the roles a
+// verb accepts. The principal is the caller's assertion — the accepted
+// trust tier: outsiders cannot reach the verb at all (the account
+// boundary), and member-vs-member impersonation waits for op signing by
+// demand.
+func (n *node) requireRole(ctx context.Context, principal string, roles ...string) error {
 	if principal == "" {
 		return errors.New("principal: must not be empty")
 	}
@@ -57,8 +59,8 @@ func (n *node) requireRole(ctx context.Context, principal, role string) error {
 	if err := json.Unmarshal(entry.Value(), &m); err != nil {
 		return fmt.Errorf("decode membership: %w", err)
 	}
-	if m.Role != role {
-		return fmt.Errorf("principal %q holds role %q; %q required", principal, m.Role, role)
+	if !slices.Contains(roles, m.Role) {
+		return fmt.Errorf("principal %q holds role %q; one of %v required", principal, m.Role, roles)
 	}
 	return nil
 }

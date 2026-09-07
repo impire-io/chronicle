@@ -41,6 +41,9 @@ func Run(ctx context.Context, args []string, out io.Writer) error {
 		if len(args) >= 2 && args[1] == "create" {
 			return thingCreate(ctx, args[2:], out)
 		}
+		if len(args) >= 2 && args[1] == "rollup" {
+			return thingRollup(ctx, args[2:], out)
+		}
 		return usage(out)
 	case "append":
 		return appendOp(ctx, args[1:], out)
@@ -61,6 +64,7 @@ func usage(out io.Writer) error {
   chronicle log create <log> --creds F [--url U] [--desc S]
   chronicle schema set <log> <op.type> --creds F --schema JSON | --file F [--effect E]
   chronicle thing create <log> <thing> --creds F [--state JSON]
+  chronicle thing rollup <log> <thing> --creds F
   chronicle append <log> <thing> <op.type> --creds F [--payload JSON] [--parents a,b]
   chronicle state <log> <thing> --creds F
   chronicle replay <log> <thing> --creds F
@@ -250,6 +254,35 @@ func thingCreate(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	fmt.Fprintf(out, "born: %s at seq %d (op %s)\n", pos[1], ack.Seq, ack.OpID)
+	return nil
+}
+
+func thingRollup(ctx context.Context, args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("chronicle thing rollup", flag.ContinueOnError)
+	fs.SetOutput(out)
+	cf := addConnectFlags(fs)
+	pos, err := parseArgs(fs, args)
+	if err != nil {
+		return err
+	}
+	if len(pos) != 2 {
+		return fmt.Errorf("thing rollup: <log> <thing>")
+	}
+	c, err := cf.dial()
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	resp, err := c.RollupThing(ctx, pos[0], pos[1])
+	if err != nil {
+		return err
+	}
+	// Declining is an answer, not a failure: the node names its reason.
+	if !resp.Rolled {
+		fmt.Fprintf(out, "not compacted: %s\n", resp.Reason)
+		return nil
+	}
+	fmt.Fprintf(out, "compacted: %s at seq %d\n", pos[1], resp.Seq)
 	return nil
 }
 

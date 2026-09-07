@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
 	"time"
 
@@ -20,6 +21,11 @@ import (
 // ErrThingExists is a birth refused because the thing already has history —
 // and not from a retry of this very op.
 var ErrThingExists = errors.New("thing already exists")
+
+// ErrStaleVersion is a save refused because the log moved past the version:
+// something landed on the subject after upTo, so the saved state no longer
+// covers the history it would destroy. Re-read, re-fold, retry.
+var ErrStaleVersion = errors.New("the log moved past this version")
 
 // Ack is where an accepted op landed.
 type Ack struct {
@@ -106,6 +112,81 @@ func (c *Client) CreateThing(ctx context.Context, log, thing string, state json.
 		return Ack{}, fmt.Errorf("%w: %s in %s", ErrThingExists, thing, log)
 	}
 	return Ack{}, fmt.Errorf("birth %s: %w", subject, err)
+}
+
+// SaveVersion publishes an app-materialised snapshot that replaces the
+// thing's history in one write (pattern § 5.2) — the app-initiated rollup.
+// This is the application's call, so it may compact a history holding
+// effect-none ops the node's own triggers refuse to touch: the app folded
+// that history with its own semantics and supplies the resulting state,
+// the frontier (the op IDs new ops should use as parents), and upTo — the
+// stream seq of the last op on the subject the state covers. The
+// expected-sequence guard makes it race-safe: if anything landed after
+// upTo the server refuses, nothing changes, and the caller re-reads and
+// retries (ErrStaleVersion). A retried save whose op already landed
+// reports success, like CreateThing.
+func (c *Client) SaveVersion(ctx context.Context, log, thing string, state json.RawMessage, frontier []string, upTo uint64, opts ...AppendOpt) (Ack, error) {
+	if err := contract.ValidateLogName(log); err != nil {
+		return Ack{}, err
+	}
+	if err := contract.ValidateThing(thing); err != nil {
+		return Ack{}, err
+	}
+	if upTo == 0 {
+		return Ack{}, errors.New("upTo: the seq of the last op the state covers; birth is CreateThing")
+	}
+	o := applyOpts(opts)
+	if state == nil {
+		state = json.RawMessage(`{}`)
+	}
+	if frontier == nil {
+		frontier = []string{}
+	}
+	payload, err := json.Marshal(contract.Snapshot{State: state, Frontier: frontier})
+	if err != nil {
+		return Ack{}, fmt.Errorf("snapshot payload: %w", err)
+	}
+
+	subject := contract.OpsSubject(log, thing)
+	msg := nats.NewMsg(subject)
+	msg.Header = contract.Op{
+		ID:      o.opID,
+		Type:    contract.OpTypeSnapshot,
+		Author:  c.author,
+		Parents: o.parents,
+		Ts:      time.Now(),
+	}.Header()
+	msg.Header.Set(contract.HdrRollup, contract.RollupSubject)
+	msg.Header.Set(contract.HdrExpectedLastSubjSeq, strconv.FormatUint(upTo, 10))
+	msg.Data = payload
+
+	lock := c.subjectLock(subject)
+	lock.Lock()
+	defer lock.Unlock()
+	ack, err := c.js.PublishMsg(ctx, msg)
+	if err == nil {
+		return Ack{OpID: o.opID, Seq: ack.Sequence}, nil
+	}
+
+	// The guard fires before dedup, so a retried save also surfaces
+	// wrong-last-sequence: read the subject's last op and compare IDs to
+	// tell "my save landed" from "the log moved".
+	var apiErr *jetstream.APIError
+	if errors.As(err, &apiErr) && apiErr.ErrorCode == jetstream.JSErrCodeStreamWrongLastSequence {
+		stream, serr := c.js.Stream(ctx, contract.StreamName(log))
+		if serr != nil {
+			return Ack{}, fmt.Errorf("save refused and stream unreadable: %w", errors.Join(err, serr))
+		}
+		last, gerr := stream.GetLastMsgForSubject(ctx, subject)
+		if gerr != nil {
+			return Ack{}, fmt.Errorf("save refused and last op unreadable: %w", errors.Join(err, gerr))
+		}
+		if last.Header.Get(contract.HdrMsgID) == o.opID {
+			return Ack{OpID: o.opID, Seq: last.Sequence}, nil
+		}
+		return Ack{}, fmt.Errorf("%w: %s in %s", ErrStaleVersion, thing, log)
+	}
+	return Ack{}, fmt.Errorf("save version %s: %w", subject, err)
 }
 
 // Append publishes one operation — a direct JetStream publish, nothing in

@@ -17,6 +17,7 @@ import (
 // foldRun is one log's running fold; stop is idempotent and returns only
 // when consumption has fully ceased.
 type foldRun struct {
+	f    *fold
 	stop func()
 }
 
@@ -46,13 +47,13 @@ func (n *node) startFold(ctx context.Context, log string) error {
 		return fmt.Errorf("ordered consumer: %w", err)
 	}
 
-	f := &fold{node: n, log: log, states: states}
+	f := &fold{node: n, log: log, states: states, active: map[string]struct{}{}}
 	cc, err := cons.Consume(f.apply)
 	if err != nil {
 		return fmt.Errorf("consume: %w", err)
 	}
 	var once sync.Once
-	run := &foldRun{stop: func() {
+	run := &foldRun{f: f, stop: func() {
 		once.Do(cc.Stop)
 		<-cc.Closed()
 	}}
@@ -71,8 +72,13 @@ func (n *node) startFold(ctx context.Context, log string) error {
 // rebuildLog is the §6.2 rebuild, mechanized: the log's derived state is
 // suspect (an effect changed), so stop the fold, purge the bucket, and
 // re-fold the whole stream under the current declarations — latest
-// declaration wins (decision 0011).
+// declaration wins (decision 0011). It holds the log's derived-state
+// mutex so no rollup publishes a snapshot computed mid-change.
 func (n *node) rebuildLog(ctx context.Context, log string) error {
+	mu := n.logMutex(log)
+	mu.Lock()
+	defer mu.Unlock()
+
 	n.mu.Lock()
 	run := n.folds[log]
 	delete(n.folds, log)
@@ -100,6 +106,25 @@ type fold struct {
 	node   *node
 	log    string
 	states jetstream.KeyValue
+
+	mu sync.Mutex
+	// active is the timer trigger's feed: every subject this fold saw an
+	// op on since the last sweep (04-fleet.md § the node's duties). A
+	// restart or rebuild re-folds the stream, so everything re-enters —
+	// the next sweep is a full one, by design.
+	active map[string]struct{}
+}
+
+// swapActive hands the sweep the active set and starts a fresh one.
+func (f *fold) swapActive() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	things := make([]string, 0, len(f.active))
+	for thing := range f.active {
+		things = append(things, thing)
+	}
+	f.active = map[string]struct{}{}
+	return things
 }
 
 // apply folds one message. Ordered consumers redeliver on gaps, so apply
@@ -118,6 +143,9 @@ func (f *fold) apply(msg jetstream.Msg) {
 		// stream and the same replay, untouched by the fold.
 		return
 	}
+	f.mu.Lock()
+	f.active[thing] = struct{}{}
+	f.mu.Unlock()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
