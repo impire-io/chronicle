@@ -1,0 +1,51 @@
+package contract
+
+import (
+	"fmt"
+	"regexp"
+	"strings"
+)
+
+// logName is the wire contract's rule: a single lowercase token, [a-z0-9-]+.
+var logName = regexp.MustCompile(`^[a-z0-9-]+$`)
+
+// reservedLogNames is the short reserved list refused at log creation
+// (wire contract § subject grammar).
+var reservedLogNames = map[string]bool{"api": true, "sys": true, "meta": true}
+
+// ValidateLogName refuses anything but a single lowercase [a-z0-9-]+ token
+// outside the reserved list.
+func ValidateLogName(log string) error {
+	if !logName.MatchString(log) {
+		return fmt.Errorf("log name %q: must match [a-z0-9-]+", log)
+	}
+	if reservedLogNames[log] {
+		return fmt.Errorf("log name %q is reserved", log)
+	}
+	return nil
+}
+
+// ValidateThing refuses a thing that is not one or more subject-token-safe
+// segments joined with ".". Identifiers are the customer's domain: chronicle
+// validates subject-token safety and mints nothing (wire contract § subject
+// grammar). Tokens must also be KV-key-safe, since the thing tail is the
+// state bucket's key (03-meta-and-state.md § state buckets).
+func ValidateThing(thing string) error {
+	if thing == "" {
+		return fmt.Errorf("thing: must be one or more tokens")
+	}
+	for _, tok := range strings.Split(thing, ".") {
+		if tok == "" {
+			return fmt.Errorf("thing %q: empty token", thing)
+		}
+		if !thingToken.MatchString(tok) {
+			return fmt.Errorf("thing token %q: must match [a-zA-Z0-9_-]+", tok)
+		}
+	}
+	return nil
+}
+
+// thingToken is deliberately narrower than NATS allows: it keeps every thing
+// tail a valid KV key, the charset edge case 0008 flags for build-time
+// verification.
+var thingToken = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
