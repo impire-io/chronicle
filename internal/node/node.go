@@ -154,6 +154,8 @@ func Start(ctx context.Context, nc *nats.Conn, cfg Config) (*Node, error) {
 		{"log-create", client.LogCreateSubject, n.handleLogCreate},
 		{"schema-set", client.SchemaSetSubject, n.handleSchemaSet},
 		{"thing-rollup", client.ThingRollupSubject, n.handleThingRollup},
+		{"index-declare", client.IndexDeclareSubject, n.handleIndexDeclare},
+		{"index-delete", client.IndexDeleteSubject, n.handleIndexDelete},
 	}
 	for _, e := range endpoints {
 		if err := svc.AddEndpoint(e.name, e.handler, micro.WithEndpointSubject(e.subject)); err != nil {

@@ -10,8 +10,8 @@ import (
 
 	"github.com/nats-io/nats.go/jetstream"
 
-	"github.com/impire-io/chronicle/client"
 	"github.com/impire-io/chronicle/contract"
+	"github.com/impire-io/chronicle/internal/foldcore"
 )
 
 // foldRun is one log's running fold; stop is idempotent and returns only
@@ -162,47 +162,26 @@ func (f *fold) apply(msg jetstream.Msg) {
 	f.applyEffect(ctx, op, thing)
 }
 
-// applyEffect is the fold's rules for a non-snapshot op (decision 0011):
-// unknown types warn; a schema-invalid op of a known type is marked and
-// takes no effect; effect none and unknown effect values move nothing;
-// effect merge applies the payload as an RFC 7386 merge patch.
+// applyEffect is the fold's rules for a non-snapshot op (decision 0011),
+// judged by the shared core: unknown types warn; a schema-invalid op of a
+// known type is marked and takes no effect; effect none and unknown effect
+// values move nothing; effect merge applies the payload as an RFC 7386
+// merge patch.
 func (f *fold) applyEffect(ctx context.Context, op contract.Op, thing string) {
-	entry, err := f.node.meta.Get(ctx, contract.MetaLogType(f.log, op.Type))
-	if errors.Is(err, jetstream.ErrKeyNotFound) {
-		f.node.logger.Warn("fold: unknown op type ignored", "log", f.log, "thing", thing, "op", op.ID, "type", op.Type)
-		return
-	}
-	if err != nil {
-		f.node.logger.Warn("fold: read type record", "log", f.log, "type", op.Type, "err", err)
-		return
-	}
-	var ts contract.TypeSchema
-	if err := json.Unmarshal(entry.Value(), &ts); err != nil {
-		f.node.logger.Warn("fold: decode type record", "log", f.log, "type", op.Type, "err", err)
-		return
-	}
-	sch, err := client.CompileSchema(ts.Schema)
-	if err != nil {
-		f.node.logger.Warn("fold: compile schema", "log", f.log, "type", op.Type, "err", err)
-		return
-	}
-	var v any
-	if err := json.Unmarshal(op.Payload, &v); err != nil {
-		f.node.logger.Warn("fold: marked invalid payload", "log", f.log, "thing", thing, "op", op.ID, "type", op.Type, "err", err)
-		return
-	}
-	if err := sch.Validate(v); err != nil {
-		f.node.logger.Warn("fold: marked invalid payload", "log", f.log, "thing", thing, "op", op.ID, "type", op.Type, "err", err)
-		return
-	}
-
-	switch effect := contract.NormalizeEffect(ts.Effect); effect {
-	case contract.EffectNone:
-		// The op lives in history; state is not its home.
-	case contract.EffectMerge:
+	decision, detail := foldcore.Judge(ctx, f.node.meta, f.log, op)
+	switch decision {
+	case foldcore.Merge:
 		f.mergeState(ctx, thing, op)
-	default:
-		f.node.logger.Warn("fold: unknown effect treated as none", "log", f.log, "type", op.Type, "effect", effect)
+	case foldcore.None:
+		// The op lives in history; state is not its home.
+	case foldcore.UnknownType:
+		f.node.logger.Warn("fold: unknown op type ignored", "log", f.log, "thing", thing, "op", op.ID, "type", op.Type)
+	case foldcore.UnknownEffect:
+		f.node.logger.Warn("fold: unknown effect treated as none", "log", f.log, "type", op.Type, "detail", detail)
+	case foldcore.BadTypeRecord:
+		f.node.logger.Warn("fold: type record unusable", "log", f.log, "type", op.Type, "detail", detail)
+	case foldcore.Invalid:
+		f.node.logger.Warn("fold: marked invalid payload", "log", f.log, "thing", thing, "op", op.ID, "type", op.Type, "detail", detail)
 	}
 }
 

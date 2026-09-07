@@ -5,13 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/impire-io/chronicle/client"
 	"github.com/impire-io/chronicle/contract"
+	"github.com/impire-io/chronicle/internal/registry"
 )
 
 // listLogs reads the authoritative log inventory: every log.<log>.config
@@ -40,29 +40,9 @@ func (n *node) listLogs(ctx context.Context) ([]string, error) {
 }
 
 // requireRole checks the caller's registry membership against the roles a
-// verb accepts. The principal is the caller's assertion — the accepted
-// trust tier: outsiders cannot reach the verb at all (the account
-// boundary), and member-vs-member impersonation waits for op signing by
-// demand.
+// verb accepts — the shared check every API-serving component runs.
 func (n *node) requireRole(ctx context.Context, principal string, roles ...string) error {
-	if principal == "" {
-		return errors.New("principal: must not be empty")
-	}
-	entry, err := n.meta.Get(ctx, contract.MetaMember(principal))
-	if errors.Is(err, jetstream.ErrKeyNotFound) {
-		return fmt.Errorf("principal %q is not a member", principal)
-	}
-	if err != nil {
-		return fmt.Errorf("read membership: %w", err)
-	}
-	var m contract.Membership
-	if err := json.Unmarshal(entry.Value(), &m); err != nil {
-		return fmt.Errorf("decode membership: %w", err)
-	}
-	if !slices.Contains(roles, m.Role) {
-		return fmt.Errorf("principal %q holds role %q; one of %v required", principal, m.Role, roles)
-	}
-	return nil
+	return registry.RequireRole(ctx, n.meta, principal, roles...)
 }
 
 // recordSchema appends a revision: read the current one, write revision+1

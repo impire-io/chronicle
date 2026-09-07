@@ -25,6 +25,17 @@ func ValidateLogName(log string) error {
 	return nil
 }
 
+// ValidateIndexName refuses anything but a single lowercase [a-z0-9-]+
+// token — the log-name grammar without the reserved list (05-indexes.md).
+// The name is a subject token on the query surface and a META key segment;
+// dots would fork both grammars.
+func ValidateIndexName(index string) error {
+	if !logName.MatchString(index) {
+		return fmt.Errorf("index name %q: must match [a-z0-9-]+", index)
+	}
+	return nil
+}
+
 // ValidateThing refuses a thing that is not one or more subject-token-safe
 // segments joined with ".". Identifiers are the customer's domain: chronicle
 // validates subject-token safety and mints nothing (wire contract § subject

@@ -12,8 +12,8 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/nats-io/nuid"
 
-	"github.com/impire-io/chronicle/client"
 	"github.com/impire-io/chronicle/contract"
+	"github.com/impire-io/chronicle/internal/foldcore"
 )
 
 // rollupAuthor is the Op-Author the node stamps on its own snapshots —
@@ -126,8 +126,8 @@ func (n *node) rollupThing(ctx context.Context, log, thing string) (rollupResult
 	return rollupResult{rolled: true, seq: ack.Sequence}, nil
 }
 
-// captureOp folds one replayed op into the in-memory state, mirroring the
-// fold's rules (0011): a snapshot resets, a schema-valid merge op applies.
+// captureOp folds one replayed op into the in-memory state, judged by the
+// shared core (0011): a snapshot resets, a schema-valid merge op applies.
 // Everything the fold would warn about and skip is returned as a veto
 // reason instead — what the fold could not capture, the node must not
 // destroy.
@@ -141,34 +141,19 @@ func (n *node) captureOp(ctx context.Context, log string, op contract.Op, state 
 		*sawSnapshot = true
 		return ""
 	}
-	entry, err := n.meta.Get(ctx, contract.MetaLogType(log, op.Type))
-	if errors.Is(err, jetstream.ErrKeyNotFound) {
-		return fmt.Sprintf("op %s has unknown type %s", op.ID, op.Type)
-	}
-	if err != nil || len(entry.Value()) == 0 {
-		return fmt.Sprintf("type record %s is unreadable", op.Type)
-	}
-	var ts contract.TypeSchema
-	if err := json.Unmarshal(entry.Value(), &ts); err != nil {
-		return fmt.Sprintf("type record %s is unreadable", op.Type)
-	}
-	switch effect := contract.NormalizeEffect(ts.Effect); effect {
-	case contract.EffectMerge:
-	case contract.EffectNone:
+	switch decision, detail := foldcore.Judge(ctx, n.meta, log, op); decision {
+	case foldcore.Merge:
+		// Captured below.
+	case foldcore.None:
 		return fmt.Sprintf("op %s (type %s) declares effect none — its meaning lives only in history", op.ID, op.Type)
-	default:
-		return fmt.Sprintf("op %s (type %s) declares unknown effect %q", op.ID, op.Type, effect)
-	}
-	sch, err := client.CompileSchema(ts.Schema)
-	if err != nil {
-		return fmt.Sprintf("type %s schema does not compile", op.Type)
-	}
-	var v any
-	if err := json.Unmarshal(op.Payload, &v); err != nil {
-		return fmt.Sprintf("op %s (type %s) is marked: payload is not JSON", op.ID, op.Type)
-	}
-	if err := sch.Validate(v); err != nil {
-		return fmt.Sprintf("op %s (type %s) is marked: payload fails its schema", op.ID, op.Type)
+	case foldcore.UnknownType:
+		return fmt.Sprintf("op %s has unknown type %s", op.ID, op.Type)
+	case foldcore.UnknownEffect:
+		return fmt.Sprintf("op %s (type %s) declares unknown effect: %s", op.ID, op.Type, detail)
+	case foldcore.BadTypeRecord:
+		return fmt.Sprintf("type record %s is unreadable: %s", op.Type, detail)
+	case foldcore.Invalid:
+		return fmt.Sprintf("op %s (type %s) is marked: %s", op.ID, op.Type, detail)
 	}
 	if !*sawSnapshot {
 		return fmt.Sprintf("op %s lands before any snapshot (§ 5.1)", op.ID)

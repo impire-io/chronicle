@@ -120,3 +120,48 @@ func TestCLISpine(t *testing.T) {
 		t.Fatal("log create without --creds must fail")
 	}
 }
+
+// TestCLIIndex drives the index verbs over a real fleet: declare prints
+// the query subject, query prints hits once the supervisor's indexer is
+// caught up, delete retires it.
+func TestCLIIndex(t *testing.T) {
+	dir := t.TempDir()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	f, err := fleet.Up(ctx, fleet.Config{Dir: dir, Port: -1})
+	if err != nil {
+		t.Fatalf("up: %v", err)
+	}
+	defer f.Stop()
+
+	creds := filepath.Join(t.TempDir(), "dana.creds")
+	run(ctx, t, "tenant", "create", "acme", "--dir", dir, "--admin", "dana", "--out", creds)
+	run(ctx, t, "log", "create", "orders", "--dir", dir, "--creds", creds)
+	run(ctx, t, "thing", "create", "orders", "invoice-1", "--dir", dir, "--creds", creds,
+		"--state", `{"title":"quantum widgets"}`)
+
+	out := run(ctx, t, "index", "declare", "orders", "text", "--dir", dir, "--creds", creds)
+	if !strings.Contains(out, "CHRON.API.INDEX.QUERY.orders.text") {
+		t.Fatalf("index declare output: %s", out)
+	}
+
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		var qout bytes.Buffer
+		err := cli.Run(ctx, []string{"index", "query", "orders", "text", "widgets",
+			"--dir", dir, "--creds", creds}, &qout)
+		if err == nil && strings.Contains(qout.String(), "invoice-1") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("index query never hit: %v %s", err, qout.String())
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	out = run(ctx, t, "index", "delete", "orders", "text", "--dir", dir, "--creds", creds)
+	if !strings.Contains(out, "retired") {
+		t.Fatalf("index delete output: %s", out)
+	}
+}

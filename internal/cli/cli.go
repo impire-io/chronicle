@@ -45,6 +45,17 @@ func Run(ctx context.Context, args []string, out io.Writer) error {
 			return thingRollup(ctx, args[2:], out)
 		}
 		return usage(out)
+	case "index":
+		if len(args) >= 2 && args[1] == "declare" {
+			return indexDeclare(ctx, args[2:], out)
+		}
+		if len(args) >= 2 && args[1] == "delete" {
+			return indexDelete(ctx, args[2:], out)
+		}
+		if len(args) >= 2 && args[1] == "query" {
+			return indexQuery(ctx, args[2:], out)
+		}
+		return usage(out)
 	case "append":
 		return appendOp(ctx, args[1:], out)
 	case "state":
@@ -65,6 +76,9 @@ func usage(out io.Writer) error {
   chronicle schema set <log> <op.type> --creds F --schema JSON | --file F [--effect E]
   chronicle thing create <log> <thing> --creds F [--state JSON]
   chronicle thing rollup <log> <thing> --creds F
+  chronicle index declare <log> <index> --creds F [--kind search]
+  chronicle index delete <log> <index> --creds F
+  chronicle index query <log> <index> [query...] --creds F [--limit N] [--offset N]
   chronicle append <log> <thing> <op.type> --creds F [--payload JSON] [--parents a,b]
   chronicle state <log> <thing> --creds F
   chronicle replay <log> <thing> --creds F
@@ -283,6 +297,84 @@ func thingRollup(ctx context.Context, args []string, out io.Writer) error {
 		return nil
 	}
 	fmt.Fprintf(out, "compacted: %s at seq %d\n", pos[1], resp.Seq)
+	return nil
+}
+
+func indexDeclare(ctx context.Context, args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("chronicle index declare", flag.ContinueOnError)
+	fs.SetOutput(out)
+	cf := addConnectFlags(fs)
+	kind := fs.String("kind", "search", "index kind")
+	pos, err := parseArgs(fs, args)
+	if err != nil {
+		return err
+	}
+	if len(pos) != 2 {
+		return fmt.Errorf("index declare: <log> <index>")
+	}
+	c, err := cf.dial()
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	resp, err := c.DeclareIndex(ctx, pos[0], pos[1], *kind)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "index %s/%s declared (%s): query %s\n", pos[0], pos[1], *kind, resp.Query)
+	return nil
+}
+
+func indexDelete(ctx context.Context, args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("chronicle index delete", flag.ContinueOnError)
+	fs.SetOutput(out)
+	cf := addConnectFlags(fs)
+	pos, err := parseArgs(fs, args)
+	if err != nil {
+		return err
+	}
+	if len(pos) != 2 {
+		return fmt.Errorf("index delete: <log> <index>")
+	}
+	c, err := cf.dial()
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	if _, err := c.DeleteIndex(ctx, pos[0], pos[1]); err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "index %s/%s retired\n", pos[0], pos[1])
+	return nil
+}
+
+func indexQuery(ctx context.Context, args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("chronicle index query", flag.ContinueOnError)
+	fs.SetOutput(out)
+	cf := addConnectFlags(fs)
+	limit := fs.Int("limit", 0, "max hits (default 10, cap 100)")
+	offset := fs.Int("offset", 0, "hits to skip")
+	pos, err := parseArgs(fs, args)
+	if err != nil {
+		return err
+	}
+	if len(pos) < 2 {
+		return fmt.Errorf("index query: <log> <index> [query...]")
+	}
+	query := strings.Join(pos[2:], " ")
+	c, err := cf.dial()
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	resp, err := c.QueryIndex(ctx, pos[0], pos[1], query, *limit, *offset)
+	if err != nil {
+		return err
+	}
+	for _, hit := range resp.Hits {
+		fmt.Fprintf(out, "%s\t%.4f\n", hit.Thing, hit.Score)
+	}
+	fmt.Fprintf(out, "%d of %d\n", len(resp.Hits), resp.Total)
 	return nil
 }
 
