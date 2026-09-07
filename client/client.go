@@ -31,20 +31,43 @@ type Client struct {
 // from the user JWT's name — the SDK stamps Op-Author from the credentials
 // it runs with, an identity it was actually issued.
 func Connect(url string, creds []byte) (*Client, error) {
+	nc, author, err := dialCreds(url, creds, "chronicle-client")
+	if err != nil {
+		return nil, err
+	}
+	c, err := wrap(nc, author)
+	if err != nil {
+		nc.Close()
+		return nil, err
+	}
+	return c, nil
+}
+
+// ConnectControlCreds dials chronicle-control with control-plane .creds
+// content.
+func ConnectControlCreds(url string, creds []byte) (*Control, error) {
+	nc, _, err := dialCreds(url, creds, "chronicle-cli-control")
+	if err != nil {
+		return nil, err
+	}
+	return NewControl(nc), nil
+}
+
+func dialCreds(url string, creds []byte, name string) (*nats.Conn, string, error) {
 	token, err := jwt.ParseDecoratedJWT(creds)
 	if err != nil {
-		return nil, fmt.Errorf("parse creds jwt: %w", err)
+		return nil, "", fmt.Errorf("parse creds jwt: %w", err)
 	}
 	claims, err := jwt.DecodeUserClaims(token)
 	if err != nil {
-		return nil, fmt.Errorf("decode user claims: %w", err)
+		return nil, "", fmt.Errorf("decode user claims: %w", err)
 	}
 	kp, err := jwt.ParseDecoratedUserNKey(creds)
 	if err != nil {
-		return nil, fmt.Errorf("parse creds nkey: %w", err)
+		return nil, "", fmt.Errorf("parse creds nkey: %w", err)
 	}
 	nc, err := nats.Connect(url,
-		nats.Name("chronicle-client"),
+		nats.Name(name),
 		nats.UserJWT(
 			func() (string, error) { return token, nil },
 			func(nonce []byte) ([]byte, error) { return kp.Sign(nonce) },
@@ -52,14 +75,9 @@ func Connect(url string, creds []byte) (*Client, error) {
 		nats.Timeout(5*time.Second),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("connect: %w", err)
+		return nil, "", fmt.Errorf("connect: %w", err)
 	}
-	c, err := wrap(nc, claims.Name)
-	if err != nil {
-		nc.Close()
-		return nil, err
-	}
-	return c, nil
+	return nc, claims.Name, nil
 }
 
 // ConnectFile dials with a .creds file path.

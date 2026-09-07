@@ -9,6 +9,8 @@ import (
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nkeys"
+
+	"github.com/impire-io/chronicle/internal/devdir"
 )
 
 // Bootstrap is the throwaway operator-mode substrate of the onboarding
@@ -31,7 +33,9 @@ type Bootstrap struct {
 	ControlCreds      []byte
 }
 
-// bootstrap file names inside the data dir.
+// bootstrap file names inside the data dir. The two the CLI reads are
+// declared in internal/devdir; the rest are custody, private to this
+// package.
 const (
 	fOperatorJWT  = "operator.jwt"
 	fOperatorSK   = "operator-signing.nk"
@@ -40,11 +44,11 @@ const (
 	fSysCreds     = "sys.creds"
 	fCtrlAcctJWT  = "control-account.jwt"
 	fCtrlAcctPub  = "control-account.pub"
-	fCtrlCreds    = "control.creds"
+	fCtrlCreds    = devdir.ControlCredsFile
 	resolverDir   = "resolver"
 	jetstreamDir  = "jetstream"
 	accountsDir   = "accounts"
-	fClientURL    = "client.url"
+	fClientURL    = devdir.ClientURLFile
 	keyFileMode   = 0o600
 	plainFileMode = 0o644
 )
@@ -269,19 +273,6 @@ func (b *Bootstrap) AccountsDir() string { return b.ensureDir(accountsDir) }
 func (b *Bootstrap) WriteClientURL(url string) error {
 	return os.WriteFile(filepath.Join(b.Dir, fClientURL), []byte(url), plainFileMode)
 }
-
-// ReadClientURL reads the recorded client URL; the CLI's way back to a
-// running `chronicle up`.
-func ReadClientURL(dir string) (string, error) {
-	p, err := os.ReadFile(filepath.Join(dir, fClientURL))
-	if err != nil {
-		return "", fmt.Errorf("read client url (is `chronicle up` running?): %w", err)
-	}
-	return string(p), nil
-}
-
-// ControlCredsPath is where the CLI finds the control-plane credentials.
-func ControlCredsPath(dir string) string { return filepath.Join(dir, fCtrlCreds) }
 
 func (b *Bootstrap) ensureDir(name string) string {
 	p := filepath.Join(b.Dir, name)

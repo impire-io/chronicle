@@ -1,0 +1,128 @@
+version: "2"
+
+linters:
+  # Default set (errcheck, govet, ineffassign, staticcheck, unused) plus a few.
+  enable:
+    - revive
+    - misspell
+    - unconvert
+    - depguard
+  settings:
+    depguard:
+      # The service boundary (specs/001-walking-skeleton): contract is the
+      # one shared leaf; client speaks contract only; services stand alone
+      # and share through contract and client types, never through each
+      # other; devdir is the tiny seam adapters share with the bootstrap.
+      rules:
+        contract-is-a-leaf:
+          files: ["**/contract/*.go", "!$test"]
+          deny:
+            - pkg: github.com/impire-io/chronicle
+              desc: the contract package imports no other chronicle package
+        client-speaks-contract-only:
+          files: ["**/client/*.go", "!$test"]
+          deny:
+            - pkg: github.com/impire-io/chronicle/internal
+              desc: the client package is the wire surface; it never reaches into a service
+        node-stands-alone:
+          files: ["**/internal/node/**", "!$test"]
+          deny:
+            - pkg: github.com/impire-io/chronicle/internal/control
+              desc: services never import each other; share through contract and client types
+            - pkg: github.com/impire-io/chronicle/internal/mint
+              desc: the node holds a tenant's service user only; minting never enters it
+            - pkg: github.com/impire-io/chronicle/internal/fleet
+              desc: services never import the composition root
+            - pkg: github.com/impire-io/chronicle/internal/cli
+              desc: services never import the adapters
+            - pkg: github.com/impire-io/chronicle/internal/devdir
+              desc: services know no data-dir conventions; their mains do the connecting
+        control-stands-alone:
+          files: ["**/internal/control/**", "!$test"]
+          deny:
+            - pkg: github.com/impire-io/chronicle/internal/node
+              desc: services never import each other; the composition root wires them
+            - pkg: github.com/impire-io/chronicle/internal/fleet
+              desc: services never import the composition root
+            - pkg: github.com/impire-io/chronicle/internal/cli
+              desc: services never import the adapters
+        mint-is-the-seam:
+          files: ["**/internal/mint/*.go", "!$test"]
+          deny:
+            - pkg: github.com/impire-io/chronicle/client
+              desc: minting issues credentials; speaking over them is a client's job
+            - pkg: github.com/impire-io/chronicle/internal/node
+              desc: the seam imports no service
+            - pkg: github.com/impire-io/chronicle/internal/control
+              desc: the seam imports no service
+            - pkg: github.com/impire-io/chronicle/internal/fleet
+              desc: the seam never imports the composition root
+            - pkg: github.com/impire-io/chronicle/internal/cli
+              desc: the seam never imports the adapters
+        devdir-imports-nothing:
+          files: ["**/internal/devdir/*.go", "!$test"]
+          deny:
+            - pkg: github.com/impire-io/chronicle
+              desc: devdir declares conventions; it imports no chronicle package
+        fleet-composes-the-services:
+          files: ["**/internal/fleet/*.go", "!$test"]
+          deny:
+            - pkg: github.com/impire-io/chronicle/client
+              desc: the composition root starts services; speaking to them is a client's job
+            - pkg: github.com/impire-io/chronicle/internal/cli
+              desc: the composition root never imports the adapters
+        adapters-speak-client-only:
+          files: ["**/internal/cli/*.go", "!$test"]
+          deny:
+            - pkg: github.com/impire-io/chronicle/internal/node
+              desc: adapters reach the fleet through the client package, never a service's internals
+            - pkg: github.com/impire-io/chronicle/internal/control
+              desc: adapters reach the fleet through the client package, never a service's internals
+            - pkg: github.com/impire-io/chronicle/internal/mint
+              desc: adapters hold no minting material
+            - pkg: github.com/impire-io/chronicle/internal/fleet
+              desc: adapters stay clients; the composition root is dispatched from cmd/chronicle
+        cmd-chronicle-runs-cli-and-composition:
+          files: ["**/cmd/chronicle/*.go"]
+          deny:
+            - pkg: github.com/impire-io/chronicle/internal/node
+              desc: cmd/chronicle reaches the services only through internal/fleet
+            - pkg: github.com/impire-io/chronicle/internal/control
+              desc: cmd/chronicle reaches the services only through internal/fleet
+            - pkg: github.com/impire-io/chronicle/internal/mint
+              desc: cmd/chronicle holds no minting material
+        cmd-chronicle-node-runs-its-service:
+          files: ["**/cmd/chronicle-node/*.go"]
+          deny:
+            - pkg: github.com/impire-io/chronicle/internal/control
+              desc: this main runs internal/node and nothing else
+            - pkg: github.com/impire-io/chronicle/internal/fleet
+              desc: this main runs internal/node and nothing else
+            - pkg: github.com/impire-io/chronicle/internal/cli
+              desc: this main runs internal/node and nothing else
+            - pkg: github.com/impire-io/chronicle/internal/mint
+              desc: a node holds a tenant's service user only, never minting material
+        cmd-chronicle-control-runs-its-service:
+          files: ["**/cmd/chronicle-control/*.go"]
+          deny:
+            - pkg: github.com/impire-io/chronicle/internal/node
+              desc: this main runs internal/control and nothing else
+            - pkg: github.com/impire-io/chronicle/internal/fleet
+              desc: this main runs internal/control and nothing else
+            - pkg: github.com/impire-io/chronicle/internal/cli
+              desc: this main runs internal/control and nothing else
+    errcheck:
+      # Writing to stdout/stderr and ignoring the (near-impossible) error is idiomatic.
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/impire-io/chronicle

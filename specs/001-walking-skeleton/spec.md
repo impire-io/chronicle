@@ -10,7 +10,8 @@
 [`02-DESIGN/02-wire-contract.md`](../../../chronicle-hq/02-DESIGN/02-wire-contract.md),
 [`02-DESIGN/03-meta-and-state.md`](../../../chronicle-hq/02-DESIGN/03-meta-and-state.md),
 [`02-DESIGN/04-fleet.md`](../../../chronicle-hq/02-DESIGN/04-fleet.md).
-**Status:** specified — plan and tasks follow on this branch.
+**Status:** implemented on this branch ([plan.md](plan.md)) — awaiting
+review and merge.
 
 ## What this delivers
 
