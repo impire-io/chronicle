@@ -145,21 +145,21 @@ func TestCreateLogAndSpine(t *testing.T) {
 
 	// Schemas: declared, revisioned, compiled before recorded.
 	schema := json.RawMessage(`{"type":"object","required":["body"],"properties":{"body":{"type":"string"}}}`)
-	rev, err := alice.SetSchema(ctx, "orders", "comment.add", schema)
+	rev, err := alice.SetSchema(ctx, "orders", "comment.add", schema, "")
 	if err != nil {
 		t.Fatalf("set schema: %v", err)
 	}
 	if rev.Revision != 1 {
 		t.Fatalf("first revision = %d", rev.Revision)
 	}
-	rev2, err := alice.SetSchema(ctx, "orders", "comment.add", schema)
+	rev2, err := alice.SetSchema(ctx, "orders", "comment.add", schema, "")
 	if err != nil {
 		t.Fatalf("set schema again: %v", err)
 	}
 	if rev2.Revision != 2 {
 		t.Fatalf("second revision = %d", rev2.Revision)
 	}
-	if _, err := alice.SetSchema(ctx, "orders", "broken", json.RawMessage(`{"type":"nope"}`)); err == nil {
+	if _, err := alice.SetSchema(ctx, "orders", "broken", json.RawMessage(`{"type":"nope"}`), ""); err == nil {
 		t.Fatal("uncompilable schema recorded")
 	}
 

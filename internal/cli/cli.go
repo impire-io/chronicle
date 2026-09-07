@@ -59,7 +59,7 @@ func usage(out io.Writer) error {
   chronicle up [--dir D] [--port N]                     run the local fleet
   chronicle tenant create <name> [--dir D] [--admin P] [--out F]
   chronicle log create <log> --creds F [--url U] [--desc S]
-  chronicle schema set <log> <op.type> --creds F --schema JSON | --file F
+  chronicle schema set <log> <op.type> --creds F --schema JSON | --file F [--effect E]
   chronicle thing create <log> <thing> --creds F [--state JSON]
   chronicle append <log> <thing> <op.type> --creds F [--payload JSON] [--parents a,b]
   chronicle state <log> <thing> --creds F
@@ -192,6 +192,7 @@ func schemaSet(ctx context.Context, args []string, out io.Writer) error {
 	cf := addConnectFlags(fs)
 	inline := fs.String("schema", "", "JSON Schema, inline")
 	file := fs.String("file", "", "JSON Schema file")
+	effect := fs.String("effect", "", "how the op moves state: none (default) or merge")
 	pos, err := parseArgs(fs, args)
 	if err != nil {
 		return err
@@ -219,7 +220,7 @@ func schemaSet(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	defer c.Close()
-	resp, err := c.SetSchema(ctx, pos[0], pos[1], schema)
+	resp, err := c.SetSchema(ctx, pos[0], pos[1], schema, *effect)
 	if err != nil {
 		return err
 	}

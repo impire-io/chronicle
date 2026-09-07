@@ -69,6 +69,25 @@ func TestCLISpine(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 
+	// The effect flag reaches the wire: a merge-declared type moves state.
+	run(ctx, t, "schema", "set", "orders", "status.set", "--dir", dir, "--creds", creds,
+		"--schema", `{"type":"object"}`, "--effect", "merge")
+	run(ctx, t, "append", "orders", "invoice-1", "status.set", "--dir", dir, "--creds", creds,
+		"--payload", `{"status":"closed"}`)
+	deadline = time.Now().Add(10 * time.Second)
+	for {
+		var stateOut bytes.Buffer
+		err := cli.Run(ctx, []string{"state", "orders", "invoice-1", "--dir", dir, "--creds", creds}, &stateOut)
+		if err == nil && strings.Contains(stateOut.String(), `"status":"closed"`) &&
+			strings.Contains(stateOut.String(), `"total":3`) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("merged state never appeared: %v %s", err, stateOut.String())
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
 	out = run(ctx, t, "replay", "orders", "invoice-1", "--dir", dir, "--creds", creds)
 	if !strings.Contains(out, "snapshot") || !strings.Contains(out, "comment.add") || !strings.Contains(out, "by dana") {
 		t.Fatalf("replay output: %s", out)

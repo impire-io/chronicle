@@ -9,7 +9,8 @@
 [`02-DESIGN/04-fleet.md`](../../../chronicle-hq/02-DESIGN/04-fleet.md)
 § the node's duties (the compaction gate — recorded, not built here);
 resolves the build half of tracker item 27.
-**Status:** specified — implementation follows on this branch.
+**Status:** implemented on this branch ([plan.md](plan.md)) — awaiting
+review and merge.
 
 ## What this delivers
 
