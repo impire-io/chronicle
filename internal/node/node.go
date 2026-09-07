@@ -28,7 +28,16 @@ type Config struct {
 	// Logger receives the fold's warnings — unknown op types, marked
 	// payloads. Nil means slog.Default.
 	Logger *slog.Logger
+	// RollupEvery is the timer trigger's period: every period the node
+	// sweeps the subjects the fold saw ops on and compacts the ones the
+	// effect gate allows (04-fleet.md § the node's duties). Zero means
+	// DefaultRollupEvery.
+	RollupEvery time.Duration
 }
+
+// DefaultRollupEvery keeps rollup a deliberate, occasional act (pattern
+// § 5.2): active subjects are swept once an hour.
+const DefaultRollupEvery = time.Hour
 
 // Node is one running chronicle-node.
 type Node struct {
@@ -45,16 +54,34 @@ func (n *Node) Stop() {
 }
 
 type node struct {
-	nc     *nats.Conn
-	js     jetstream.JetStream
-	meta   jetstream.KeyValue
-	logger *slog.Logger
+	nc          *nats.Conn
+	js          jetstream.JetStream
+	meta        jetstream.KeyValue
+	logger      *slog.Logger
+	rollupEvery time.Duration
 
 	foldCtx context.Context
 	wg      *sync.WaitGroup
 
 	mu    sync.Mutex
 	folds map[string]*foldRun
+	// rolls serializes each log's derived-state acts: a rollup and the
+	// effect-change rebuild exclude each other, so a rollup never
+	// publishes state computed while declarations are being re-folded.
+	rolls map[string]*sync.Mutex
+}
+
+// logMutex hands out the log's derived-state mutex, minting it on first
+// use; it survives fold restarts.
+func (n *node) logMutex(log string) *sync.Mutex {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	mu, ok := n.rolls[log]
+	if !ok {
+		mu = &sync.Mutex{}
+		n.rolls[log] = mu
+	}
+	return mu
 }
 
 // Start opens the tenant's META bucket (provisioned at minting — a node
@@ -75,15 +102,22 @@ func Start(ctx context.Context, nc *nats.Conn, cfg Config) (*Node, error) {
 		logger = slog.Default()
 	}
 
+	rollupEvery := cfg.RollupEvery
+	if rollupEvery == 0 {
+		rollupEvery = DefaultRollupEvery
+	}
+
 	foldCtx, cancel := context.WithCancel(context.Background())
 	n := &node{
-		nc:      nc,
-		js:      js,
-		meta:    meta,
-		logger:  logger,
-		foldCtx: foldCtx,
-		wg:      &sync.WaitGroup{},
-		folds:   map[string]*foldRun{},
+		nc:          nc,
+		js:          js,
+		meta:        meta,
+		logger:      logger,
+		rollupEvery: rollupEvery,
+		foldCtx:     foldCtx,
+		wg:          &sync.WaitGroup{},
+		folds:       map[string]*foldRun{},
+		rolls:       map[string]*sync.Mutex{},
 	}
 
 	// The logs live in META: log.<log>.config is the authoritative
@@ -99,6 +133,8 @@ func Start(ctx context.Context, nc *nats.Conn, cfg Config) (*Node, error) {
 			return nil, fmt.Errorf("fold %s: %w", log, err)
 		}
 	}
+	n.wg.Add(1)
+	go n.rollupTimer()
 
 	svc, err := micro.AddService(nc, micro.Config{
 		Name:        "chronicle-node",
@@ -117,6 +153,7 @@ func Start(ctx context.Context, nc *nats.Conn, cfg Config) (*Node, error) {
 		{"ping", client.PingSubject, n.handlePing},
 		{"log-create", client.LogCreateSubject, n.handleLogCreate},
 		{"schema-set", client.SchemaSetSubject, n.handleSchemaSet},
+		{"thing-rollup", client.ThingRollupSubject, n.handleThingRollup},
 	}
 	for _, e := range endpoints {
 		if err := svc.AddEndpoint(e.name, e.handler, micro.WithEndpointSubject(e.subject)); err != nil {
@@ -256,6 +293,53 @@ func (n *node) handleSchemaSet(req micro.Request) {
 		}
 	}
 	reply, err := json.Marshal(client.SchemaSetResponse{Revision: rev})
+	if err != nil {
+		_ = req.Error("500", err.Error(), nil)
+		return
+	}
+	_ = req.Respond(reply)
+}
+
+// handleThingRollup is the on-demand rollup trigger. Writers and admins
+// may ask — a member can publish a rollup snapshot on the wire anyway
+// (the member baseline); the verb only adds the node's gated routine —
+// while readers are refused. Declining is answered, never errored.
+func (n *node) handleThingRollup(req micro.Request) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	var r client.ThingRollupRequest
+	if err := json.Unmarshal(req.Data(), &r); err != nil {
+		_ = req.Error("bad-request", err.Error(), nil)
+		return
+	}
+	if err := n.requireRole(ctx, r.Principal, contract.RoleAdmin, contract.RoleWriter); err != nil {
+		_ = req.Error("forbidden", err.Error(), nil)
+		return
+	}
+	if err := contract.ValidateLogName(r.Log); err != nil {
+		_ = req.Error("bad-log-name", err.Error(), nil)
+		return
+	}
+	if err := contract.ValidateThing(r.Thing); err != nil {
+		_ = req.Error("bad-thing", err.Error(), nil)
+		return
+	}
+	if _, err := n.meta.Get(ctx, contract.MetaLogConfig(r.Log)); err != nil {
+		_ = req.Error("no-such-log", fmt.Sprintf("log %q is not created", r.Log), nil)
+		return
+	}
+
+	res, err := n.rollupThing(ctx, r.Log, r.Thing)
+	if errors.Is(err, errNoThing) {
+		_ = req.Error("no-such-thing", fmt.Sprintf("thing %q has no history in %s", r.Thing, r.Log), nil)
+		return
+	}
+	if err != nil {
+		_ = req.Error("500", err.Error(), nil)
+		return
+	}
+	reply, err := json.Marshal(client.ThingRollupResponse{Rolled: res.rolled, Seq: res.seq, Reason: res.reason})
 	if err != nil {
 		_ = req.Error("500", err.Error(), nil)
 		return

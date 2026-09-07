@@ -61,6 +61,13 @@ func (l *logCatcher) wait(t *testing.T, substr string) {
 // wire behavior is account-independent.
 func startNode(t *testing.T, catcher *logCatcher) (nc *nats.Conn, alice *client.Client) {
 	t.Helper()
+	return startNodeWith(t, catcher, node.Config{})
+}
+
+// startNodeWith is startNode with the node's Config in the caller's hands
+// (the rollup timer tests shrink RollupEvery).
+func startNodeWith(t *testing.T, catcher *logCatcher, cfg node.Config) (nc *nats.Conn, alice *client.Client) {
+	t.Helper()
 	url := natstest.StartJetStream(t)
 	nc, err := nats.Connect(url)
 	if err != nil {
@@ -89,8 +96,11 @@ func startNode(t *testing.T, catcher *logCatcher) (nc *nats.Conn, alice *client.
 	if _, err := meta.Put(ctx, contract.MetaMember("rita"), reader); err != nil {
 		t.Fatalf("seed reader: %v", err)
 	}
+	writer, _ := json.Marshal(contract.Membership{PublicKey: "UTEST3", Role: contract.RoleWriter})
+	if _, err := meta.Put(ctx, contract.MetaMember("wally"), writer); err != nil {
+		t.Fatalf("seed writer: %v", err)
+	}
 
-	cfg := node.Config{}
 	if catcher != nil {
 		cfg.Logger = catcher.logger()
 	}

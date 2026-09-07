@@ -93,6 +93,27 @@ func TestCLISpine(t *testing.T) {
 		t.Fatalf("replay output: %s", out)
 	}
 
+	// invoice-1 carries an effect-none comment: the node declines, with
+	// the reason on stdout.
+	out = run(ctx, t, "thing", "rollup", "orders", "invoice-1", "--dir", dir, "--creds", creds)
+	if !strings.Contains(out, "not compacted") || !strings.Contains(out, "effect none") {
+		t.Fatalf("thing rollup veto output: %s", out)
+	}
+
+	// A fully merge-covered thing compacts to one snapshot.
+	run(ctx, t, "thing", "create", "orders", "invoice-2", "--dir", dir, "--creds", creds,
+		"--state", `{"total":1}`)
+	run(ctx, t, "append", "orders", "invoice-2", "status.set", "--dir", dir, "--creds", creds,
+		"--payload", `{"status":"paid"}`)
+	out = run(ctx, t, "thing", "rollup", "orders", "invoice-2", "--dir", dir, "--creds", creds)
+	if !strings.Contains(out, "compacted: invoice-2") {
+		t.Fatalf("thing rollup output: %s", out)
+	}
+	out = run(ctx, t, "replay", "orders", "invoice-2", "--dir", dir, "--creds", creds)
+	if !strings.Contains(out, "by chronicle-node") || strings.Contains(out, "status.set") {
+		t.Fatalf("replay after rollup: %s", out)
+	}
+
 	// Bad flags fail before dialing anything.
 	var bad bytes.Buffer
 	if err := cli.Run(ctx, []string{"log", "create", "orders"}, &bad); err == nil {
