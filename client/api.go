@@ -40,12 +40,15 @@ type LogCreateResponse struct {
 }
 
 // SchemaSetRequest records an op-type schema revision. Evolution is
-// additive: revisions are recorded, never rewritten in place.
+// additive: revisions are recorded, never rewritten in place. Effect
+// declares how the op moves state (decision 0011): "none" (the default)
+// or "merge"; it rides the same revision as the schema.
 type SchemaSetRequest struct {
 	Principal string          `json:"principal"`
 	Log       string          `json:"log"`
 	OpType    string          `json:"op_type"`
 	Schema    json.RawMessage `json:"schema"`
+	Effect    string          `json:"effect,omitempty"`
 }
 
 // SchemaSetResponse carries the recorded revision.
@@ -118,13 +121,15 @@ func (c *Client) CreateLog(ctx context.Context, log, description string) (LogCre
 	})
 }
 
-// SetSchema records a new revision of an op-type's payload schema.
-func (c *Client) SetSchema(ctx context.Context, log, opType string, schema json.RawMessage) (SchemaSetResponse, error) {
+// SetSchema records a new revision of an op-type's payload schema and its
+// effect on state ("" means none — the op lives in history only).
+func (c *Client) SetSchema(ctx context.Context, log, opType string, schema json.RawMessage, effect string) (SchemaSetResponse, error) {
 	return request[SchemaSetRequest, SchemaSetResponse](ctx, c.nc, SchemaSetSubject, SchemaSetRequest{
 		Principal: c.author,
 		Log:       log,
 		OpType:    opType,
 		Schema:    schema,
+		Effect:    effect,
 	})
 }
 

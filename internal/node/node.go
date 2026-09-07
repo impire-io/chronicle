@@ -54,7 +54,7 @@ type node struct {
 	wg      *sync.WaitGroup
 
 	mu    sync.Mutex
-	folds map[string]bool
+	folds map[string]*foldRun
 }
 
 // Start opens the tenant's META bucket (provisioned at minting — a node
@@ -83,7 +83,7 @@ func Start(ctx context.Context, nc *nats.Conn, cfg Config) (*Node, error) {
 		logger:  logger,
 		foldCtx: foldCtx,
 		wg:      &sync.WaitGroup{},
-		folds:   map[string]bool{},
+		folds:   map[string]*foldRun{},
 	}
 
 	// The logs live in META: log.<log>.config is the authoritative
@@ -224,6 +224,13 @@ func (n *node) handleSchemaSet(req micro.Request) {
 		_ = req.Error("bad-op-type", "op type must be non-empty and not the reserved snapshot type", nil)
 		return
 	}
+	// Write-side strictness: this node declares only effects it can fold.
+	// (The fold itself stays tolerant of values a newer node recorded.)
+	r.Effect = contract.NormalizeEffect(r.Effect)
+	if !contract.KnownEffect(r.Effect) {
+		_ = req.Error("bad-effect", fmt.Sprintf("effect %q is not in this node's vocabulary (none, merge)", r.Effect), nil)
+		return
+	}
 	if _, err := n.meta.Get(ctx, contract.MetaLogConfig(r.Log)); err != nil {
 		_ = req.Error("no-such-log", fmt.Sprintf("log %q is not created", r.Log), nil)
 		return
@@ -235,10 +242,18 @@ func (n *node) handleSchemaSet(req micro.Request) {
 		return
 	}
 
-	rev, err := n.recordSchema(ctx, r)
+	rev, effectChanged, err := n.recordSchema(ctx, r)
 	if err != nil {
 		_ = req.Error("500", err.Error(), nil)
 		return
+	}
+	// Latest declaration wins: a changed effect makes the log's derived
+	// state suspect, and suspect state is rebuilt by replay (0011).
+	if effectChanged {
+		if err := n.rebuildLog(ctx, r.Log); err != nil {
+			_ = req.Error("500", fmt.Sprintf("rebuild state: %v", err), nil)
+			return
+		}
 	}
 	reply, err := json.Marshal(client.SchemaSetResponse{Revision: rev})
 	if err != nil {

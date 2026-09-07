@@ -53,10 +53,43 @@ const LogStatusActive = "active"
 
 // TypeSchema is the value at log.<log>.type.<op.type>. Revisions are
 // recorded, never rewritten in place: each revision is a new KV put, and the
-// bucket's history keeps the old ones readable.
+// bucket's history keeps the old ones readable. The effect declares how the
+// op moves state (decision 0011); it rides the same revision as the schema.
 type TypeSchema struct {
 	Revision uint64          `json:"revision"`
 	Schema   json.RawMessage `json:"schema"`
+	Effect   string          `json:"effect,omitempty"`
+}
+
+// The effect vocabulary (decision 0011). It grows additively; the fold
+// treats an unknown value as EffectNone with a warning, while SCHEMA.SET
+// refuses values outside the node's vocabulary — write-side strictness,
+// read-side tolerance.
+const (
+	// EffectNone: the op is recorded, validated, and replayable, but moves
+	// no state — it lives in history. The default. Its presence in a tail
+	// also vetoes node-driven compaction (the op's meaning would be lost).
+	EffectNone = "none"
+	// EffectMerge: the payload applies to the thing's state as an RFC 7386
+	// JSON Merge Patch — named fields overwrite, null deletes.
+	EffectMerge = "merge"
+)
+
+// NormalizeEffect maps the unset effect to its meaning.
+func NormalizeEffect(effect string) string {
+	if effect == "" {
+		return EffectNone
+	}
+	return effect
+}
+
+// KnownEffect reports whether the value is in this build's vocabulary.
+func KnownEffect(effect string) bool {
+	switch NormalizeEffect(effect) {
+	case EffectNone, EffectMerge:
+		return true
+	}
+	return false
 }
 
 // Principal is the value at identity.principal.<id>: a human or agent known
