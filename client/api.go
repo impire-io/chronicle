@@ -16,12 +16,23 @@ import (
 // checks. CHRON.CTRL.> is the cross-account control surface — not tenant
 // wire contract — served by chronicle-control in its own account.
 const (
-	LogCreateSubject   = "CHRON.API.LOG.CREATE"
-	SchemaSetSubject   = "CHRON.API.SCHEMA.SET"
-	ThingRollupSubject = "CHRON.API.THING.ROLLUP"
-	PingSubject        = "CHRON.API.PING"
-	TenantMintSubject  = "CHRON.CTRL.TENANT.MINT"
+	LogCreateSubject    = "CHRON.API.LOG.CREATE"
+	SchemaSetSubject    = "CHRON.API.SCHEMA.SET"
+	ThingRollupSubject  = "CHRON.API.THING.ROLLUP"
+	IndexDeclareSubject = "CHRON.API.INDEX.DECLARE"
+	IndexDeleteSubject  = "CHRON.API.INDEX.DELETE"
+	PingSubject         = "CHRON.API.PING"
+	TenantMintSubject   = "CHRON.CTRL.TENANT.MINT"
 )
+
+// IndexQuerySubject is the endpoint one index serves, in-account —
+// CHRON.API.INDEX.QUERY.<log>.<index> (05-indexes.md § the query surface).
+// It is answered by that index's own chronicle-index-* service, not the
+// node, and only once the index has caught up with the log: no responder
+// means the indexer is not running or still replaying.
+func IndexQuerySubject(log, index string) string {
+	return "CHRON.API.INDEX.QUERY." + log + "." + index
+}
 
 // LogCreateRequest creates a log: a stream and META entries — no key
 // operations, no JWT pushes. Principal is the caller's assertion, checked
@@ -75,6 +86,61 @@ type ThingRollupResponse struct {
 	Rolled bool   `json:"rolled"`
 	Seq    uint64 `json:"seq,omitempty"`
 	Reason string `json:"reason,omitempty"`
+}
+
+// IndexDeclareRequest declares an index on a log: one META key, realized
+// by the supervisor placing a chronicle-index-* workload (decision 0012).
+// The kind is checked against the node's vocabulary — write-side strict,
+// like effects — and starts at "search".
+type IndexDeclareRequest struct {
+	Principal string `json:"principal"`
+	Log       string `json:"log"`
+	Index     string `json:"index"`
+	Kind      string `json:"kind"`
+}
+
+// IndexDeclareResponse names the query subject the index will serve once
+// caught up.
+type IndexDeclareResponse struct {
+	Query string `json:"query"`
+}
+
+// IndexDeleteRequest retires an index: the META key goes and the
+// supervisor stops the workload. The index was derived — nothing of
+// record is lost. Changing a declaration is delete + declare.
+type IndexDeleteRequest struct {
+	Principal string `json:"principal"`
+	Log       string `json:"log"`
+	Index     string `json:"index"`
+}
+
+// IndexDeleteResponse acknowledges the retirement.
+type IndexDeleteResponse struct {
+	Deleted bool `json:"deleted"`
+}
+
+// IndexQueryRequest is one search: a match over every string field of
+// thing state (empty query matches everything). Any registry role may
+// query. Limit defaults to 10 and is capped at 100.
+type IndexQueryRequest struct {
+	Principal string `json:"principal"`
+	Query     string `json:"query"`
+	Limit     int    `json:"limit,omitempty"`
+	Offset    int    `json:"offset,omitempty"`
+}
+
+// IndexHit names a thing and its relevance. The index is never authority:
+// the thing's state is the state bucket's, its history the log's.
+type IndexHit struct {
+	Thing string  `json:"thing"`
+	Score float64 `json:"score"`
+}
+
+// IndexQueryResponse carries the hits, best first, and the total match
+// count.
+type IndexQueryResponse struct {
+	Hits  []IndexHit `json:"hits"`
+	Total uint64     `json:"total"`
 }
 
 // About answers the ping verb.
@@ -151,6 +217,39 @@ func (c *Client) SetSchema(ctx context.Context, log, opType string, schema json.
 		OpType:    opType,
 		Schema:    schema,
 		Effect:    effect,
+	})
+}
+
+// DeclareIndex declares an index on a log and returns the query subject
+// it will serve once caught up.
+func (c *Client) DeclareIndex(ctx context.Context, log, index, kind string) (IndexDeclareResponse, error) {
+	return request[IndexDeclareRequest, IndexDeclareResponse](ctx, c.nc, IndexDeclareSubject, IndexDeclareRequest{
+		Principal: c.author,
+		Log:       log,
+		Index:     index,
+		Kind:      kind,
+	})
+}
+
+// DeleteIndex retires an index; its workload stops and its derived index
+// is discarded.
+func (c *Client) DeleteIndex(ctx context.Context, log, index string) (IndexDeleteResponse, error) {
+	return request[IndexDeleteRequest, IndexDeleteResponse](ctx, c.nc, IndexDeleteSubject, IndexDeleteRequest{
+		Principal: c.author,
+		Log:       log,
+		Index:     index,
+	})
+}
+
+// QueryIndex searches one index. No responder means the indexer is not
+// running or still replaying — the honest signal of an index that is not
+// current yet.
+func (c *Client) QueryIndex(ctx context.Context, log, index, query string, limit, offset int) (IndexQueryResponse, error) {
+	return request[IndexQueryRequest, IndexQueryResponse](ctx, c.nc, IndexQuerySubject(log, index), IndexQueryRequest{
+		Principal: c.author,
+		Query:     query,
+		Limit:     limit,
+		Offset:    offset,
 	})
 }
 

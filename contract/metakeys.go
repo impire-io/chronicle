@@ -30,6 +30,31 @@ const MetaLogConfigPrefix = "log."
 // plus its revision. Op types keep their natural dots (comment.add).
 func MetaLogType(log, opType string) string { return "log." + log + ".type." + opType }
 
+// MetaIndex is index.<log>.<index> — an index declaration. The index
+// exists because this key does: declared through INDEX.DECLARE, realized
+// by the supervisor placing a workload, retired by deleting the key
+// (05-indexes.md).
+func MetaIndex(log, index string) string { return "index." + log + "." + index }
+
+// MetaIndexPrefix lists every declaration — the supervisor's watch prefix.
+const MetaIndexPrefix = "index."
+
+// IndexDeclaration is the value at index.<log>.<index>. It carries no
+// per-field configuration; the knob waits for a consumer (0012).
+type IndexDeclaration struct {
+	Kind string `json:"kind"`
+}
+
+// IndexKindSearch is the first index kind (decision 0012): full-text over
+// thing state through an embedded engine.
+const IndexKindSearch = "search"
+
+// KnownIndexKind reports whether the kind is in this build's vocabulary.
+// INDEX.DECLARE refuses kinds outside it (write-side strictness), while a
+// supervisor reading a newer build's declaration ignores it with a warning
+// (read-side tolerance) — the same split effects got in 0011.
+func KnownIndexKind(kind string) bool { return kind == IndexKindSearch }
+
 // MetaPrincipal is identity.principal.<id>.
 func MetaPrincipal(id string) string { return "identity.principal." + id }
 

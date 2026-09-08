@@ -43,8 +43,9 @@ type Fleet struct {
 	ctrl  micro.Service
 	conns []*nats.Conn
 
-	mu    sync.Mutex
-	nodes map[string]*node.Node
+	mu       sync.Mutex
+	nodes    map[string]*node.Node
+	indexers map[string]*tenantIndexes
 }
 
 // Up boots the fleet: bootstrap material generated or loaded, the embedded
@@ -71,7 +72,7 @@ func Up(ctx context.Context, cfg Config) (*Fleet, error) {
 	if err != nil {
 		return nil, err
 	}
-	f := &Fleet{URL: srv.ClientURL(), srv: srv, nodes: map[string]*node.Node{}}
+	f := &Fleet{URL: srv.ClientURL(), srv: srv, nodes: map[string]*node.Node{}, indexers: map[string]*tenantIndexes{}}
 	if err := b.WriteClientURL(f.URL); err != nil {
 		f.Stop()
 		return nil, err
@@ -113,6 +114,22 @@ func Up(ctx context.Context, cfg Config) (*Fleet, error) {
 		f.conns = append(f.conns, nc)
 		f.mu.Unlock()
 		logger.Info("node running", "tenant", name)
+
+		// The tenant's index supervisor rides its own connection, shared
+		// by all of that tenant's indexers (05-indexes.md § who runs it).
+		ixConn, err := mint.ConnectCreds(f.URL, serviceCreds, "chronicle-index-"+name)
+		if err != nil {
+			return fmt.Errorf("connect indexers for %s: %w", name, err)
+		}
+		ti, err := startTenantIndexes(ixConn, name, logger)
+		if err != nil {
+			ixConn.Close()
+			return fmt.Errorf("supervise indexes for %s: %w", name, err)
+		}
+		f.mu.Lock()
+		f.indexers[name] = ti
+		f.conns = append(f.conns, ixConn)
+		f.mu.Unlock()
 		return nil
 	}
 
@@ -131,13 +148,18 @@ func Up(ctx context.Context, cfg Config) (*Fleet, error) {
 	return f, nil
 }
 
-// Stop tears the composition down: control verbs first, then the nodes,
-// then the server. Appends need none of them — writers lose nothing.
+// Stop tears the composition down: control verbs first, then the
+// indexers and nodes, then the server. Appends need none of them —
+// writers lose nothing.
 func (f *Fleet) Stop() {
 	if f.ctrl != nil {
 		_ = f.ctrl.Stop()
 	}
 	f.mu.Lock()
+	for _, ti := range f.indexers {
+		ti.stop()
+	}
+	f.indexers = map[string]*tenantIndexes{}
 	for _, n := range f.nodes {
 		n.Stop()
 	}

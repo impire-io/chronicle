@@ -12,7 +12,9 @@ linters:
       # The service boundary (specs/001-walking-skeleton): contract is the
       # one shared leaf; client speaks contract only; services stand alone
       # and share through contract and client types, never through each
-      # other; devdir is the tiny seam adapters share with the bootstrap.
+      # other; devdir is the tiny seam adapters share with the bootstrap;
+      # foldcore and registry (specs/004-search-index) are shared leaves
+      # every projection and API-serving component may use.
       rules:
         contract-is-a-leaf:
           files: ["**/contract/*.go", "!$test"]
@@ -29,6 +31,8 @@ linters:
           deny:
             - pkg: github.com/impire-io/chronicle/internal/control
               desc: services never import each other; share through contract and client types
+            - pkg: github.com/impire-io/chronicle/internal/index
+              desc: services never import each other; share through contract and client types
             - pkg: github.com/impire-io/chronicle/internal/mint
               desc: the node holds a tenant's service user only; minting never enters it
             - pkg: github.com/impire-io/chronicle/internal/fleet
@@ -42,10 +46,57 @@ linters:
           deny:
             - pkg: github.com/impire-io/chronicle/internal/node
               desc: services never import each other; the composition root wires them
+            - pkg: github.com/impire-io/chronicle/internal/index
+              desc: services never import each other; the composition root wires them
             - pkg: github.com/impire-io/chronicle/internal/fleet
               desc: services never import the composition root
             - pkg: github.com/impire-io/chronicle/internal/cli
               desc: services never import the adapters
+        index-search-stands-alone:
+          files: ["**/internal/index/**", "!$test"]
+          deny:
+            - pkg: github.com/impire-io/chronicle/internal/node
+              desc: services never import each other; share through contract and client types
+            - pkg: github.com/impire-io/chronicle/internal/control
+              desc: services never import each other; share through contract and client types
+            - pkg: github.com/impire-io/chronicle/internal/mint
+              desc: an indexer holds a tenant's service user only; minting never enters it
+            - pkg: github.com/impire-io/chronicle/internal/fleet
+              desc: services never import the composition root
+            - pkg: github.com/impire-io/chronicle/internal/cli
+              desc: services never import the adapters
+            - pkg: github.com/impire-io/chronicle/internal/devdir
+              desc: services know no data-dir conventions; their mains do the connecting
+        foldcore-is-a-shared-leaf:
+          files: ["**/internal/foldcore/*.go", "!$test"]
+          deny:
+            - pkg: github.com/impire-io/chronicle/internal/node
+              desc: the shared judgment imports no service
+            - pkg: github.com/impire-io/chronicle/internal/control
+              desc: the shared judgment imports no service
+            - pkg: github.com/impire-io/chronicle/internal/index
+              desc: the shared judgment imports no service
+            - pkg: github.com/impire-io/chronicle/internal/fleet
+              desc: the shared judgment never imports the composition root
+            - pkg: github.com/impire-io/chronicle/internal/cli
+              desc: the shared judgment never imports the adapters
+            - pkg: github.com/impire-io/chronicle/internal/mint
+              desc: the shared judgment holds no minting material
+        registry-is-a-shared-leaf:
+          files: ["**/internal/registry/*.go", "!$test"]
+          deny:
+            - pkg: github.com/impire-io/chronicle/internal/node
+              desc: the shared role check imports no service
+            - pkg: github.com/impire-io/chronicle/internal/control
+              desc: the shared role check imports no service
+            - pkg: github.com/impire-io/chronicle/internal/index
+              desc: the shared role check imports no service
+            - pkg: github.com/impire-io/chronicle/internal/fleet
+              desc: the shared role check never imports the composition root
+            - pkg: github.com/impire-io/chronicle/internal/cli
+              desc: the shared role check never imports the adapters
+            - pkg: github.com/impire-io/chronicle/internal/mint
+              desc: the shared role check holds no minting material
         mint-is-the-seam:
           files: ["**/internal/mint/*.go", "!$test"]
           deny:

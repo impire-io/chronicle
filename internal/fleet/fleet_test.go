@@ -135,3 +135,82 @@ func TestWalkingSkeleton(t *testing.T) {
 		t.Fatal("test overran its budget")
 	}
 }
+
+// TestDeclaredIndexServes is 0012's supervision floor: declaring an index
+// through the API is enough — the fleet watches META, places the indexer,
+// and the query subject answers once caught up; deleting the declaration
+// retires it and the subject goes silent again. No scheduler exists yet;
+// this is its stand-in seam.
+func TestDeclaredIndexServes(t *testing.T) {
+	dir := t.TempDir()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	f, err := fleet.Up(ctx, fleet.Config{Dir: dir, Port: -1})
+	if err != nil {
+		t.Fatalf("up: %v", err)
+	}
+	defer f.Stop()
+
+	ctrlCreds, err := os.ReadFile(devdir.ControlCredsPath(dir))
+	if err != nil {
+		t.Fatalf("control creds: %v", err)
+	}
+	ctrl, err := client.ConnectControlCreds(f.URL, ctrlCreds)
+	if err != nil {
+		t.Fatalf("connect control: %v", err)
+	}
+	minted, err := ctrl.MintTenant(ctx, "acme", "dana")
+	ctrl.Close()
+	if err != nil {
+		t.Fatalf("mint tenant: %v", err)
+	}
+	dana, err := client.Connect(f.URL, minted.AdminCreds)
+	if err != nil {
+		t.Fatalf("connect admin: %v", err)
+	}
+	defer dana.Close()
+
+	if _, err := dana.CreateLog(ctx, "orders", ""); err != nil {
+		t.Fatalf("create log: %v", err)
+	}
+	if _, err := dana.CreateThing(ctx, "orders", "invoice-1", json.RawMessage(`{"title":"quantum widgets"}`)); err != nil {
+		t.Fatalf("create thing: %v", err)
+	}
+	resp, err := dana.DeclareIndex(ctx, "orders", "text", "search")
+	if err != nil {
+		t.Fatalf("declare index: %v", err)
+	}
+	if resp.Query == "" {
+		t.Fatalf("declare answered no query subject: %+v", resp)
+	}
+
+	// The supervisor places the workload; the endpoint appears once the
+	// index is caught up.
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		qr, err := dana.QueryIndex(ctx, "orders", "text", "widgets", 0, 0)
+		if err == nil && len(qr.Hits) == 1 && qr.Hits[0].Thing == "invoice-1" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("declared index never served: %v %+v", err, qr)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// Retiring the declaration takes the responder off the wire.
+	if _, err := dana.DeleteIndex(ctx, "orders", "text"); err != nil {
+		t.Fatalf("delete index: %v", err)
+	}
+	deadline = time.Now().Add(15 * time.Second)
+	for {
+		if _, err := dana.QueryIndex(ctx, "orders", "text", "widgets", 0, 0); err != nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("retired index still answers")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}

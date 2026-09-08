@@ -1,0 +1,115 @@
+package node
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/nats-io/nats.go/jetstream"
+	"github.com/nats-io/nats.go/micro"
+
+	"github.com/impire-io/chronicle/client"
+	"github.com/impire-io/chronicle/contract"
+)
+
+// handleIndexDeclare declares an index (05-indexes.md): one META key,
+// create-if-absent, so two racing declares settle without a lock. The kind
+// is checked against this node's vocabulary — write-side strictness, the
+// same split effects got in 0011; a supervisor reading a newer build's
+// declaration stays tolerant on its side.
+func (n *node) handleIndexDeclare(req micro.Request) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	var r client.IndexDeclareRequest
+	if err := json.Unmarshal(req.Data(), &r); err != nil {
+		_ = req.Error("bad-request", err.Error(), nil)
+		return
+	}
+	if err := n.requireRole(ctx, r.Principal, contract.RoleAdmin); err != nil {
+		_ = req.Error("forbidden", err.Error(), nil)
+		return
+	}
+	if err := contract.ValidateLogName(r.Log); err != nil {
+		_ = req.Error("bad-log-name", err.Error(), nil)
+		return
+	}
+	if err := contract.ValidateIndexName(r.Index); err != nil {
+		_ = req.Error("bad-index-name", err.Error(), nil)
+		return
+	}
+	if !contract.KnownIndexKind(r.Kind) {
+		_ = req.Error("bad-kind", fmt.Sprintf("kind %q is not in this node's vocabulary (search)", r.Kind), nil)
+		return
+	}
+	if _, err := n.meta.Get(ctx, contract.MetaLogConfig(r.Log)); err != nil {
+		_ = req.Error("no-such-log", fmt.Sprintf("log %q is not created", r.Log), nil)
+		return
+	}
+
+	value, err := json.Marshal(contract.IndexDeclaration{Kind: r.Kind})
+	if err != nil {
+		_ = req.Error("500", err.Error(), nil)
+		return
+	}
+	if _, err := n.meta.Create(ctx, contract.MetaIndex(r.Log, r.Index), value); err != nil {
+		if errors.Is(err, jetstream.ErrKeyExists) {
+			_ = req.Error("index-exists", fmt.Sprintf("index %q on log %q already exists", r.Index, r.Log), nil)
+			return
+		}
+		_ = req.Error("500", err.Error(), nil)
+		return
+	}
+
+	reply, err := json.Marshal(client.IndexDeclareResponse{Query: client.IndexQuerySubject(r.Log, r.Index)})
+	if err != nil {
+		_ = req.Error("500", err.Error(), nil)
+		return
+	}
+	_ = req.Respond(reply)
+}
+
+// handleIndexDelete retires an index: the META key goes and the
+// supervisor stops the workload. Derived only — nothing of record is
+// lost, and re-declaring rebuilds it by replay.
+func (n *node) handleIndexDelete(req micro.Request) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	var r client.IndexDeleteRequest
+	if err := json.Unmarshal(req.Data(), &r); err != nil {
+		_ = req.Error("bad-request", err.Error(), nil)
+		return
+	}
+	if err := n.requireRole(ctx, r.Principal, contract.RoleAdmin); err != nil {
+		_ = req.Error("forbidden", err.Error(), nil)
+		return
+	}
+	if err := contract.ValidateLogName(r.Log); err != nil {
+		_ = req.Error("bad-log-name", err.Error(), nil)
+		return
+	}
+	if err := contract.ValidateIndexName(r.Index); err != nil {
+		_ = req.Error("bad-index-name", err.Error(), nil)
+		return
+	}
+	// Get first: deleting an absent key succeeds silently in KV, and the
+	// caller deserves the honest answer.
+	if _, err := n.meta.Get(ctx, contract.MetaIndex(r.Log, r.Index)); err != nil {
+		_ = req.Error("no-such-index", fmt.Sprintf("index %q on log %q is not declared", r.Index, r.Log), nil)
+		return
+	}
+	if err := n.meta.Delete(ctx, contract.MetaIndex(r.Log, r.Index)); err != nil {
+		_ = req.Error("500", err.Error(), nil)
+		return
+	}
+
+	reply, err := json.Marshal(client.IndexDeleteResponse{Deleted: true})
+	if err != nil {
+		_ = req.Error("500", err.Error(), nil)
+		return
+	}
+	_ = req.Respond(reply)
+}
