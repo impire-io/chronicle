@@ -56,7 +56,11 @@ const IndexKindSearch = "search"
 // supervisor reading a newer build's declaration ignores it with a warning
 // (read-side tolerance) — the same split effects got in 0011.
 func KnownIndexKind(kind string) bool {
-	return kind == IndexKindSearch || kind == IndexKindGraph
+	switch kind {
+	case IndexKindSearch, IndexKindGraph, IndexKindSemantic:
+		return true
+	}
+	return false
 }
 
 // MetaPrincipal is identity.principal.<id>.

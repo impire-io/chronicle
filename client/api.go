@@ -343,3 +343,38 @@ func (c *Client) GraphWalk(ctx context.Context, log, index string, q GraphQueryR
 	q.Op = contract.GraphOpWalk
 	return request[GraphQueryRequest, GraphWalkResponse](ctx, c.nc, IndexQuerySubject(log, index), q)
 }
+
+// SemanticQueryRequest is the semantic kind's payload on the standard
+// query subject (05-indexes.md § the semantic kind).
+type SemanticQueryRequest struct {
+	Principal string `json:"principal"`
+	Text      string `json:"text"`
+	Limit     int    `json:"limit,omitempty"`
+	Offset    int    `json:"offset,omitempty"`
+}
+
+// SemanticHit names a thing, its best-chunk score, and the field the
+// meaning matched in. The index is never authority.
+type SemanticHit struct {
+	Thing string  `json:"thing"`
+	Score float64 `json:"score"`
+	Field string  `json:"field,omitempty"`
+}
+
+// SemanticQueryResponse carries the hits, best first, and the honest
+// degradation signal: how many things are folded but not yet embedded.
+type SemanticQueryResponse struct {
+	Hits       []SemanticHit `json:"hits"`
+	Total      uint64        `json:"total"`
+	Unembedded int           `json:"unembedded"`
+}
+
+// QuerySemantic searches one semantic index by meaning.
+func (c *Client) QuerySemantic(ctx context.Context, log, index, text string, limit, offset int) (SemanticQueryResponse, error) {
+	return request[SemanticQueryRequest, SemanticQueryResponse](ctx, c.nc, IndexQuerySubject(log, index), SemanticQueryRequest{
+		Principal: c.author,
+		Text:      text,
+		Limit:     limit,
+		Offset:    offset,
+	})
+}

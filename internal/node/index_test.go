@@ -2,6 +2,7 @@ package node_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -49,9 +50,18 @@ func TestIndexVerbs(t *testing.T) {
 	_, err = alice.DeclareIndex(ctx, "orders", "text", "search", nil)
 	wantServiceError(t, err, "index-exists")
 
-	// Write-side strictness: a kind without a workload is refused.
-	_, err = alice.DeclareIndex(ctx, "orders", "vec", "semantic", nil)
+	// Write-side strictness: a kind outside the vocabulary is refused.
+	_, err = alice.DeclareIndex(ctx, "orders", "holo", "holographic", nil)
 	wantServiceError(t, err, "bad-kind")
+	// Semantic is in the vocabulary (0016); its config may be absent.
+	if _, err = alice.DeclareIndex(ctx, "orders", "vec", "semantic", nil); err != nil {
+		t.Fatalf("declare semantic: %v", err)
+	}
+	// Config belongs to the kind: search refuses one, graph requires one.
+	_, err = alice.DeclareIndex(ctx, "orders", "text2", "search", json.RawMessage(`{"anything":true}`))
+	wantServiceError(t, err, "bad-config")
+	_, err = alice.DeclareIndex(ctx, "orders", "refs", "graph", nil)
+	wantServiceError(t, err, "bad-config")
 
 	// Names obey the grammar; logs must exist.
 	_, err = alice.DeclareIndex(ctx, "orders", "Bad_Name", "search", nil)

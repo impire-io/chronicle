@@ -44,11 +44,15 @@ type Placement interface {
 }
 
 // Backend starts placements — the actuator beneath the seam. Backend zero
-// is the in-process actuator; microsandbox is the first 0004 backend and
-// arrives as its own increment behind this same interface.
+// is the in-process actuator; microsandbox is the first 0004 backend
+// behind this same interface.
 type Backend interface {
 	// Name is the backend's roster identity ("inprocess", "microsandbox").
 	Name() string
+	// Supports reports whether this host can carry the kind — the bid's
+	// capability half. A semantic workload needs the install's embedding
+	// provider; a host without one stays honestly silent at auction.
+	Supports(kind string) bool
 	// Start runs one placement attempt. An error is a failed attempt,
 	// counted against the restart budget.
 	Start(ctx context.Context, spec Spec) (Placement, error)
@@ -251,7 +255,7 @@ func (e *executor) handleAuction(msg *nats.Msg) {
 	if err := json.Unmarshal(msg.Data, &r); err != nil {
 		return
 	}
-	if !e.supports(r.Kind) {
+	if !e.backend.Supports(r.Kind) {
 		return // silence is the honest non-bid
 	}
 	e.mu.Lock()
@@ -262,16 +266,6 @@ func (e *executor) handleAuction(msg *nats.Msg) {
 		return
 	}
 	_ = msg.Respond(bid)
-}
-
-// supports names backend zero's vocabulary. The microsandbox increment
-// moves this judgment into the backend.
-func (e *executor) supports(kind string) bool {
-	switch kind {
-	case contract.WorkloadKindNode, contract.WorkloadKindIndexSearch, contract.WorkloadKindIndexGraph:
-		return true
-	}
-	return false
 }
 
 // handleDelegate accepts or refuses one slot. On accept the placement
@@ -287,7 +281,7 @@ func (e *executor) handleDelegate(req micro.Request) {
 		reply, _ := json.Marshal(contract.FleetDelegateResponse{Accepted: false, Reason: reason})
 		_ = req.Respond(reply)
 	}
-	if !e.supports(r.Kind) {
+	if !e.backend.Supports(r.Kind) {
 		refuse("kind outside this backend's vocabulary")
 		return
 	}

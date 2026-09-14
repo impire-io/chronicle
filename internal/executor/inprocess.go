@@ -14,6 +14,7 @@ import (
 	"github.com/impire-io/chronicle/contract"
 	"github.com/impire-io/chronicle/internal/index/graph"
 	"github.com/impire-io/chronicle/internal/index/search"
+	"github.com/impire-io/chronicle/internal/index/semantic"
 	"github.com/impire-io/chronicle/internal/mint"
 	"github.com/impire-io/chronicle/internal/node"
 )
@@ -31,12 +32,26 @@ type InProcess struct {
 	// against chronicle-control, retried by the backend because the assign
 	// may still be landing when the placement starts.
 	Creds func(ctx context.Context, tenant, workload string) ([]byte, error)
+	// Embedding is the install's provider (0016); nil means no provider,
+	// and this host does not bid for semantic workloads.
+	Embedding *semantic.ProviderConfig
 	// Logger; nil means slog.Default.
 	Logger *slog.Logger
 }
 
 // Name is the backend's roster identity.
 func (b *InProcess) Name() string { return "inprocess" }
+
+// Supports names this host's vocabulary: semantic only with a provider.
+func (b *InProcess) Supports(kind string) bool {
+	switch kind {
+	case contract.WorkloadKindNode, contract.WorkloadKindIndexSearch, contract.WorkloadKindIndexGraph:
+		return true
+	case contract.WorkloadKindIndexSemantic:
+		return b.Embedding.Configured()
+	}
+	return false
+}
 
 // Start runs one placement: pull the creds (retrying across the
 // assign-to-fold lag), connect as the tenant's service user — the only
@@ -83,6 +98,17 @@ func (b *InProcess) Start(ctx context.Context, spec Spec) (Placement, error) {
 		if err != nil {
 			nc.Close()
 			return nil, fmt.Errorf("start graph indexer: %w", err)
+		}
+		stop = svc.Stop
+	case contract.WorkloadKindIndexSemantic:
+		if !b.Embedding.Configured() {
+			nc.Close()
+			return nil, fmt.Errorf("no embedding provider on this host")
+		}
+		svc, err := semantic.Start(startCtx, nc, semantic.Config{Log: spec.Log, Index: spec.Index, Provider: *b.Embedding, Logger: logger})
+		if err != nil {
+			nc.Close()
+			return nil, fmt.Errorf("start semantic indexer: %w", err)
 		}
 		stop = svc.Stop
 	default:
