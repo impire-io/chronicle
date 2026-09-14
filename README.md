@@ -113,9 +113,10 @@ environment (decision
 **Optional: the microsandbox backend.** By default workloads run in-process.
 To run each placement in its own microVM instead, install the
 [microsandbox](https://github.com/microsandbox/microsandbox) CLI (`msb`,
-pinned at **0.6.8**) and hand `up` the linux/arm64 guest workload — the
-`chronicle-workload_<version>_linux_arm64` artifact from the release page
-(guests are linux/arm64 no matter the host), or build it with
+pinned at **0.6.8**) and hand `up` the linux guest workload for your
+architecture — the `chronicle-workload_<version>_linux_arm64` or
+`..._linux_amd64` artifact from the release page (guests are linux in the
+host's architecture, no matter the host OS), or build both with
 `make workload-linux`:
 
 ```sh
@@ -167,8 +168,9 @@ make build   # all binaries land in bin/
 
 Pushing a `v*` tag builds and publishes a GitHub release via goreleaser
 ([release workflow](.github/workflows/release.yml)): one archive per
-platform carrying the five binaries, plus the standalone linux/arm64 guest
-workload, with the tag's version stamped into every binary (decision
+platform carrying the five binaries, plus the standalone linux guest
+workloads (amd64 and arm64), with the tag's version stamped into every
+binary (decision
 [0017](../chronicle-hq/03-DECISIONS/0017-release-flow.md)). CI runs the
 same gate as `make check` on every push and pull request. Rehearse locally
 with `make snapshot`.

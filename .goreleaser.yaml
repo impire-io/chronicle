@@ -3,9 +3,9 @@ version: 2
 project_name: chronicle
 
 # The shipped set is the whole fleet — all five binaries in every platform
-# archive, plus the standalone linux/arm64 guest workload. The matrix
-# answers to chronicle-hq decision 0017; changing it is an amendment there,
-# never a quiet edit here.
+# archive, plus the standalone linux guest workloads (amd64 and arm64). The
+# matrix answers to chronicle-hq decision 0017; changing it is an amendment
+# there, never a quiet edit here.
 #
 # {{.Version}} is the tag with the v stripped — bare semver, which the
 # NATS micro service registration requires. Dev builds stay 0.0.0-dev;
@@ -67,16 +67,17 @@ builds:
     mod_timestamp: "{{ .CommitTimestamp }}"
 
   # The guest half of the microsandbox backend: a data file copied into
-  # microVM guests, linux/arm64 no matter the host — which is why it also
-  # ships standalone below, where a darwin or windows operator can reach it
-  # without downloading an archive for a platform they do not run.
+  # microVM guests — linux in the host's architecture, no matter the host
+  # OS — which is why it also ships standalone below, where a darwin or
+  # windows operator can reach it without downloading an archive for a
+  # platform they do not run.
   - id: chronicle-workload-guest
     main: ./cmd/chronicle-workload
     binary: chronicle-workload
     env:
       - CGO_ENABLED=0
     goos: [linux]
-    goarch: [arm64]
+    goarch: [amd64, arm64]
     ldflags:
       - -s -w -X github.com/impire-io/chronicle/internal/version.Version={{.Version}}
     mod_timestamp: "{{ .CommitTimestamp }}"
@@ -93,7 +94,7 @@ archives:
       - README.md
       - LICENSE
 
-  # The standalone guest workload: a raw binary upload, still checksummed.
+  # The standalone guest workloads: raw binary uploads, still checksummed.
   - id: chronicle-workload-guest
     ids: [chronicle-workload-guest]
     name_template: "chronicle-workload_{{ .Version }}_{{ .Os }}_{{ .Arch }}"

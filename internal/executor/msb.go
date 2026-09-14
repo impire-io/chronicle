@@ -28,8 +28,8 @@ type Microsandbox struct {
 	// release flow exists; until then the image is configuration, not
 	// contract.
 	Image string
-	// WorkloadBinary is the host path of the linux/arm64
-	// chronicle-workload binary copied into every guest.
+	// WorkloadBinary is the host path of the linux chronicle-workload
+	// binary (the host's architecture) copied into every guest.
 	WorkloadBinary string
 	// HostURL is the NATS URL as the host knows it; the guest receives
 	// the same port on the msb-gateway host and resolves it itself
