@@ -7,7 +7,11 @@
 the workload contract, replicas and supervision) and
 [`03-DECISIONS/0014-the-fleet-runs-on-chronicle.md`](../../../chronicle-hq/03-DECISIONS/0014-the-fleet-runs-on-chronicle.md)
 (superseding 0013).
-**Status:** in progress on this branch ([plan.md](plan.md)).
+**Status:** implemented on this branch ([plan.md](plan.md)) — awaiting
+review and merge. Validated by a live read: `chronicle up` → mint →
+log → thing → index declare → query returns the thing with a score,
+then a restart of the same dir recovers every placement through the
+release/re-auction path and the query serves again.
 
 ## What this delivers
 
@@ -32,13 +36,13 @@ spawning goroutines from a KV watch anymore.
   (`failures`), never erasable history. `executor.update/drain/deregister`
   wait for their consumers (the multi-host increment).
 - **`chronicle-workloads`**: a micro service in the control account — the
-  fleet log's **only writer**. Serves `CHRON.API.FLEET.DISPATCH` and
+  fleet log's **only writer**. Serves `CHRON.CTRL.FLEET.DISPATCH` and
   `.STOP` (queue-grouped), folds the fleet log through the shared judge
   into `STATE_FLEET` (revision-CAS), runs the auctions, and level-scans:
   unfilled slots are auctioned, assignments are cross-checked against the
   two witnesses (executor micro liveness, backend `status`), and a
   placement that is gone is released with its reason and re-auctioned.
-- **The auction**: scatter on `CHRON.API.FLEET.AUCTION` (a plain
+- **The auction**: scatter on `CHRON.CTRL.FLEET.AUCTION` (a plain
   subscription in every executor — deliberately not a queue group),
   live-capacity bids gathered in a bounded window, delegation by direct
   request to the winner, **accept before the op lands**. Zero bids read
@@ -47,11 +51,11 @@ spawning goroutines from a KV watch anymore.
   subject, written for it by the service), bids, runs delegations through
   the `ensure/status/destroy` actuator seam, restarts its own placements
   locally with backoff (no log traffic), and reports custody events to
-  `CHRON.API.FLEET.REPORT` when a restart budget is exhausted. **Backend
+  `CHRON.CTRL.FLEET.REPORT` when a restart budget is exhausted. **Backend
   zero** is the in-process actuator: kind `node` runs `node.Start`, kind
   `index-search` runs `search.Start`, each on a connection holding that
   tenant's service user only.
-- **Credentials are a record-verified pull**: `CHRON.API.FLEET.CREDS` on
+- **Credentials are a record-verified pull**: `CHRON.CTRL.FLEET.CREDS` on
   control — the executor asks for an assigned workload's service creds;
   control verifies the assignment against `STATE_FLEET`, falling back to
   folding the workload's subject from the log's tail when the bucket
