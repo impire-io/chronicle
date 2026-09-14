@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"time"
 
 	"github.com/nats-io/nats-server/v2/server"
@@ -22,6 +23,7 @@ import (
 	"github.com/impire-io/chronicle/internal/control"
 	"github.com/impire-io/chronicle/internal/devdir"
 	"github.com/impire-io/chronicle/internal/executor"
+	"github.com/impire-io/chronicle/internal/index/semantic"
 	"github.com/impire-io/chronicle/internal/mint"
 	"github.com/impire-io/chronicle/internal/version"
 	"github.com/impire-io/chronicle/internal/workloads"
@@ -47,6 +49,9 @@ type Config struct {
 	// microsandbox backend copies into every guest; required with it,
 	// ignored otherwise. `make workload-linux` builds it.
 	WorkloadBinary string
+	// Embedding is the install's provider (0016) — nil means no provider
+	// and semantic declarations stay honestly unschedulable.
+	Embedding *semantic.ProviderConfig
 	// Logger; nil means slog.Default.
 	Logger *slog.Logger
 }
@@ -147,9 +152,10 @@ func Up(ctx context.Context, cfg Config) (*Fleet, error) {
 	switch cfg.Backend {
 	case "", BackendInProcess:
 		backend = &executor.InProcess{
-			URL:    f.URL,
-			Creds:  pull,
-			Logger: logger,
+			URL:       f.URL,
+			Creds:     pull,
+			Embedding: cfg.Embedding,
+			Logger:    logger,
 		}
 	case BackendMicrosandbox:
 		if cfg.WorkloadBinary == "" {
@@ -160,6 +166,7 @@ func Up(ctx context.Context, cfg Config) (*Fleet, error) {
 			WorkloadBinary: cfg.WorkloadBinary,
 			HostURL:        f.URL,
 			Creds:          pull,
+			Embedding:      cfg.Embedding,
 			Logger:         logger,
 		}
 	default:
@@ -267,11 +274,17 @@ func Run(ctx context.Context, args []string, out io.Writer) error {
 	port := fs.Int("port", 4222, "port for the bootstrap NATS server (-1 picks a free one)")
 	backend := fs.String("backend", BackendInProcess, "the embedded executor's backend: inprocess or microsandbox")
 	workloadBinary := fs.String("workload-binary", "", "linux/arm64 chronicle-workload for the microsandbox backend")
+	embedURL := fs.String("embedding-url", "", "OpenAI-compatible embedding endpoint for the semantic kind (key via CHRONICLE_EMBEDDING_API_KEY)")
+	embedModel := fs.String("embedding-model", "", "default embedding model for the semantic kind")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	var embedding *semantic.ProviderConfig
+	if *embedURL != "" && *embedModel != "" {
+		embedding = &semantic.ProviderConfig{BaseURL: *embedURL, Model: *embedModel, APIKey: os.Getenv("CHRONICLE_EMBEDDING_API_KEY")}
+	}
 
-	f, err := Up(ctx, Config{Dir: *dir, Port: *port, Backend: *backend, WorkloadBinary: *workloadBinary})
+	f, err := Up(ctx, Config{Dir: *dir, Port: *port, Backend: *backend, WorkloadBinary: *workloadBinary, Embedding: embedding})
 	if err != nil {
 		return err
 	}

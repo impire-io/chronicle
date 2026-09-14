@@ -4,13 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/impire-io/chronicle/client"
 	"github.com/impire-io/chronicle/internal/devdir"
 	"github.com/impire-io/chronicle/internal/fleet"
+	"github.com/impire-io/chronicle/internal/index/semantic"
 )
 
 // TestWalkingSkeleton drives the whole floor in one flow, the same one the
@@ -317,5 +321,137 @@ func TestDeclaredGraphServes(t *testing.T) {
 			t.Fatal("retired graph index still answers")
 		}
 		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// TestDeclaredSemanticServes is the semantic kind's floor (0016): with a
+// provider configured, a declaration becomes a served meaning index; the
+// reply ranks by best chunk. Without a provider, the same declaration
+// stays honestly unschedulable — recorded, no responder, no pretense.
+func TestDeclaredSemanticServes(t *testing.T) {
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Input []string `json:"input"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		type datum struct {
+			Index     int       `json:"index"`
+			Embedding []float64 `json:"embedding"`
+		}
+		var data []datum
+		for i, text := range req.Input {
+			lower := strings.ToLower(text)
+			data = append(data, datum{Index: i, Embedding: []float64{
+				float64(strings.Count(lower, "widget")),
+				float64(strings.Count(lower, "gadget")),
+				0.1,
+			}})
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": data})
+	}))
+	defer provider.Close()
+
+	dir := t.TempDir()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	f, err := fleet.Up(ctx, fleet.Config{Dir: dir, Port: -1, Embedding: &semantic.ProviderConfig{BaseURL: provider.URL, Model: "test-embed"}})
+	if err != nil {
+		t.Fatalf("up: %v", err)
+	}
+	defer f.Stop()
+
+	ctrlCreds, err := os.ReadFile(devdir.ControlCredsPath(dir))
+	if err != nil {
+		t.Fatalf("control creds: %v", err)
+	}
+	ctrl, err := client.ConnectControlCreds(f.URL, ctrlCreds)
+	if err != nil {
+		t.Fatalf("connect control: %v", err)
+	}
+	minted, err := ctrl.MintTenant(ctx, "acme", "dana")
+	ctrl.Close()
+	if err != nil {
+		t.Fatalf("mint tenant: %v", err)
+	}
+	dana, err := client.Connect(f.URL, minted.AdminCreds)
+	if err != nil {
+		t.Fatalf("connect admin: %v", err)
+	}
+	defer dana.Close()
+
+	if _, err := dana.CreateLog(ctx, "orders", ""); err != nil {
+		t.Fatalf("create log: %v", err)
+	}
+	if _, err := dana.CreateThing(ctx, "orders", "invoice-1", json.RawMessage(`{"title":"quantum widget order"}`)); err != nil {
+		t.Fatalf("create invoice-1: %v", err)
+	}
+	if _, err := dana.CreateThing(ctx, "orders", "invoice-2", json.RawMessage(`{"title":"gadget shipment"}`)); err != nil {
+		t.Fatalf("create invoice-2: %v", err)
+	}
+	if _, err := dana.DeclareIndex(ctx, "orders", "meaning", "semantic", nil); err != nil {
+		t.Fatalf("declare semantic index: %v", err)
+	}
+
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		resp, err := dana.QuerySemantic(ctx, "orders", "meaning", "widget", 0, 0)
+		if err == nil && len(resp.Hits) > 0 && resp.Hits[0].Thing == "invoice-1" && resp.Unembedded == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("declared semantic index never served: %v %+v", err, resp)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// TestSemanticWithoutProviderIsUnschedulable: the executor does not bid
+// for a kind its install cannot carry, so the declaration is recorded
+// and the workload waits — no responder, no failing placements, and the
+// moment a provisioned executor exists the record is already there.
+func TestSemanticWithoutProviderIsUnschedulable(t *testing.T) {
+	dir := t.TempDir()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	f, err := fleet.Up(ctx, fleet.Config{Dir: dir, Port: -1})
+	if err != nil {
+		t.Fatalf("up: %v", err)
+	}
+	defer f.Stop()
+
+	ctrlCreds, err := os.ReadFile(devdir.ControlCredsPath(dir))
+	if err != nil {
+		t.Fatalf("control creds: %v", err)
+	}
+	ctrl, err := client.ConnectControlCreds(f.URL, ctrlCreds)
+	if err != nil {
+		t.Fatalf("connect control: %v", err)
+	}
+	minted, err := ctrl.MintTenant(ctx, "acme", "dana")
+	ctrl.Close()
+	if err != nil {
+		t.Fatalf("mint tenant: %v", err)
+	}
+	dana, err := client.Connect(f.URL, minted.AdminCreds)
+	if err != nil {
+		t.Fatalf("connect admin: %v", err)
+	}
+	defer dana.Close()
+
+	if _, err := dana.CreateLog(ctx, "orders", ""); err != nil {
+		t.Fatalf("create log: %v", err)
+	}
+	if _, err := dana.DeclareIndex(ctx, "orders", "meaning", "semantic", nil); err != nil {
+		t.Fatalf("declare semantic index: %v", err)
+	}
+	// A few scan ticks pass; the declaration stands, nothing answers.
+	time.Sleep(2 * time.Second)
+	if _, err := dana.QuerySemantic(ctx, "orders", "meaning", "widget", 0, 0); err == nil {
+		t.Fatal("an unprovisioned fleet answered a semantic query")
 	}
 }

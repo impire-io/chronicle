@@ -10,7 +10,9 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/impire-io/chronicle/contract"
 	"github.com/impire-io/chronicle/internal/guestnet"
+	"github.com/impire-io/chronicle/internal/index/semantic"
 )
 
 // Microsandbox is the first 0004 backend (06-scheduler.md § backends):
@@ -41,12 +43,28 @@ type Microsandbox struct {
 	StageDir string
 	// MSB is the msb binary; empty means "msb" on PATH.
 	MSB string
+	// Embedding is the install's provider (0016); nil means no provider,
+	// and this host does not bid for semantic workloads. The key travels
+	// the secret channel: staged beside the creds, copied into the
+	// rootfs, never env.
+	Embedding *semantic.ProviderConfig
 	// Logger; nil means slog.Default.
 	Logger *slog.Logger
 }
 
 // Name is the backend's roster identity.
 func (b *Microsandbox) Name() string { return "microsandbox" }
+
+// Supports names this host's vocabulary: semantic only with a provider.
+func (b *Microsandbox) Supports(kind string) bool {
+	switch kind {
+	case contract.WorkloadKindNode, contract.WorkloadKindIndexSearch, contract.WorkloadKindIndexGraph:
+		return true
+	case contract.WorkloadKindIndexSemantic:
+		return b.Embedding.Configured()
+	}
+	return false
+}
 
 // DefaultImage is the base the walking skeleton boots: small, cached
 // after the first pull, enough for a static binary.
@@ -65,26 +83,42 @@ func sandboxName(tenant, workload string) string {
 	return "chron-" + tenant + "-" + workload
 }
 
+// guestEmbedKeyPath is where a semantic placement's provider key lands —
+// the second secret on the same channel as the creds.
+const guestEmbedKeyPath = "/embedding.key"
+
 // msbRunArgs builds the run invocation — pure, so the pinned surface is
-// unit-tested without the substrate.
-func msbRunArgs(image, name, binary, stagedCreds, guestURL string, spec Spec) []string {
+// unit-tested without the substrate. stagedKey is empty for kinds that
+// carry no provider secret.
+func msbRunArgs(image, name, binary, stagedCreds, stagedKey, guestURL string, spec Spec, embed *semantic.ProviderConfig) []string {
 	args := []string{
 		"run", image,
 		"--name", name,
 		"--net", "host",
 		"--copy-file", binary + ":" + guestBinaryPath,
 		"--copy-file", stagedCreds + ":" + guestCredsPath,
+	}
+	if stagedKey != "" {
+		args = append(args, "--copy-file", stagedKey+":"+guestEmbedKeyPath)
+	}
+	args = append(args,
 		"--",
 		guestBinaryPath,
 		"--kind", spec.Kind,
 		"--url", guestURL,
 		"--creds", guestCredsPath,
-	}
+	)
 	if spec.Log != "" {
 		args = append(args, "--log", spec.Log)
 	}
 	if spec.Index != "" {
 		args = append(args, "--index", spec.Index)
+	}
+	if spec.Kind == contract.WorkloadKindIndexSemantic && embed != nil {
+		args = append(args, "--embedding-url", embed.BaseURL, "--embedding-model", embed.Model)
+		if stagedKey != "" {
+			args = append(args, "--embedding-key-file", guestEmbedKeyPath)
+		}
 	}
 	return args
 }
@@ -136,6 +170,14 @@ func (b *Microsandbox) Start(ctx context.Context, spec Spec) (Placement, error) 
 		_ = os.RemoveAll(stage)
 		return nil, fmt.Errorf("stage creds: %w", err)
 	}
+	stagedKey := ""
+	if spec.Kind == contract.WorkloadKindIndexSemantic && b.Embedding.Configured() && b.Embedding.APIKey != "" {
+		stagedKey = filepath.Join(stage, "embedding.key")
+		if err := os.WriteFile(stagedKey, []byte(b.Embedding.APIKey), 0o600); err != nil {
+			_ = os.RemoveAll(stage)
+			return nil, fmt.Errorf("stage embedding key: %w", err)
+		}
+	}
 
 	gURL, err := guestURL(b.HostURL)
 	if err != nil {
@@ -151,7 +193,7 @@ func (b *Microsandbox) Start(ctx context.Context, spec Spec) (Placement, error) 
 	rmCancel()
 
 	runCtx, cancel := context.WithCancel(ctx)
-	cmd := exec.CommandContext(runCtx, msb, msbRunArgs(image, name, b.WorkloadBinary, stagedCreds, gURL, spec)...)
+	cmd := exec.CommandContext(runCtx, msb, msbRunArgs(image, name, b.WorkloadBinary, stagedCreds, stagedKey, gURL, spec, b.Embedding)...)
 	if err := cmd.Start(); err != nil {
 		cancel()
 		_ = os.RemoveAll(stage)

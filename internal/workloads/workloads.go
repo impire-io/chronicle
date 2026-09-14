@@ -323,7 +323,7 @@ func (s *service) recordDispatch(ctx context.Context, r contract.FleetDispatchRe
 		return zero, "bad-workload", err.Error()
 	}
 	switch r.Kind {
-	case contract.WorkloadKindNode, contract.WorkloadKindIndexSearch, contract.WorkloadKindIndexGraph:
+	case contract.WorkloadKindNode, contract.WorkloadKindIndexSearch, contract.WorkloadKindIndexGraph, contract.WorkloadKindIndexSemantic:
 	default:
 		return zero, "bad-kind", fmt.Sprintf("kind %q is not in this build's vocabulary", r.Kind)
 	}
@@ -587,6 +587,8 @@ func indexWorkloadKind(indexKind string) (string, bool) {
 		return contract.WorkloadKindIndexSearch, true
 	case contract.IndexKindGraph:
 		return contract.WorkloadKindIndexGraph, true
+	case contract.IndexKindSemantic:
+		return contract.WorkloadKindIndexSemantic, true
 	}
 	return "", false
 }

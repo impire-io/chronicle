@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -22,6 +23,7 @@ import (
 	"github.com/impire-io/chronicle/internal/guestnet"
 	"github.com/impire-io/chronicle/internal/index/graph"
 	"github.com/impire-io/chronicle/internal/index/search"
+	"github.com/impire-io/chronicle/internal/index/semantic"
 	"github.com/impire-io/chronicle/internal/node"
 	"github.com/impire-io/chronicle/internal/version"
 )
@@ -39,6 +41,9 @@ func run() error {
 	index := flag.String("index", "", "the index name (index kinds only)")
 	url := flag.String("url", "nats://127.0.0.1:4222", "NATS url; host msb-gateway resolves to the guest's default gateway")
 	creds := flag.String("creds", "", "the tenant's service-user credentials (required)")
+	embedURL := flag.String("embedding-url", "", "OpenAI-compatible embedding endpoint (semantic kind)")
+	embedModel := flag.String("embedding-model", "", "embedding model (semantic kind)")
+	embedKeyFile := flag.String("embedding-key-file", "", "file carrying the provider key (semantic kind)")
 	flag.Parse()
 	if *creds == "" {
 		return fmt.Errorf("--creds is required")
@@ -78,6 +83,23 @@ func run() error {
 			return fmt.Errorf("kind %s needs --log and --index", *kind)
 		}
 		svc, err := graph.Start(startCtx, c.Conn(), graph.Config{Log: *logName, Index: *index})
+		if err != nil {
+			return err
+		}
+		stopWorkload = svc.Stop
+	case contract.WorkloadKindIndexSemantic:
+		if *logName == "" || *index == "" {
+			return fmt.Errorf("kind %s needs --log and --index", *kind)
+		}
+		provider := semantic.ProviderConfig{BaseURL: *embedURL, Model: *embedModel}
+		if *embedKeyFile != "" {
+			key, err := os.ReadFile(*embedKeyFile)
+			if err != nil {
+				return fmt.Errorf("read embedding key: %w", err)
+			}
+			provider.APIKey = strings.TrimSpace(string(key))
+		}
+		svc, err := semantic.Start(startCtx, c.Conn(), semantic.Config{Log: *logName, Index: *index, Provider: provider})
 		if err != nil {
 			return err
 		}

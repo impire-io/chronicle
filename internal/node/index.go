@@ -43,7 +43,7 @@ func (n *node) handleIndexDeclare(req micro.Request) {
 		return
 	}
 	if !contract.KnownIndexKind(r.Kind) {
-		_ = req.Error("bad-kind", fmt.Sprintf("kind %q is not in this node's vocabulary (search, graph)", r.Kind), nil)
+		_ = req.Error("bad-kind", fmt.Sprintf("kind %q is not in this node's vocabulary (search, graph, semantic)", r.Kind), nil)
 		return
 	}
 	// Config belongs to the kind — write-side strict (0015): graph
@@ -51,6 +51,11 @@ func (n *node) handleIndexDeclare(req micro.Request) {
 	switch r.Kind {
 	case contract.IndexKindGraph:
 		if _, err := contract.ParseGraphConfig(r.Config); err != nil {
+			_ = req.Error("bad-config", err.Error(), nil)
+			return
+		}
+	case contract.IndexKindSemantic:
+		if _, err := contract.ParseSemanticConfig(r.Config); err != nil {
 			_ = req.Error("bad-config", err.Error(), nil)
 			return
 		}

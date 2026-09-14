@@ -57,6 +57,11 @@ func Run(ctx context.Context, args []string, out io.Writer) error {
 			return indexQuery(ctx, args[2:], out)
 		}
 		return usage(out)
+	case "semantic":
+		if len(args) >= 2 && args[1] == "query" {
+			return semanticQuery(ctx, args[2:], out)
+		}
+		return usage(out)
 	case "graph":
 		if len(args) >= 2 && args[1] == "neighbors" {
 			return graphNeighbors(ctx, args[2:], out)
@@ -88,6 +93,7 @@ func usage(out io.Writer) error {
   chronicle index declare <log> <index> --creds F [--kind K] [--config JSON]
   chronicle index delete <log> <index> --creds F
   chronicle index query <log> <index> [query...] --creds F [--limit N] [--offset N]
+  chronicle semantic query <log> <index> <text...> --creds F [--limit N] [--offset N]
   chronicle graph neighbors <log> <index> <thing> --creds F [--direction D] [--label L] [--limit N] [--offset N]
   chronicle graph walk <log> <index> <thing> --creds F [--direction D] [--labels a,b] [--depth N] [--limit N]
   chronicle append <log> <thing> <op.type> --creds F [--payload JSON] [--parents a,b]
@@ -546,6 +552,43 @@ func graphWalk(ctx context.Context, args []string, out io.Writer) error {
 	}
 	if resp.Truncated {
 		fmt.Fprint(out, " (truncated)")
+	}
+	fmt.Fprintln(out)
+	return nil
+}
+
+func semanticQuery(ctx context.Context, args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("chronicle semantic query", flag.ContinueOnError)
+	fs.SetOutput(out)
+	cf := addConnectFlags(fs)
+	limit := fs.Int("limit", 0, "max hits")
+	offset := fs.Int("offset", 0, "skip hits")
+	pos, err := parseArgs(fs, args)
+	if err != nil {
+		return err
+	}
+	if len(pos) < 3 {
+		return fmt.Errorf("semantic query: <log> <index> <text...>")
+	}
+	c, err := cf.dial()
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	resp, err := c.QuerySemantic(ctx, pos[0], pos[1], strings.Join(pos[2:], " "), *limit, *offset)
+	if err != nil {
+		return err
+	}
+	for _, h := range resp.Hits {
+		fmt.Fprintf(out, "%s\t%.4f", h.Thing, h.Score)
+		if h.Field != "" {
+			fmt.Fprintf(out, "\t%s", h.Field)
+		}
+		fmt.Fprintln(out)
+	}
+	fmt.Fprintf(out, "%d of %d", len(resp.Hits), resp.Total)
+	if resp.Unembedded > 0 {
+		fmt.Fprintf(out, " (%d not yet embedded)", resp.Unembedded)
 	}
 	fmt.Fprintln(out)
 	return nil

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/impire-io/chronicle/internal/executor"
+	"github.com/impire-io/chronicle/internal/index/semantic"
 	"github.com/impire-io/chronicle/internal/mint"
 	"github.com/impire-io/chronicle/internal/version"
 )
@@ -35,6 +36,8 @@ func run() error {
 	backendName := flag.String("backend", "microsandbox", "this host's backend: inprocess or microsandbox")
 	workloadBinary := flag.String("workload-binary", "", "linux/arm64 chronicle-workload for the microsandbox backend")
 	image := flag.String("image", "", "base image for microsandbox placements (default alpine)")
+	embedURL := flag.String("embedding-url", "", "OpenAI-compatible embedding endpoint for the semantic kind (key via CHRONICLE_EMBEDDING_API_KEY)")
+	embedModel := flag.String("embedding-model", "", "default embedding model for the semantic kind")
 	flag.Parse()
 	if *creds == "" || *id == "" {
 		return fmt.Errorf("--creds and --id are required")
@@ -53,10 +56,14 @@ func run() error {
 	pull := func(ctx context.Context, tenant, workload string) ([]byte, error) {
 		return executor.PullCreds(ctx, nc, *id, tenant, workload)
 	}
+	var embedding *semantic.ProviderConfig
+	if *embedURL != "" && *embedModel != "" {
+		embedding = &semantic.ProviderConfig{BaseURL: *embedURL, Model: *embedModel, APIKey: os.Getenv("CHRONICLE_EMBEDDING_API_KEY")}
+	}
 	var backend executor.Backend
 	switch *backendName {
 	case "inprocess":
-		backend = &executor.InProcess{URL: *url, Creds: pull}
+		backend = &executor.InProcess{URL: *url, Creds: pull, Embedding: embedding}
 	case "microsandbox":
 		if *workloadBinary == "" {
 			return fmt.Errorf("the microsandbox backend needs --workload-binary (make workload-linux builds it)")
@@ -66,6 +73,7 @@ func run() error {
 			HostURL:        *url,
 			Image:          *image,
 			Creds:          pull,
+			Embedding:      embedding,
 		}
 	default:
 		return fmt.Errorf("backend %q is not in this build's vocabulary (inprocess, microsandbox)", *backendName)

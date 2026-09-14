@@ -49,9 +49,10 @@ const (
 // The workload kinds backend zero runs. The kind names the materializer;
 // the OCI image arrives with the first 0004 backend.
 const (
-	WorkloadKindNode        = "node"
-	WorkloadKindIndexSearch = "index-search"
-	WorkloadKindIndexGraph  = "index-graph"
+	WorkloadKindNode          = "node"
+	WorkloadKindIndexSearch   = "index-search"
+	WorkloadKindIndexGraph    = "index-graph"
+	WorkloadKindIndexSemantic = "index-semantic"
 )
 
 // WorkloadNodeName is the one node workload's name within its tenant.

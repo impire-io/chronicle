@@ -65,8 +65,9 @@ type Projection struct {
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 
-	mu      sync.Mutex
-	current jetstream.ConsumeContext
+	mu         sync.Mutex
+	current    jetstream.ConsumeContext
+	currentRun Run
 }
 
 // Start folds the log and returns only once the first pass has caught up
@@ -111,18 +112,20 @@ func Start(ctx context.Context, nc *nats.Conn, cfg Config) (*Projection, error) 
 		return nil, err
 	}
 
-	cc, ready, err := p.startRun(ctx)
+	cc, ready, run, err := p.startRun(ctx)
 	if err != nil {
 		cancel()
 		p.wg.Wait()
 		return nil, err
 	}
 	p.current = cc
+	p.currentRun = run
 	select {
 	case <-ready:
 	case <-ctx.Done():
 		cancel()
 		cc.Stop()
+		closeRun(run)
 		p.wg.Wait()
 		return nil, fmt.Errorf("catching up with the log: %w", ctx.Err())
 	}
@@ -147,10 +150,21 @@ func (p *Projection) Stop() {
 	p.wg.Wait()
 	p.mu.Lock()
 	cc := p.current
+	run := p.currentRun
 	p.current = nil
+	p.currentRun = nil
 	p.mu.Unlock()
 	if cc != nil {
 		cc.Stop()
+	}
+	closeRun(run)
+}
+
+// closeRun releases an engine run with a lifecycle — a retired run's
+// background work (an embed worker) must not outlive its retirement.
+func closeRun(r Run) {
+	if c, ok := r.(interface{ Close() error }); ok {
+		_ = c.Close()
 	}
 }
 
@@ -194,14 +208,15 @@ type thingState struct {
 // the fold is caught up — the head may be another family's message. When
 // the measured backlog reaches zero the pass's run is swapped into
 // serving and ready closes; the consumer keeps running as the live tail.
-func (p *Projection) startRun(ctx context.Context) (jetstream.ConsumeContext, chan struct{}, error) {
+func (p *Projection) startRun(ctx context.Context) (jetstream.ConsumeContext, chan struct{}, Run, error) {
 	run, err := p.cfg.NewRun()
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	sinfo, err := p.stream.Info(ctx, jetstream.WithSubjectFilter(contract.OpsFilter(p.cfg.Log)))
 	if err != nil {
-		return nil, nil, fmt.Errorf("stream info: %w", err)
+		closeRun(run)
+		return nil, nil, nil, fmt.Errorf("stream info: %w", err)
 	}
 	var pending uint64
 	for _, n := range sinfo.State.Subjects {
@@ -218,13 +233,15 @@ func (p *Projection) startRun(ctx context.Context) (jetstream.ConsumeContext, ch
 		FilterSubjects: []string{contract.OpsFilter(p.cfg.Log)},
 	})
 	if err != nil {
-		return nil, nil, fmt.Errorf("ordered consumer: %w", err)
+		closeRun(run)
+		return nil, nil, nil, fmt.Errorf("ordered consumer: %w", err)
 	}
 	cc, err := cons.Consume(ps.apply)
 	if err != nil {
-		return nil, nil, fmt.Errorf("consume: %w", err)
+		closeRun(run)
+		return nil, nil, nil, fmt.Errorf("consume: %w", err)
 	}
-	return cc, ps.ready, nil
+	return cc, ps.ready, run, nil
 }
 
 // apply folds one message into the pass. Ordered consumers redeliver on
@@ -377,7 +394,7 @@ func (p *Projection) manage() {
 			return
 		case <-p.rebuildCh:
 			ctx, cancel := context.WithTimeout(p.runCtx, time.Minute)
-			cc, ready, err := p.startRun(ctx)
+			cc, ready, run, err := p.startRun(ctx)
 			cancel()
 			if err != nil {
 				p.logger.Warn(p.cfg.Kind+": rebuild failed; serving the previous fold", "log", p.cfg.Log, "index", p.cfg.Index, "err", err)
@@ -387,13 +404,17 @@ func (p *Projection) manage() {
 			case <-ready:
 				p.mu.Lock()
 				old := p.current
+				oldRun := p.currentRun
 				p.current = cc
+				p.currentRun = run
 				p.mu.Unlock()
 				if old != nil {
 					old.Stop()
 				}
+				closeRun(oldRun)
 			case <-p.runCtx.Done():
 				cc.Stop()
+				closeRun(run)
 				return
 			}
 		}
