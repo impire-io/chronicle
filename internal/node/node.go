@@ -33,6 +33,23 @@ type Config struct {
 	// effect gate allows (04-fleet.md § the node's duties). Zero means
 	// DefaultRollupEvery.
 	RollupEvery time.Duration
+	// Indexes reports the node's index slice to the dispatch surface
+	// (06-scheduler.md § the dispatch surface): the same handler that
+	// writes the META key reports the workload, and boot re-derives the
+	// whole slice from META — the level-triggered healing. Nil means no
+	// scheduling exists (tests exercising the node alone).
+	Indexes IndexReporter
+}
+
+// IndexReporter is the node's half of the dispatch surface. In the
+// in-process composition the transport is wired directly by the
+// composition root; the tenant-stamped account import is the multi-host
+// increment's transport for the same calls.
+type IndexReporter interface {
+	// IndexDeclared asks for the index's materializer to exist.
+	IndexDeclared(ctx context.Context, log, index, kind string) error
+	// IndexDeleted retires the materializer.
+	IndexDeleted(ctx context.Context, log, index string) error
 }
 
 // DefaultRollupEvery keeps rollup a deliberate, occasional act (pattern
@@ -59,6 +76,7 @@ type node struct {
 	meta        jetstream.KeyValue
 	logger      *slog.Logger
 	rollupEvery time.Duration
+	indexes     IndexReporter
 
 	foldCtx context.Context
 	wg      *sync.WaitGroup
@@ -114,6 +132,7 @@ func Start(ctx context.Context, nc *nats.Conn, cfg Config) (*Node, error) {
 		meta:        meta,
 		logger:      logger,
 		rollupEvery: rollupEvery,
+		indexes:     cfg.Indexes,
 		foldCtx:     foldCtx,
 		wg:          &sync.WaitGroup{},
 		folds:       map[string]*foldRun{},
@@ -135,6 +154,16 @@ func Start(ctx context.Context, nc *nats.Conn, cfg Config) (*Node, error) {
 	}
 	n.wg.Add(1)
 	go n.rollupTimer()
+
+	// Re-derive the index slice from META: declarations are the truth, and
+	// re-reporting them is idempotent at the dispatch surface — skew
+	// between META and the record heals on every boot (06-scheduler.md).
+	if cfg.Indexes != nil {
+		if err := n.rederiveIndexes(ctx); err != nil {
+			cancel()
+			return nil, fmt.Errorf("re-derive index slice: %w", err)
+		}
+	}
 
 	svc, err := micro.AddService(nc, micro.Config{
 		Name:        "chronicle-node",

@@ -59,26 +59,11 @@ func Start(nc *nats.Conn, cfg Config) (micro.Service, error) {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
-	c := &control{cfg: cfg}
-
-	if cfg.OnTenant != nil {
-		entries, err := os.ReadDir(cfg.AccountsDir)
-		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			return nil, fmt.Errorf("read accounts dir: %w", err)
-		}
-		for _, e := range entries {
-			if !e.IsDir() {
-				continue
-			}
-			creds, err := os.ReadFile(filepath.Join(cfg.AccountsDir, e.Name(), "service.creds"))
-			if err != nil {
-				return nil, fmt.Errorf("tenant %s: read service creds: %w", e.Name(), err)
-			}
-			if err := cfg.OnTenant(e.Name(), creds); err != nil {
-				return nil, fmt.Errorf("tenant %s: %w", e.Name(), err)
-			}
-		}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		return nil, fmt.Errorf("jetstream: %w", err)
 	}
+	c := &control{cfg: cfg, js: js}
 
 	svc, err := micro.AddService(nc, micro.Config{
 		Name:        "chronicle-control",
@@ -93,15 +78,49 @@ func Start(nc *nats.Conn, cfg Config) (micro.Service, error) {
 		_ = svc.Stop()
 		return nil, fmt.Errorf("add tenant-mint endpoint: %w", err)
 	}
+	if err := svc.AddEndpoint("fleet-creds", micro.HandlerFunc(c.handleFleetCreds),
+		micro.WithEndpointSubject(contract.FleetCredsSubject)); err != nil {
+		_ = svc.Stop()
+		return nil, fmt.Errorf("add fleet-creds endpoint: %w", err)
+	}
 	if err := nc.FlushTimeout(5 * time.Second); err != nil {
 		_ = svc.Stop()
 		return nil, fmt.Errorf("flush endpoint subscriptions: %w", err)
+	}
+
+	// The restart replay runs with the endpoints already serving: placing a
+	// tenant's node goes through the dispatch surface and the creds pull,
+	// and the creds pull lands right here — a replay before registration
+	// would wait on an endpoint that cannot appear until the replay ends.
+	if cfg.OnTenant != nil {
+		entries, err := os.ReadDir(cfg.AccountsDir)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			_ = svc.Stop()
+			return nil, fmt.Errorf("read accounts dir: %w", err)
+		}
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			creds, err := os.ReadFile(filepath.Join(cfg.AccountsDir, e.Name(), "service.creds"))
+			if err != nil {
+				_ = svc.Stop()
+				return nil, fmt.Errorf("tenant %s: read service creds: %w", e.Name(), err)
+			}
+			if err := cfg.OnTenant(e.Name(), creds); err != nil {
+				_ = svc.Stop()
+				return nil, fmt.Errorf("tenant %s: %w", e.Name(), err)
+			}
+		}
 	}
 	return svc, nil
 }
 
 type control struct {
 	cfg Config
+	// js is the control account's JetStream view — the fleet log and
+	// STATE_FLEET live there, and the creds pull verifies against them.
+	js jetstream.JetStream
 }
 
 func (c *control) handleMint(req micro.Request) {
