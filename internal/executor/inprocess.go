@@ -49,7 +49,7 @@ func (b *InProcess) Start(ctx context.Context, spec Spec) (Placement, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	creds, err := b.pullCreds(ctx, spec.Tenant, spec.Workload)
+	creds, err := pullCredsWithRetry(ctx, b.Creds, spec.Tenant, spec.Workload)
 	if err != nil {
 		return nil, fmt.Errorf("pull creds for %s/%s: %w", spec.Tenant, spec.Workload, err)
 	}
@@ -88,33 +88,6 @@ func (b *InProcess) Start(ctx context.Context, spec Spec) (Placement, error) {
 		return nil, fmt.Errorf("kind %q outside backend zero's vocabulary", spec.Kind)
 	}
 	return &inProcessPlacement{stop: stop, nc: nc, done: done}, nil
-}
-
-// pullCreds is the record-verified pull with the client half of the
-// fold-lag answer: the assign lands after the delegation accept, so the
-// first asks may find the record not yet moved — retry briefly before
-// calling it a failed attempt.
-func (b *InProcess) pullCreds(ctx context.Context, tenant, workload string) ([]byte, error) {
-	if b.Creds == nil {
-		return nil, errors.New("backend zero has no creds pull wired")
-	}
-	deadline := time.Now().Add(10 * time.Second)
-	var lastErr error
-	for {
-		creds, err := b.Creds(ctx, tenant, workload)
-		if err == nil {
-			return creds, nil
-		}
-		lastErr = err
-		if time.Now().After(deadline) || ctx.Err() != nil {
-			return nil, lastErr
-		}
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(200 * time.Millisecond):
-		}
-	}
 }
 
 type inProcessPlacement struct {
