@@ -6,7 +6,13 @@
 (§ the semantic kind) and
 [`03-DECISIONS/0016-the-semantic-kind.md`](../../../chronicle-hq/03-DECISIONS/0016-the-semantic-kind.md)
 (the provider deviation, defended).
-**Status:** in progress on this branch ([plan.md](plan.md)).
+**Status:** implemented on this branch ([plan.md](plan.md)) — awaiting
+review and merge. Live read against local Ollama (nomic-embed-text):
+three notes with disjoint vocabularies, and every query matched by
+meaning alone — "cooking dinner" found the pasta recipe, "container
+orchestration crash" the kubernetes OOM note, "company earnings" the
+financial report — through the full path: declaration → bridge →
+auction → placement → provider → best-chunk cosine.
 
 ## What this delivers
 
