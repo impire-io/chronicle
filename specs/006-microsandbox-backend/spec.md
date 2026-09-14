@@ -7,7 +7,17 @@
 and [`03-DECISIONS/0014-the-fleet-runs-on-chronicle.md`](../../../chronicle-hq/03-DECISIONS/0014-the-fleet-runs-on-chronicle.md)
 (part 7: microsandbox pinned pre-1.0, the walking-skeleton slice as its
 maturity verification).
-**Status:** in progress on this branch ([plan.md](plan.md)).
+**Status:** implemented on this branch ([plan.md](plan.md)) — awaiting
+review and merge. The maturity verification ran live on the dev host
+(msb 0.6.8, macOS/HVF): mint booted `chron-acme-node` as a microVM (creds
+pulled record-verified, host NATS reached through the per-sandbox
+gateway), the declared index brought `chron-acme-index-orders-text` up
+beside it and the query answered `invoice-1 0.2170` from inside the
+guest, `msb stop` on the node's sandbox was restarted by the executor's
+budget within a second (attempt 1), and deleting the declaration retired
+the indexer's microVM. One teardown nit observed and accepted: a
+SIGTERM'd composition can leave the last sandbox's stopped record behind
+— the pre-start `msb rm` makes it harmless to every successor.
 
 ## What this delivers
 
