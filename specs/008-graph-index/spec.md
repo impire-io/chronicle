@@ -6,7 +6,13 @@
 (§ the declaration: `{kind, config?}`; § the graph kind; § the query
 surface) and
 [`03-DECISIONS/0015-the-graph-kind.md`](../../../chronicle-hq/03-DECISIONS/0015-the-graph-kind.md).
-**Status:** in progress on this branch ([plan.md](plan.md)).
+**Status:** implemented on this branch ([plan.md](plan.md)) — awaiting
+review and merge. Live read: `chronicle up` → mint → schema with a
+merge effect → two invoices referencing a customer and a product line →
+`index declare --kind graph --config …` → neighbors answers both
+in-edges, walk finds customer and product at depth 1 (the array path
+extracted), an append moving the reference rewires the edge on the live
+tail. Search's tests run unchanged on the extracted spine.
 
 ## What this delivers
 
