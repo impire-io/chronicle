@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/impire-io/chronicle/client"
+	"github.com/impire-io/chronicle/contract"
 	"github.com/impire-io/chronicle/internal/devdir"
 )
 
@@ -56,6 +57,14 @@ func Run(ctx context.Context, args []string, out io.Writer) error {
 			return indexQuery(ctx, args[2:], out)
 		}
 		return usage(out)
+	case "graph":
+		if len(args) >= 2 && args[1] == "neighbors" {
+			return graphNeighbors(ctx, args[2:], out)
+		}
+		if len(args) >= 2 && args[1] == "walk" {
+			return graphWalk(ctx, args[2:], out)
+		}
+		return usage(out)
 	case "append":
 		return appendOp(ctx, args[1:], out)
 	case "state":
@@ -76,9 +85,11 @@ func usage(out io.Writer) error {
   chronicle schema set <log> <op.type> --creds F --schema JSON | --file F [--effect E]
   chronicle thing create <log> <thing> --creds F [--state JSON]
   chronicle thing rollup <log> <thing> --creds F
-  chronicle index declare <log> <index> --creds F [--kind search]
+  chronicle index declare <log> <index> --creds F [--kind K] [--config JSON]
   chronicle index delete <log> <index> --creds F
   chronicle index query <log> <index> [query...] --creds F [--limit N] [--offset N]
+  chronicle graph neighbors <log> <index> <thing> --creds F [--direction D] [--label L] [--limit N] [--offset N]
+  chronicle graph walk <log> <index> <thing> --creds F [--direction D] [--labels a,b] [--depth N] [--limit N]
   chronicle append <log> <thing> <op.type> --creds F [--payload JSON] [--parents a,b]
   chronicle state <log> <thing> --creds F
   chronicle replay <log> <thing> --creds F
@@ -305,6 +316,7 @@ func indexDeclare(ctx context.Context, args []string, out io.Writer) error {
 	fs.SetOutput(out)
 	cf := addConnectFlags(fs)
 	kind := fs.String("kind", "search", "index kind")
+	config := fs.String("config", "", "kind config as JSON (graph: edge rules)")
 	pos, err := parseArgs(fs, args)
 	if err != nil {
 		return err
@@ -312,12 +324,16 @@ func indexDeclare(ctx context.Context, args []string, out io.Writer) error {
 	if len(pos) != 2 {
 		return fmt.Errorf("index declare: <log> <index>")
 	}
+	var cfgRaw json.RawMessage
+	if *config != "" {
+		cfgRaw = json.RawMessage(*config)
+	}
 	c, err := cf.dial()
 	if err != nil {
 		return err
 	}
 	defer c.Close()
-	resp, err := c.DeclareIndex(ctx, pos[0], pos[1], *kind)
+	resp, err := c.DeclareIndex(ctx, pos[0], pos[1], *kind, cfgRaw)
 	if err != nil {
 		return err
 	}
@@ -455,5 +471,82 @@ func replay(ctx context.Context, args []string, out io.Writer) error {
 	for _, op := range ops {
 		fmt.Fprintf(out, "seq %d  %s  by %s  op %s\n  %s\n", op.Seq, op.Type, op.Author, op.ID, op.Payload)
 	}
+	return nil
+}
+
+func graphNeighbors(ctx context.Context, args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("chronicle graph neighbors", flag.ContinueOnError)
+	fs.SetOutput(out)
+	cf := addConnectFlags(fs)
+	direction := fs.String("direction", "out", "out, in, or both")
+	label := fs.String("label", "", "filter to one edge label")
+	limit := fs.Int("limit", 0, "max edges")
+	offset := fs.Int("offset", 0, "skip edges")
+	pos, err := parseArgs(fs, args)
+	if err != nil {
+		return err
+	}
+	if len(pos) != 3 {
+		return fmt.Errorf("graph neighbors: <log> <index> <thing>")
+	}
+	c, err := cf.dial()
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	resp, err := c.GraphNeighbors(ctx, pos[0], pos[1], client.GraphQueryRequest{
+		Thing: pos[2], Direction: *direction, Label: *label, Limit: *limit, Offset: *offset,
+	})
+	if err != nil {
+		return err
+	}
+	for _, e := range resp.Edges {
+		fmt.Fprintf(out, "%s -[%s]-> %s\n", e.From, e.Label, e.To)
+	}
+	fmt.Fprintf(out, "%d of %d\n", len(resp.Edges), resp.Total)
+	return nil
+}
+
+func graphWalk(ctx context.Context, args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("chronicle graph walk", flag.ContinueOnError)
+	fs.SetOutput(out)
+	cf := addConnectFlags(fs)
+	direction := fs.String("direction", "out", "out, in, or both")
+	labels := fs.String("labels", "", "comma-separated traversable labels")
+	depth := fs.Int("depth", 1, "walk depth (capped)")
+	limit := fs.Int("limit", 0, "max things")
+	pos, err := parseArgs(fs, args)
+	if err != nil {
+		return err
+	}
+	if len(pos) != 3 {
+		return fmt.Errorf("graph walk: <log> <index> <thing>")
+	}
+	var labelList []string
+	if *labels != "" {
+		labelList = strings.Split(*labels, ",")
+	}
+	c, err := cf.dial()
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	resp, err := c.GraphWalk(ctx, pos[0], pos[1], client.GraphQueryRequest{
+		Thing: pos[2], Direction: *direction, Labels: labelList, Depth: *depth, Limit: *limit,
+	})
+	if err != nil {
+		return err
+	}
+	for _, v := range resp.Things {
+		fmt.Fprintf(out, "%s\tdepth %d\tvia %s\n", v.Thing, v.Depth, v.Via)
+	}
+	fmt.Fprintf(out, "%d things", resp.Total)
+	if resp.DepthCapped {
+		fmt.Fprintf(out, " (depth capped at %d)", contract.GraphWalkMaxDepth)
+	}
+	if resp.Truncated {
+		fmt.Fprint(out, " (truncated)")
+	}
+	fmt.Fprintln(out)
 	return nil
 }

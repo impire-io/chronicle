@@ -267,7 +267,11 @@ func (e *executor) handleAuction(msg *nats.Msg) {
 // supports names backend zero's vocabulary. The microsandbox increment
 // moves this judgment into the backend.
 func (e *executor) supports(kind string) bool {
-	return kind == contract.WorkloadKindNode || kind == contract.WorkloadKindIndexSearch
+	switch kind {
+	case contract.WorkloadKindNode, contract.WorkloadKindIndexSearch, contract.WorkloadKindIndexGraph:
+		return true
+	}
+	return false
 }
 
 // handleDelegate accepts or refuses one slot. On accept the placement

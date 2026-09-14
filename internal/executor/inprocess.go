@@ -12,6 +12,7 @@ import (
 	"github.com/nats-io/nats.go/micro"
 
 	"github.com/impire-io/chronicle/contract"
+	"github.com/impire-io/chronicle/internal/index/graph"
 	"github.com/impire-io/chronicle/internal/index/search"
 	"github.com/impire-io/chronicle/internal/mint"
 	"github.com/impire-io/chronicle/internal/node"
@@ -75,6 +76,13 @@ func (b *InProcess) Start(ctx context.Context, spec Spec) (Placement, error) {
 		if err != nil {
 			nc.Close()
 			return nil, fmt.Errorf("start indexer: %w", err)
+		}
+		stop = svc.Stop
+	case contract.WorkloadKindIndexGraph:
+		svc, err := graph.Start(startCtx, nc, graph.Config{Log: spec.Log, Index: spec.Index, Logger: logger})
+		if err != nil {
+			nc.Close()
+			return nil, fmt.Errorf("start graph indexer: %w", err)
 		}
 		stop = svc.Stop
 	default:

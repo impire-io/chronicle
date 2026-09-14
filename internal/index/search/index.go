@@ -1,8 +1,8 @@
 // Package search runs chronicle-index-search: the search-kind
 // materializer of design 05-indexes.md — a full-text projection of one
 // log's thing state. It folds the log under the current declarations
-// through the shared judge, indexes each thing's state as one document
-// keyed by the thing's subject tail, and answers
+// through the shared projection spine, indexes each thing's state as one
+// document keyed by the thing's subject tail, and answers
 // CHRON.API.INDEX.QUERY.<log>.<index> once caught up. Hits name things;
 // the index is never authority — state is the state bucket's, history
 // the log's.
@@ -10,9 +10,8 @@ package search
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
-	"sync"
+	"log/slog"
 
 	"github.com/blevesearch/bleve/v2"
 	"github.com/blevesearch/bleve/v2/search/query"
@@ -20,58 +19,56 @@ import (
 	"github.com/impire-io/chronicle/client"
 )
 
-// newBleveIndex is the engine, by contract (0012): embedded, in-memory,
-// rebuilt by replay — losing it is a replay, not an incident. The default
-// dynamic mapping indexes every string field of state under the default
-// analyzer; there is no per-field configuration.
-func newBleveIndex() (bleve.Index, error) {
+// searchRun is one fold pass's engine: an embedded, in-memory bleve
+// index, by contract (0012) — rebuilt by replay, losing it is a replay,
+// not an incident. The default dynamic mapping indexes every string
+// field of state under the default analyzer; there is no per-field
+// configuration.
+type searchRun struct {
+	idx    bleve.Index
+	log    string
+	logger *slog.Logger
+}
+
+func newSearchRun(log string, logger *slog.Logger) (*searchRun, error) {
 	idx, err := bleve.NewMemOnly(bleve.NewIndexMapping())
 	if err != nil {
 		return nil, fmt.Errorf("open bleve index: %w", err)
 	}
-	return idx, nil
+	return &searchRun{idx: idx, log: log, logger: logger}, nil
 }
 
-// serving is the swap point between the query handler and the fold: the
-// index being served is replaced whole when a re-fold catches up, so
-// queries never see a half-rebuilt index.
-type serving struct {
-	mu  sync.RWMutex
-	idx bleve.Index
-}
-
-func (v *serving) set(idx bleve.Index) {
-	v.mu.Lock()
-	v.idx = idx
-	v.mu.Unlock()
-}
-
-func (v *serving) query(r client.IndexQueryRequest) (client.IndexQueryResponse, error) {
-	v.mu.RLock()
-	idx := v.idx
-	v.mu.RUnlock()
-	if idx == nil {
-		// Unreachable once Start has returned: the endpoint registers only
-		// after the first fold catches up and swaps its index in.
-		return client.IndexQueryResponse{}, errors.New("index not caught up")
+// Upsert indexes a thing's freshly folded state — latest state wins.
+func (r *searchRun) Upsert(thing string, state json.RawMessage) {
+	doc, err := docFor(state)
+	if err != nil {
+		r.logger.Warn("search index: state not indexable", "log", r.log, "thing", thing, "err", err)
+		return
 	}
+	if err := r.idx.Index(thing, doc); err != nil {
+		r.logger.Warn("search index: index thing", "log", r.log, "thing", thing, "err", err)
+	}
+}
 
+// query answers one search over this run's index. Bleve indexes are safe
+// for concurrent search and index.
+func (r *searchRun) query(req client.IndexQueryRequest) (client.IndexQueryResponse, error) {
 	var q query.Query
-	if r.Query == "" {
+	if req.Query == "" {
 		q = bleve.NewMatchAllQuery()
 	} else {
-		q = bleve.NewMatchQuery(r.Query)
+		q = bleve.NewMatchQuery(req.Query)
 	}
-	limit := r.Limit
+	limit := req.Limit
 	if limit <= 0 {
 		limit = 10
 	}
 	if limit > 100 {
 		limit = 100
 	}
-	offset := max(r.Offset, 0)
+	offset := max(req.Offset, 0)
 
-	res, err := idx.Search(bleve.NewSearchRequestOptions(q, limit, offset, false))
+	res, err := r.idx.Search(bleve.NewSearchRequestOptions(q, limit, offset, false))
 	if err != nil {
 		return client.IndexQueryResponse{}, fmt.Errorf("search: %w", err)
 	}

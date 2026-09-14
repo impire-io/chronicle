@@ -51,6 +51,7 @@ const (
 const (
 	WorkloadKindNode        = "node"
 	WorkloadKindIndexSearch = "index-search"
+	WorkloadKindIndexGraph  = "index-graph"
 )
 
 // WorkloadNodeName is the one node workload's name within its tenant.

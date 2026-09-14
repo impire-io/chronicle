@@ -20,6 +20,7 @@ import (
 	"github.com/impire-io/chronicle/client"
 	"github.com/impire-io/chronicle/contract"
 	"github.com/impire-io/chronicle/internal/guestnet"
+	"github.com/impire-io/chronicle/internal/index/graph"
 	"github.com/impire-io/chronicle/internal/index/search"
 	"github.com/impire-io/chronicle/internal/node"
 	"github.com/impire-io/chronicle/internal/version"
@@ -68,6 +69,15 @@ func run() error {
 			return fmt.Errorf("kind %s needs --log and --index", *kind)
 		}
 		svc, err := search.Start(startCtx, c.Conn(), search.Config{Log: *logName, Index: *index})
+		if err != nil {
+			return err
+		}
+		stopWorkload = svc.Stop
+	case contract.WorkloadKindIndexGraph:
+		if *logName == "" || *index == "" {
+			return fmt.Errorf("kind %s needs --log and --index", *kind)
+		}
+		svc, err := graph.Start(startCtx, c.Conn(), graph.Config{Log: *logName, Index: *index})
 		if err != nil {
 			return err
 		}

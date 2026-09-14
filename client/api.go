@@ -8,6 +8,8 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/micro"
+
+	"github.com/impire-io/chronicle/contract"
 )
 
 // The control-plane verb subjects. The designs fix only the CHRON.API.>
@@ -89,14 +91,16 @@ type ThingRollupResponse struct {
 }
 
 // IndexDeclareRequest declares an index on a log: one META key, realized
-// by the supervisor placing a chronicle-index-* workload (decision 0012).
-// The kind is checked against the node's vocabulary — write-side strict,
-// like effects — and starts at "search".
+// by the fleet placing a chronicle-index-* workload. The kind is checked
+// against the node's vocabulary — write-side strict, like effects — and
+// config belongs to the kind (0015): graph requires edge rules, search
+// refuses config.
 type IndexDeclareRequest struct {
-	Principal string `json:"principal"`
-	Log       string `json:"log"`
-	Index     string `json:"index"`
-	Kind      string `json:"kind"`
+	Principal string          `json:"principal"`
+	Log       string          `json:"log"`
+	Index     string          `json:"index"`
+	Kind      string          `json:"kind"`
+	Config    json.RawMessage `json:"config,omitempty"`
 }
 
 // IndexDeclareResponse names the query subject the index will serve once
@@ -221,13 +225,15 @@ func (c *Client) SetSchema(ctx context.Context, log, opType string, schema json.
 }
 
 // DeclareIndex declares an index on a log and returns the query subject
-// it will serve once caught up.
-func (c *Client) DeclareIndex(ctx context.Context, log, index, kind string) (IndexDeclareResponse, error) {
+// it will serve once caught up. Config belongs to the kind: nil for
+// search, edge rules for graph.
+func (c *Client) DeclareIndex(ctx context.Context, log, index, kind string, config json.RawMessage) (IndexDeclareResponse, error) {
 	return request[IndexDeclareRequest, IndexDeclareResponse](ctx, c.nc, IndexDeclareSubject, IndexDeclareRequest{
 		Principal: c.author,
 		Log:       log,
 		Index:     index,
 		Kind:      kind,
+		Config:    config,
 	})
 }
 
@@ -284,4 +290,56 @@ func (c *Control) MintTenant(ctx context.Context, name, admin string) (TenantMin
 		Name:  name,
 		Admin: admin,
 	})
+}
+
+// GraphQueryRequest is the graph kind's payload on the standard query
+// subject (05-indexes.md § the graph kind): Op names the verb.
+type GraphQueryRequest struct {
+	Principal string `json:"principal"`
+	Op        string `json:"op"`
+	Thing     string `json:"thing"`
+	// Direction: out (default), in, or both. In-edges cover this log's
+	// things pointing at the target.
+	Direction string `json:"direction,omitempty"`
+	// Label filters neighbors to one edge type.
+	Label string `json:"label,omitempty"`
+	// Labels filters a walk's traversable edge types.
+	Labels []string `json:"labels,omitempty"`
+	// Depth bounds a walk; default 1, capped (the reply says when).
+	Depth  int `json:"depth,omitempty"`
+	Limit  int `json:"limit,omitempty"`
+	Offset int `json:"offset,omitempty"`
+}
+
+// GraphNeighborsResponse answers op neighbors: edges in stable order.
+// A target may be dangling — data, not corruption; resolution is the
+// caller's state read.
+type GraphNeighborsResponse struct {
+	Edges []contract.GraphEdge `json:"edges"`
+	Total uint64               `json:"total"`
+}
+
+// GraphWalkResponse answers op walk: things first reached, breadth
+// first, with the depth and label they arrived through. DepthCapped
+// says the requested depth exceeded the cap; Truncated says the limit
+// bit before the frontier emptied.
+type GraphWalkResponse struct {
+	Things      []contract.GraphVisit `json:"things"`
+	Total       uint64                `json:"total"`
+	DepthCapped bool                  `json:"depth_capped,omitempty"`
+	Truncated   bool                  `json:"truncated,omitempty"`
+}
+
+// GraphNeighbors reads the edges at a thing in one graph index.
+func (c *Client) GraphNeighbors(ctx context.Context, log, index string, q GraphQueryRequest) (GraphNeighborsResponse, error) {
+	q.Principal = c.author
+	q.Op = contract.GraphOpNeighbors
+	return request[GraphQueryRequest, GraphNeighborsResponse](ctx, c.nc, IndexQuerySubject(log, index), q)
+}
+
+// GraphWalk traverses one graph index breadth-first from a thing.
+func (c *Client) GraphWalk(ctx context.Context, log, index string, q GraphQueryRequest) (GraphWalkResponse, error) {
+	q.Principal = c.author
+	q.Op = contract.GraphOpWalk
+	return request[GraphQueryRequest, GraphWalkResponse](ctx, c.nc, IndexQuerySubject(log, index), q)
 }

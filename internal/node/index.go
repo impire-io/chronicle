@@ -43,15 +43,29 @@ func (n *node) handleIndexDeclare(req micro.Request) {
 		return
 	}
 	if !contract.KnownIndexKind(r.Kind) {
-		_ = req.Error("bad-kind", fmt.Sprintf("kind %q is not in this node's vocabulary (search)", r.Kind), nil)
+		_ = req.Error("bad-kind", fmt.Sprintf("kind %q is not in this node's vocabulary (search, graph)", r.Kind), nil)
 		return
+	}
+	// Config belongs to the kind — write-side strict (0015): graph
+	// requires well-formed edge rules, search stays no-knobs.
+	switch r.Kind {
+	case contract.IndexKindGraph:
+		if _, err := contract.ParseGraphConfig(r.Config); err != nil {
+			_ = req.Error("bad-config", err.Error(), nil)
+			return
+		}
+	default:
+		if len(r.Config) > 0 {
+			_ = req.Error("bad-config", fmt.Sprintf("kind %q takes no config", r.Kind), nil)
+			return
+		}
 	}
 	if _, err := n.meta.Get(ctx, contract.MetaLogConfig(r.Log)); err != nil {
 		_ = req.Error("no-such-log", fmt.Sprintf("log %q is not created", r.Log), nil)
 		return
 	}
 
-	value, err := json.Marshal(contract.IndexDeclaration{Kind: r.Kind})
+	value, err := json.Marshal(contract.IndexDeclaration{Kind: r.Kind, Config: r.Config})
 	if err != nil {
 		_ = req.Error("500", err.Error(), nil)
 		return
