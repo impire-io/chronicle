@@ -1,4 +1,4 @@
-.PHONY: fmt tidy build test lint check
+.PHONY: fmt tidy build test lint check snapshot
 
 # Format all Go source (gofmt); golangci-lint's formatters also cover goimports.
 fmt:
@@ -26,3 +26,8 @@ lint:
 
 # The one gate to run before every commit: everything green.
 check: fmt tidy build test lint
+
+# Rehearse the release locally: builds every artifact into dist/ without
+# publishing anything. The real release is the v* tag (decision 0017).
+snapshot:
+	goreleaser release --snapshot --clean
