@@ -90,7 +90,45 @@ func loadBootstrap(dir string) (*Bootstrap, error) {
 	b.ControlAccountJWT = string(ctrlJWT)
 	b.ControlAccountPub = string(ctrlPub)
 	b.ControlCreds = ctrlCreds
+	if err := b.ensureControlJetStream(); err != nil {
+		return nil, err
+	}
 	return b, nil
+}
+
+// controlJetStreamLimits mirrors the tenant default: the fleet log is an
+// ordinary chronicle log and gets an ordinary account.
+var controlJetStreamLimits = jwt.JetStreamLimits{
+	MemoryStorage: -1, DiskStorage: -1, Streams: -1, Consumer: -1,
+}
+
+// ensureControlJetStream refreshes a control-account JWT minted before the
+// fleet log existed (decision 0014): account claims are signed by the
+// operator signing key, which the bootstrap keeps, so the upgrade needs no
+// account seed. The resolver preloads the refreshed JWT at every server
+// start.
+func (b *Bootstrap) ensureControlJetStream() error {
+	claims, err := jwt.DecodeAccountClaims(b.ControlAccountJWT)
+	if err != nil {
+		return fmt.Errorf("decode control account jwt: %w", err)
+	}
+	if claims.Limits.JetStreamLimits != (jwt.JetStreamLimits{}) {
+		return nil
+	}
+	claims.Limits.JetStreamLimits = controlJetStreamLimits
+	oskp, err := nkeys.FromSeed(b.OperatorSigningSeed)
+	if err != nil {
+		return fmt.Errorf("operator signing seed: %w", err)
+	}
+	refreshed, err := claims.Encode(oskp)
+	if err != nil {
+		return fmt.Errorf("re-encode control account jwt: %w", err)
+	}
+	b.ControlAccountJWT = refreshed
+	if err := os.WriteFile(filepath.Join(b.Dir, fCtrlAcctJWT), []byte(refreshed), plainFileMode); err != nil {
+		return fmt.Errorf("write refreshed control account jwt: %w", err)
+	}
+	return nil
 }
 
 func initBootstrap(dir string) (*Bootstrap, error) {
@@ -134,6 +172,9 @@ func initBootstrap(dir string) (*Bootstrap, error) {
 
 	cac := jwt.NewAccountClaims(capub)
 	cac.Name = "CONTROL"
+	// The control plane has its own data plane — the fleet log (decision
+	// 0014) — so the control account gets JetStream like any tenant.
+	cac.Limits.JetStreamLimits = controlJetStreamLimits
 	controlJWT, err := cac.Encode(oskp)
 	if err != nil {
 		return nil, fmt.Errorf("encode control account jwt: %w", err)

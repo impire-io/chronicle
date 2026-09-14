@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
@@ -62,6 +63,14 @@ func (n *node) handleIndexDeclare(req micro.Request) {
 		_ = req.Error("500", err.Error(), nil)
 		return
 	}
+	// The declaration stands regardless of the report: boot re-derivation
+	// heals a report that failed, and no skew can grow while the node is
+	// down because declarations only happen through the node.
+	if n.indexes != nil {
+		if err := n.indexes.IndexDeclared(ctx, r.Log, r.Index, r.Kind); err != nil {
+			n.logger.Warn("index declared but the report failed; boot re-derivation heals it", "log", r.Log, "index", r.Index, "err", err)
+		}
+	}
 
 	reply, err := json.Marshal(client.IndexDeclareResponse{Query: client.IndexQuerySubject(r.Log, r.Index)})
 	if err != nil {
@@ -105,6 +114,11 @@ func (n *node) handleIndexDelete(req micro.Request) {
 		_ = req.Error("500", err.Error(), nil)
 		return
 	}
+	if n.indexes != nil {
+		if err := n.indexes.IndexDeleted(ctx, r.Log, r.Index); err != nil {
+			n.logger.Warn("index deleted but the report failed; the scan retires the workload when the record catches up", "log", r.Log, "index", r.Index, "err", err)
+		}
+	}
 
 	reply, err := json.Marshal(client.IndexDeleteResponse{Deleted: true})
 	if err != nil {
@@ -112,4 +126,35 @@ func (n *node) handleIndexDelete(req micro.Request) {
 		return
 	}
 	_ = req.Respond(reply)
+}
+
+// rederiveIndexes reports every declared index — the boot half of the
+// level-triggered healing: idempotent at the dispatch surface, so a lost
+// report or a stale record converges on every node start.
+func (n *node) rederiveIndexes(ctx context.Context) error {
+	lister, err := n.meta.ListKeysFiltered(ctx, contract.MetaIndexPrefix+">")
+	if err != nil {
+		return fmt.Errorf("list index declarations: %w", err)
+	}
+	for key := range lister.Keys() {
+		rest := strings.TrimPrefix(key, contract.MetaIndexPrefix)
+		parts := strings.SplitN(rest, ".", 2)
+		if len(parts) != 2 {
+			n.logger.Warn("index declaration key outside the grammar; ignored", "key", key)
+			continue
+		}
+		entry, err := n.meta.Get(ctx, key)
+		if err != nil {
+			continue
+		}
+		var decl contract.IndexDeclaration
+		if err := json.Unmarshal(entry.Value(), &decl); err != nil {
+			n.logger.Warn("index declaration unreadable; ignored", "key", key, "err", err)
+			continue
+		}
+		if err := n.indexes.IndexDeclared(ctx, parts[0], parts[1], decl.Kind); err != nil {
+			return fmt.Errorf("report %s: %w", key, err)
+		}
+	}
+	return nil
 }

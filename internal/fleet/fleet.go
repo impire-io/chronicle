@@ -1,7 +1,9 @@
-// Package fleet composes `chronicle up`: the bootstrap NATS, control, and
-// a scheduler-less node per minted tenant, in one process — the fleet
-// shape without the fleet ceremony (chronicle-hq/02-DESIGN/04-fleet.md
-// § the walking skeleton floor).
+// Package fleet composes `chronicle up`: the bootstrap NATS, control, one
+// chronicle-workloads instance, and one embedded executor on the
+// in-process backend — the fleet shape without the fleet ceremony
+// (chronicle-hq/02-DESIGN/06-scheduler.md § both forms, and the local
+// one). Same log, same auction (one bidder), same guard as any fleet; no
+// scheduler-shaped special case.
 package fleet
 
 import (
@@ -10,19 +12,25 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"sync"
 	"time"
 
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/micro"
 
+	"github.com/impire-io/chronicle/contract"
 	"github.com/impire-io/chronicle/internal/control"
 	"github.com/impire-io/chronicle/internal/devdir"
+	"github.com/impire-io/chronicle/internal/executor"
 	"github.com/impire-io/chronicle/internal/mint"
 	"github.com/impire-io/chronicle/internal/node"
 	"github.com/impire-io/chronicle/internal/version"
+	"github.com/impire-io/chronicle/internal/workloads"
 )
+
+// LocalExecutorID is the embedded executor's durable identity — stable
+// across restarts, per the workload contract.
+const LocalExecutorID = "local"
 
 // Config selects what the fleet runs.
 type Config struct {
@@ -41,15 +49,15 @@ type Fleet struct {
 
 	srv   *server.Server
 	ctrl  micro.Service
+	wl    *workloads.Service
+	ex    *executor.Executor
 	conns []*nats.Conn
-
-	mu       sync.Mutex
-	nodes    map[string]*node.Node
-	indexers map[string]*tenantIndexes
 }
 
 // Up boots the fleet: bootstrap material generated or loaded, the embedded
-// operator-mode server, control, and a node for every tenant on disk.
+// operator-mode server, the workload service, the embedded executor, and
+// control — which dispatches a node workload for every tenant on disk, so
+// placement flows the one path there is.
 func Up(ctx context.Context, cfg Config) (*Fleet, error) {
 	dir := cfg.Dir
 	if dir == "" {
@@ -72,73 +80,96 @@ func Up(ctx context.Context, cfg Config) (*Fleet, error) {
 	if err != nil {
 		return nil, err
 	}
-	f := &Fleet{URL: srv.ClientURL(), srv: srv, nodes: map[string]*node.Node{}, indexers: map[string]*tenantIndexes{}}
+	f := &Fleet{URL: srv.ClientURL(), srv: srv}
 	if err := b.WriteClientURL(f.URL); err != nil {
 		f.Stop()
 		return nil, err
 	}
 
-	sysConn, err := mint.ConnectCreds(f.URL, b.SysCreds, "chronicle-sys")
+	connect := func(creds []byte, name string) (*nats.Conn, error) {
+		nc, err := mint.ConnectCreds(f.URL, creds, name)
+		if err != nil {
+			return nil, fmt.Errorf("connect %s: %w", name, err)
+		}
+		f.conns = append(f.conns, nc)
+		return nc, nil
+	}
+
+	sysConn, err := connect(b.SysCreds, "chronicle-sys")
 	if err != nil {
 		f.Stop()
-		return nil, fmt.Errorf("connect system user: %w", err)
+		return nil, err
 	}
-	f.conns = append(f.conns, sysConn)
-	ctrlConn, err := mint.ConnectCreds(f.URL, b.ControlCreds, "chronicle-control")
+	ctrlConn, err := connect(b.ControlCreds, "chronicle-control")
 	if err != nil {
 		f.Stop()
-		return nil, fmt.Errorf("connect control user: %w", err)
+		return nil, err
 	}
-	f.conns = append(f.conns, ctrlConn)
+	// In the embedded composition every control-plane component shares the
+	// bootstrap control user on its own connection; per-component users
+	// are custody the multi-host increment makes real.
+	wlConn, err := connect(b.ControlCreds, "chronicle-workloads")
+	if err != nil {
+		f.Stop()
+		return nil, err
+	}
+	exConn, err := connect(b.ControlCreds, "chronicle-executor-"+LocalExecutorID)
+	if err != nil {
+		f.Stop()
+		return nil, err
+	}
+
+	wl, err := workloads.Start(ctx, wlConn, workloads.Config{Logger: logger})
+	if err != nil {
+		f.Stop()
+		return nil, fmt.Errorf("start workload service: %w", err)
+	}
+	f.wl = wl
+
+	backend := &executor.InProcess{
+		URL: f.URL,
+		Creds: func(ctx context.Context, tenant, workload string) ([]byte, error) {
+			return executor.PullCreds(ctx, exConn, LocalExecutorID, tenant, workload)
+		},
+		NodeConfig: func(tenant string) node.Config {
+			return node.Config{Logger: logger, Indexes: &indexReporter{nc: ctrlConn, tenant: tenant, logger: logger}}
+		},
+		Logger: logger,
+	}
+	ex, err := executor.Start(ctx, exConn, executor.Config{ID: LocalExecutorID, Backend: backend, Logger: logger})
+	if err != nil {
+		f.Stop()
+		return nil, fmt.Errorf("start executor: %w", err)
+	}
+	f.ex = ex
 
 	driver := &mint.JWTDriver{
 		OperatorSigningSeed: b.OperatorSigningSeed,
 		SysConn:             sysConn,
 		URL:                 f.URL,
 	}
-
-	startNode := func(name string, serviceCreds []byte) error {
-		nc, err := mint.ConnectCreds(f.URL, serviceCreds, "chronicle-node-"+name)
-		if err != nil {
-			return fmt.Errorf("connect node for %s: %w", name, err)
-		}
-		startCtx, cancel := context.WithTimeout(ctx, time.Minute)
-		defer cancel()
-		n, err := node.Start(startCtx, nc, node.Config{Logger: logger})
-		if err != nil {
-			nc.Close()
-			return fmt.Errorf("start node for %s: %w", name, err)
-		}
-		f.mu.Lock()
-		f.nodes[name] = n
-		f.conns = append(f.conns, nc)
-		f.mu.Unlock()
-		logger.Info("node running", "tenant", name)
-
-		// The tenant's index supervisor rides its own connection, shared
-		// by all of that tenant's indexers (05-indexes.md § who runs it).
-		ixConn, err := mint.ConnectCreds(f.URL, serviceCreds, "chronicle-index-"+name)
-		if err != nil {
-			return fmt.Errorf("connect indexers for %s: %w", name, err)
-		}
-		ti, err := startTenantIndexes(ixConn, name, logger)
-		if err != nil {
-			ixConn.Close()
-			return fmt.Errorf("supervise indexes for %s: %w", name, err)
-		}
-		f.mu.Lock()
-		f.indexers[name] = ti
-		f.conns = append(f.conns, ixConn)
-		f.mu.Unlock()
-		return nil
-	}
-
 	ctrl, err := control.Start(ctrlConn, control.Config{
 		Driver:      driver,
 		URL:         f.URL,
 		AccountsDir: b.AccountsDir(),
-		OnTenant:    startNode,
-		Logger:      logger,
+		OnTenant: func(name string, serviceCreds []byte) error {
+			// The tenant's node exists because the record says so; the
+			// executor pulls the creds itself — the record-verified pull.
+			dispatchCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+			defer cancel()
+			if _, err := workloads.Dispatch(dispatchCtx, ctrlConn, contract.FleetDispatchRequest{
+				Tenant:   name,
+				Workload: contract.WorkloadNodeName,
+				Kind:     contract.WorkloadKindNode,
+			}); err != nil {
+				return err
+			}
+			// Placement is asynchronous, but the mint's promise is not: a
+			// minted tenant answers verbs (onboarding § verify by
+			// connecting). Wait until the placed node serves.
+			return waitForNode(dispatchCtx, f.URL, name, serviceCreds)
+		},
+		Logger: logger,
 	})
 	if err != nil {
 		f.Stop()
@@ -148,25 +179,80 @@ func Up(ctx context.Context, cfg Config) (*Fleet, error) {
 	return f, nil
 }
 
-// Stop tears the composition down: control verbs first, then the
-// indexers and nodes, then the server. Appends need none of them —
-// writers lose nothing.
+// waitForNode probes the tenant's node over the micro protocol as its
+// service user until the placement answers — the design's off-log
+// liveness probe doubling as the could-not-succeed-if-broken read the
+// mint promises.
+func waitForNode(ctx context.Context, url, tenant string, serviceCreds []byte) error {
+	nc, err := mint.ConnectCreds(url, serviceCreds, "chronicle-mint-verify-"+tenant)
+	if err != nil {
+		return fmt.Errorf("connect for mint verification: %w", err)
+	}
+	defer nc.Close()
+	for {
+		reqCtx, cancel := context.WithTimeout(ctx, time.Second)
+		_, err := nc.RequestWithContext(reqCtx, "$SRV.PING.chronicle-node", nil)
+		cancel()
+		if err == nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("tenant %s: node never answered: %w", tenant, ctx.Err())
+		case <-time.After(150 * time.Millisecond):
+		}
+	}
+}
+
+// indexReporter is the in-process transport of the node's dispatch
+// reports; the tenant-stamped account import is the multi-host
+// increment's transport for the same calls.
+type indexReporter struct {
+	nc     *nats.Conn
+	tenant string
+	logger *slog.Logger
+}
+
+func (r *indexReporter) IndexDeclared(ctx context.Context, log, index, kind string) error {
+	if kind != contract.IndexKindSearch {
+		// Read-side tolerance: a newer build may have declared kinds this
+		// composition has no workload for.
+		r.logger.Warn("declared index kind has no workload here; left alone", "tenant", r.tenant, "log", log, "index", index, "kind", kind)
+		return nil
+	}
+	_, err := workloads.Dispatch(ctx, r.nc, contract.FleetDispatchRequest{
+		Tenant:   r.tenant,
+		Workload: contract.WorkloadIndexName(log, index),
+		Kind:     contract.WorkloadKindIndexSearch,
+		Log:      log,
+		Index:    index,
+	})
+	return err
+}
+
+func (r *indexReporter) IndexDeleted(ctx context.Context, log, index string) error {
+	_, err := workloads.StopWorkload(ctx, r.nc, contract.FleetStopRequest{
+		Tenant:   r.tenant,
+		Workload: contract.WorkloadIndexName(log, index),
+	})
+	return err
+}
+
+// Stop tears the composition down: control verbs first, then the workload
+// service, then the executor and its placements, then the server. Appends
+// need none of them — writers lose nothing.
 func (f *Fleet) Stop() {
 	if f.ctrl != nil {
 		_ = f.ctrl.Stop()
 	}
-	f.mu.Lock()
-	for _, ti := range f.indexers {
-		ti.stop()
+	if f.wl != nil {
+		f.wl.Stop()
 	}
-	f.indexers = map[string]*tenantIndexes{}
-	for _, n := range f.nodes {
-		n.Stop()
+	if f.ex != nil {
+		f.ex.Stop()
 	}
-	f.nodes = map[string]*node.Node{}
 	conns := f.conns
 	f.conns = nil
-	f.mu.Unlock()
 	for _, nc := range conns {
 		nc.Close()
 	}
