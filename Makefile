@@ -12,6 +12,11 @@ build:
 	go build ./...
 	go build -o bin/ ./cmd/...
 
+# The guest half of the microsandbox backend: chronicle-workload, static,
+# for the microVM's linux/arm64.
+workload-linux:
+	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o bin/chronicle-workload-linux-arm64 ./cmd/chronicle-workload
+
 # All tests, no skips; the wire contract runs against a real embedded NATS server.
 test:
 	go test -race ./...

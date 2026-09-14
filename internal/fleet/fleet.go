@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/nats-io/nats-server/v2/server"
@@ -39,9 +40,24 @@ type Config struct {
 	Dir string
 	// Port for the bootstrap server; 0 means 4222, -1 picks a free port.
 	Port int
+	// Backend is the embedded executor's one configured actuator:
+	// "inprocess" (the default, backend zero) or "microsandbox"
+	// (06-scheduler.md § backends — the operator configures the backend
+	// the install uses).
+	Backend string
+	// WorkloadBinary is the linux/arm64 chronicle-workload binary the
+	// microsandbox backend copies into every guest; required with it,
+	// ignored otherwise. `make workload-linux` builds it.
+	WorkloadBinary string
 	// Logger; nil means slog.Default.
 	Logger *slog.Logger
 }
+
+// The backend names the composition accepts.
+const (
+	BackendInProcess    = "inprocess"
+	BackendMicrosandbox = "microsandbox"
+)
 
 // Fleet is one running composition.
 type Fleet struct {
@@ -52,6 +68,9 @@ type Fleet struct {
 	wl    *workloads.Service
 	ex    *executor.Executor
 	conns []*nats.Conn
+
+	mu        sync.Mutex
+	reporters map[string]*metaIndexReporter
 }
 
 // Up boots the fleet: bootstrap material generated or loaded, the embedded
@@ -126,15 +145,34 @@ func Up(ctx context.Context, cfg Config) (*Fleet, error) {
 	}
 	f.wl = wl
 
-	backend := &executor.InProcess{
-		URL: f.URL,
-		Creds: func(ctx context.Context, tenant, workload string) ([]byte, error) {
-			return executor.PullCreds(ctx, exConn, LocalExecutorID, tenant, workload)
-		},
-		NodeConfig: func(tenant string) node.Config {
-			return node.Config{Logger: logger, Indexes: &indexReporter{nc: ctrlConn, tenant: tenant, logger: logger}}
-		},
-		Logger: logger,
+	pull := func(ctx context.Context, tenant, workload string) ([]byte, error) {
+		return executor.PullCreds(ctx, exConn, LocalExecutorID, tenant, workload)
+	}
+	var backend executor.Backend
+	switch cfg.Backend {
+	case "", BackendInProcess:
+		backend = &executor.InProcess{
+			URL:   f.URL,
+			Creds: pull,
+			NodeConfig: func(tenant string) node.Config {
+				return node.Config{Logger: logger, Indexes: &indexReporter{nc: ctrlConn, tenant: tenant, logger: logger}}
+			},
+			Logger: logger,
+		}
+	case BackendMicrosandbox:
+		if cfg.WorkloadBinary == "" {
+			f.Stop()
+			return nil, fmt.Errorf("the microsandbox backend needs --workload-binary (make workload-linux builds it)")
+		}
+		backend = &executor.Microsandbox{
+			WorkloadBinary: cfg.WorkloadBinary,
+			HostURL:        f.URL,
+			Creds:          pull,
+			Logger:         logger,
+		}
+	default:
+		f.Stop()
+		return nil, fmt.Errorf("backend %q is not in this build's vocabulary (inprocess, microsandbox)", cfg.Backend)
 	}
 	ex, err := executor.Start(ctx, exConn, executor.Config{ID: LocalExecutorID, Backend: backend, Logger: logger})
 	if err != nil {
@@ -163,6 +201,14 @@ func Up(ctx context.Context, cfg Config) (*Fleet, error) {
 				Kind:     contract.WorkloadKindNode,
 			}); err != nil {
 				return err
+			}
+			// An out-of-process node cannot reach the dispatch surface
+			// without the multi-host bridge; the composition carries its
+			// reports from META until the bridge lands.
+			if cfg.Backend == BackendMicrosandbox {
+				if err := f.startReporter(name, serviceCreds, ctrlConn, logger); err != nil {
+					return err
+				}
 			}
 			// Placement is asynchronous, but the mint's promise is not: a
 			// minted tenant answers verbs (onboarding § verify by
@@ -238,12 +284,38 @@ func (r *indexReporter) IndexDeleted(ctx context.Context, log, index string) err
 	return err
 }
 
+// startReporter runs one tenant's META-derived report transport,
+// idempotently — the restart replay revisits every tenant.
+func (f *Fleet) startReporter(tenant string, serviceCreds []byte, dispatchConn *nats.Conn, logger *slog.Logger) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.reporters == nil {
+		f.reporters = map[string]*metaIndexReporter{}
+	}
+	if _, running := f.reporters[tenant]; running {
+		return nil
+	}
+	r, err := startMetaIndexReporter(f.URL, tenant, serviceCreds, dispatchConn, logger)
+	if err != nil {
+		return err
+	}
+	f.reporters[tenant] = r
+	return nil
+}
+
 // Stop tears the composition down: control verbs first, then the workload
 // service, then the executor and its placements, then the server. Appends
 // need none of them — writers lose nothing.
 func (f *Fleet) Stop() {
 	if f.ctrl != nil {
 		_ = f.ctrl.Stop()
+	}
+	f.mu.Lock()
+	reporters := f.reporters
+	f.reporters = nil
+	f.mu.Unlock()
+	for _, r := range reporters {
+		r.stop()
 	}
 	if f.wl != nil {
 		f.wl.Stop()
@@ -268,11 +340,13 @@ func Run(ctx context.Context, args []string, out io.Writer) error {
 	fs.SetOutput(out)
 	dir := fs.String("dir", devdir.Default(), "data dir for the local fleet")
 	port := fs.Int("port", 4222, "port for the bootstrap NATS server (-1 picks a free one)")
+	backend := fs.String("backend", BackendInProcess, "the embedded executor's backend: inprocess or microsandbox")
+	workloadBinary := fs.String("workload-binary", "", "linux/arm64 chronicle-workload for the microsandbox backend")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
-	f, err := Up(ctx, Config{Dir: *dir, Port: *port})
+	f, err := Up(ctx, Config{Dir: *dir, Port: *port, Backend: *backend, WorkloadBinary: *workloadBinary})
 	if err != nil {
 		return err
 	}
