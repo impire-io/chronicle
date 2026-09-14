@@ -34,7 +34,7 @@ func run() error {
 	creds := flag.String("creds", "", "control-account user credentials (required)")
 	id := flag.String("id", "", "this executor's durable identity — one per host, stable across restarts (required)")
 	backendName := flag.String("backend", "microsandbox", "this host's backend: inprocess or microsandbox")
-	workloadBinary := flag.String("workload-binary", "", "linux/arm64 chronicle-workload for the microsandbox backend")
+	workloadBinary := flag.String("workload-binary", "", "linux chronicle-workload (host arch) for the microsandbox backend")
 	image := flag.String("image", "", "base image for microsandbox placements (default alpine)")
 	embedURL := flag.String("embedding-url", "", "OpenAI-compatible embedding endpoint for the semantic kind (key via CHRONICLE_EMBEDDING_API_KEY)")
 	embedModel := flag.String("embedding-model", "", "default embedding model for the semantic kind")

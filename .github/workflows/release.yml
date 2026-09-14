@@ -1,0 +1,39 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history for the changelog
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Test
+        run: go test -race ./...
+
+      - name: Release
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          # The pushed tag is the release, always. Without this, goreleaser
+          # guesses from the tags on HEAD — and two tags on one commit (an
+          # rc and its final) make it guess wrong: in the sibling hits repo
+          # the v0.3.0 push built rc.1 artifacts and died on already-uploaded
+          # assets.
+          GORELEASER_CURRENT_TAG: ${{ github.ref_name }}

@@ -14,6 +14,7 @@ import (
 	"github.com/impire-io/chronicle/client"
 	"github.com/impire-io/chronicle/contract"
 	"github.com/impire-io/chronicle/internal/devdir"
+	"github.com/impire-io/chronicle/internal/version"
 )
 
 // Run dispatches one CLI invocation (everything except `up`, which is the
@@ -76,6 +77,9 @@ func Run(ctx context.Context, args []string, out io.Writer) error {
 		return state(ctx, args[1:], out)
 	case "replay":
 		return replay(ctx, args[1:], out)
+	case "version":
+		fmt.Fprintln(out, version.Version)
+		return nil
 	default:
 		return usage(out)
 	}
@@ -99,6 +103,7 @@ func usage(out io.Writer) error {
   chronicle append <log> <thing> <op.type> --creds F [--payload JSON] [--parents a,b]
   chronicle state <log> <thing> --creds F
   chronicle replay <log> <thing> --creds F
+  chronicle version                                     print the version
 `)
 	return fmt.Errorf("usage")
 }

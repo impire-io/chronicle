@@ -1,0 +1,153 @@
+version: 2
+
+project_name: chronicle
+
+# The shipped set is the whole fleet — all five binaries in every platform
+# archive, plus the standalone linux guest workloads (amd64 and arm64). The
+# matrix answers to chronicle-hq decision 0017; changing it is an amendment
+# there, never a quiet edit here.
+#
+# {{.Version}} is the tag with the v stripped — bare semver, which the
+# NATS micro service registration requires. Dev builds stay 0.0.0-dev;
+# only this flow stamps.
+builds:
+  - id: chronicle
+    main: ./cmd/chronicle
+    binary: chronicle
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w -X github.com/impire-io/chronicle/internal/version.Version={{.Version}}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+  - id: chronicle-control
+    main: ./cmd/chronicle-control
+    binary: chronicle-control
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w -X github.com/impire-io/chronicle/internal/version.Version={{.Version}}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+  - id: chronicle-node
+    main: ./cmd/chronicle-node
+    binary: chronicle-node
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w -X github.com/impire-io/chronicle/internal/version.Version={{.Version}}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+  - id: chronicle-executor
+    main: ./cmd/chronicle-executor
+    binary: chronicle-executor
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w -X github.com/impire-io/chronicle/internal/version.Version={{.Version}}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+  - id: chronicle-workload
+    main: ./cmd/chronicle-workload
+    binary: chronicle-workload
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w -X github.com/impire-io/chronicle/internal/version.Version={{.Version}}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+  # The guest half of the microsandbox backend: a data file copied into
+  # microVM guests — linux in the host's architecture, no matter the host
+  # OS — which is why it also ships standalone below, where a darwin or
+  # windows operator can reach it without downloading an archive for a
+  # platform they do not run.
+  - id: chronicle-workload-guest
+    main: ./cmd/chronicle-workload
+    binary: chronicle-workload
+    env:
+      - CGO_ENABLED=0
+    goos: [linux]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w -X github.com/impire-io/chronicle/internal/version.Version={{.Version}}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: chronicle
+    ids: [chronicle, chronicle-control, chronicle-node, chronicle-executor, chronicle-workload]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - README.md
+      - LICENSE
+
+  # The standalone guest workloads: raw binary uploads, still checksummed.
+  - id: chronicle-workload-guest
+    ids: [chronicle-workload-guest]
+    name_template: "chronicle-workload_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [binary]
+
+# One formula installing the fleet from the platform archive. It is pushed
+# to impire-io/homebrew-tap on every release — RCs included, deliberately:
+# pre-v1 the candidates ARE the releases, and the tap is the one-command
+# install path (no Go toolchain, nothing edited). Needs the
+# HOMEBREW_TAP_TOKEN repo secret (fine-grained PAT, contents read/write on
+# the tap repo) — the workflow passes it through.
+brews:
+  - name: chronicle
+    ids: [chronicle]
+    repository:
+      owner: impire-io
+      name: homebrew-tap
+      branch: main
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Formula
+    homepage: https://github.com/impire-io/chronicle
+    description: "Ops-logs as a product: tenant event logs with declared indexes, on NATS"
+    skip_upload: false
+    commit_msg_template: "brew: chronicle {{ .Tag }}"
+    commit_author:
+      name: chronicle-release
+      email: noreply@impire.io
+    install: |
+      bin.install "chronicle"
+      bin.install "chronicle-control"
+      bin.install "chronicle-node"
+      bin.install "chronicle-executor"
+      bin.install "chronicle-workload"
+    test: |
+      assert_match version.to_s, shell_output("#{bin}/chronicle version")
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs"
+      - "^test"
+      - "^chore"
+
+release:
+  github:
+    owner: impire-io
+    name: chronicle
+  draft: false
+  prerelease: auto

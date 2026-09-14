@@ -10,6 +10,7 @@ import (
 
 	"github.com/impire-io/chronicle/internal/cli"
 	"github.com/impire-io/chronicle/internal/fleet"
+	"github.com/impire-io/chronicle/internal/version"
 )
 
 func run(ctx context.Context, t *testing.T, args ...string) string {
@@ -163,5 +164,17 @@ func TestCLIIndex(t *testing.T) {
 	out = run(ctx, t, "index", "delete", "orders", "text", "--dir", dir, "--creds", creds)
 	if !strings.Contains(out, "retired") {
 		t.Fatalf("index delete output: %s", out)
+	}
+}
+
+// TestCLIVersion: the version verb prints the stamped version — release
+// consumers and the brew formula's install test assert on it.
+func TestCLIVersion(t *testing.T) {
+	var out bytes.Buffer
+	if err := cli.Run(context.Background(), []string{"version"}, &out); err != nil {
+		t.Fatalf("version: %v", err)
+	}
+	if want := version.Version + "\n"; out.String() != want {
+		t.Errorf("version output = %q, want %q", out.String(), want)
 	}
 }

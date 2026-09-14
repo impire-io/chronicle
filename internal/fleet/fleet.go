@@ -45,9 +45,9 @@ type Config struct {
 	// (06-scheduler.md § backends — the operator configures the backend
 	// the install uses).
 	Backend string
-	// WorkloadBinary is the linux/arm64 chronicle-workload binary the
-	// microsandbox backend copies into every guest; required with it,
-	// ignored otherwise. `make workload-linux` builds it.
+	// WorkloadBinary is the linux chronicle-workload binary (the host's
+	// architecture) the microsandbox backend copies into every guest;
+	// required with it, ignored otherwise. `make workload-linux` builds it.
 	WorkloadBinary string
 	// Embedding is the install's provider (0016) — nil means no provider
 	// and semantic declarations stay honestly unschedulable.
@@ -273,7 +273,7 @@ func Run(ctx context.Context, args []string, out io.Writer) error {
 	dir := fs.String("dir", devdir.Default(), "data dir for the local fleet")
 	port := fs.Int("port", 4222, "port for the bootstrap NATS server (-1 picks a free one)")
 	backend := fs.String("backend", BackendInProcess, "the embedded executor's backend: inprocess or microsandbox")
-	workloadBinary := fs.String("workload-binary", "", "linux/arm64 chronicle-workload for the microsandbox backend")
+	workloadBinary := fs.String("workload-binary", "", "linux chronicle-workload (host arch) for the microsandbox backend")
 	embedURL := fs.String("embedding-url", "", "OpenAI-compatible embedding endpoint for the semantic kind (key via CHRONICLE_EMBEDDING_API_KEY)")
 	embedModel := fs.String("embedding-model", "", "default embedding model for the semantic kind")
 	if err := fs.Parse(args); err != nil {
