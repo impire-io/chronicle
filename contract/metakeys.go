@@ -39,10 +39,12 @@ func MetaIndex(log, index string) string { return "index." + log + "." + index }
 // MetaIndexPrefix lists every declaration — the supervisor's watch prefix.
 const MetaIndexPrefix = "index."
 
-// IndexDeclaration is the value at index.<log>.<index>. It carries no
-// per-field configuration; the knob waits for a consumer (0012).
+// IndexDeclaration is the value at index.<log>.<index>: the kind, and
+// the kind-owned config the 0012 deferral grew into with its first real
+// consumers (0015, 0016). Config is absent for search — no-knobs stands.
 type IndexDeclaration struct {
-	Kind string `json:"kind"`
+	Kind   string          `json:"kind"`
+	Config json.RawMessage `json:"config,omitempty"`
 }
 
 // IndexKindSearch is the first index kind (decision 0012): full-text over
@@ -53,7 +55,9 @@ const IndexKindSearch = "search"
 // INDEX.DECLARE refuses kinds outside it (write-side strictness), while a
 // supervisor reading a newer build's declaration ignores it with a warning
 // (read-side tolerance) — the same split effects got in 0011.
-func KnownIndexKind(kind string) bool { return kind == IndexKindSearch }
+func KnownIndexKind(kind string) bool {
+	return kind == IndexKindSearch || kind == IndexKindGraph
+}
 
 // MetaPrincipal is identity.principal.<id>.
 func MetaPrincipal(id string) string { return "identity.principal." + id }

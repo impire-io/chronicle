@@ -1,4 +1,4 @@
-package search
+package graph
 
 import (
 	"context"
@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/nats-io/nats.go/micro"
 
 	"github.com/impire-io/chronicle/client"
@@ -25,27 +26,52 @@ type Config struct {
 	Logger *slog.Logger
 }
 
-// Service is one running chronicle-index-search instance.
+// Service is one running chronicle-index-graph instance.
 type Service struct {
 	proj  *projection.Projection
 	micro micro.Service
 }
 
-// Start materializes the index over the shared projection spine — replay
-// from 1, live tail, effect-change rebuilds — and registers the query
-// endpoint only once the fold has caught up: a responder implies a
-// current index (05-indexes.md).
+// Start reads the index's own declaration from META — the edge rules are
+// config, and config never hot-reloads: delete + declare is a workload
+// lifecycle — then materializes over the shared projection spine and
+// registers the query endpoint once caught up.
 func Start(ctx context.Context, nc *nats.Conn, cfg Config) (*Service, error) {
 	logger := cfg.Logger
 	if logger == nil {
 		logger = slog.Default()
 	}
+
+	js, err := jetstream.New(nc)
+	if err != nil {
+		return nil, fmt.Errorf("jetstream: %w", err)
+	}
+	meta, err := js.KeyValue(ctx, contract.MetaBucket)
+	if err != nil {
+		return nil, fmt.Errorf("open META: %w", err)
+	}
+	entry, err := meta.Get(ctx, contract.MetaIndex(cfg.Log, cfg.Index))
+	if err != nil {
+		return nil, fmt.Errorf("read declaration for %s/%s: %w", cfg.Log, cfg.Index, err)
+	}
+	var decl contract.IndexDeclaration
+	if err := json.Unmarshal(entry.Value(), &decl); err != nil {
+		return nil, fmt.Errorf("decode declaration: %w", err)
+	}
+	if decl.Kind != contract.IndexKindGraph {
+		return nil, fmt.Errorf("declaration %s/%s is kind %q, not graph", cfg.Log, cfg.Index, decl.Kind)
+	}
+	gcfg, err := contract.ParseGraphConfig(decl.Config)
+	if err != nil {
+		return nil, err
+	}
+
 	proj, err := projection.Start(ctx, nc, projection.Config{
 		Log:    cfg.Log,
 		Index:  cfg.Index,
-		Kind:   "search index",
+		Kind:   "graph index",
 		Logger: logger,
-		NewRun: func() (projection.Run, error) { return newSearchRun(cfg.Log, logger) },
+		NewRun: func() (projection.Run, error) { return newGraphRun(cfg.Log, gcfg.Edges, logger), nil },
 	})
 	if err != nil {
 		return nil, err
@@ -53,9 +79,9 @@ func Start(ctx context.Context, nc *nats.Conn, cfg Config) (*Service, error) {
 	s := &Service{proj: proj}
 
 	m, err := micro.AddService(nc, micro.Config{
-		Name:        "chronicle-index-search",
+		Name:        "chronicle-index-graph",
 		Version:     version.Version,
-		Description: "chronicle search index: a full-text projection of thing state",
+		Description: "chronicle graph index: declared edges over thing state",
 		Metadata:    map[string]string{"log": cfg.Log, "index": cfg.Index},
 	})
 	if err != nil {
@@ -68,8 +94,6 @@ func Start(ctx context.Context, nc *nats.Conn, cfg Config) (*Service, error) {
 		proj.Stop()
 		return nil, fmt.Errorf("add query endpoint: %w", err)
 	}
-	// Flush so the endpoint subscription has reached the server: once
-	// Start returns, a request from any connection must find a responder.
 	if err := nc.FlushTimeout(5 * time.Second); err != nil {
 		_ = m.Stop()
 		proj.Stop()
@@ -87,14 +111,13 @@ func (s *Service) Stop() {
 	s.proj.Stop()
 }
 
-// handleQuery answers CHRON.API.INDEX.QUERY.<log>.<index>. Any registry
-// role may query — search is a read, and the member baseline already lets
-// a member replay the whole log.
+// handleQuery answers the graph payload on the standard subject: the op
+// field names the verb. Any registry role may query.
 func (s *Service) handleQuery(req micro.Request) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	var r client.IndexQueryRequest
+	var r client.GraphQueryRequest
 	if err := json.Unmarshal(req.Data(), &r); err != nil {
 		_ = req.Error("bad-request", err.Error(), nil)
 		return
@@ -103,16 +126,34 @@ func (s *Service) handleQuery(req micro.Request) {
 		_ = req.Error("forbidden", err.Error(), nil)
 		return
 	}
-	run, ok := s.proj.Serving().(*searchRun)
+	if r.Thing == "" {
+		_ = req.Error("bad-request", "thing is required", nil)
+		return
+	}
+	switch r.Direction {
+	case "", contract.GraphDirectionOut, contract.GraphDirectionIn, contract.GraphDirectionBoth:
+	default:
+		_ = req.Error("bad-direction", fmt.Sprintf("direction %q is not in the vocabulary (out, in, both)", r.Direction), nil)
+		return
+	}
+	run, ok := s.proj.Serving().(*graphRun)
 	if !ok {
 		// Unreachable once Start has returned: the endpoint registers only
 		// after the first fold catches up and swaps its run in.
 		_ = req.Error("500", "index not caught up", nil)
 		return
 	}
-	reply, err := run.query(r)
-	if err != nil {
-		_ = req.Error("500", err.Error(), nil)
+
+	var reply any
+	switch r.Op {
+	case contract.GraphOpNeighbors, "":
+		reply = run.neighbors(r)
+	case contract.GraphOpWalk:
+		reply = run.walk(r)
+	default:
+		// The kind-shaped payload rule (05-indexes.md § the query surface):
+		// a payload outside the index's kind is refused with the kind named.
+		_ = req.Error("bad-op", fmt.Sprintf("op %q is not in the graph kind's vocabulary (neighbors, walk)", r.Op), nil)
 		return
 	}
 	data, err := json.Marshal(reply)

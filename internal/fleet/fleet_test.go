@@ -177,7 +177,7 @@ func TestDeclaredIndexServes(t *testing.T) {
 	if _, err := dana.CreateThing(ctx, "orders", "invoice-1", json.RawMessage(`{"title":"quantum widgets"}`)); err != nil {
 		t.Fatalf("create thing: %v", err)
 	}
-	resp, err := dana.DeclareIndex(ctx, "orders", "text", "search")
+	resp, err := dana.DeclareIndex(ctx, "orders", "text", "search", nil)
 	if err != nil {
 		t.Fatalf("declare index: %v", err)
 	}
@@ -210,6 +210,111 @@ func TestDeclaredIndexServes(t *testing.T) {
 		}
 		if time.Now().After(deadline) {
 			t.Fatal("retired index still answers")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// TestDeclaredGraphServes is the graph kind's floor (0015): declared
+// edge rules materialize as adjacency the moment the workload catches
+// up, a state change rewires edges wholesale, and deleting the
+// declaration takes the responder away.
+func TestDeclaredGraphServes(t *testing.T) {
+	dir := t.TempDir()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	f, err := fleet.Up(ctx, fleet.Config{Dir: dir, Port: -1})
+	if err != nil {
+		t.Fatalf("up: %v", err)
+	}
+	defer f.Stop()
+
+	ctrlCreds, err := os.ReadFile(devdir.ControlCredsPath(dir))
+	if err != nil {
+		t.Fatalf("control creds: %v", err)
+	}
+	ctrl, err := client.ConnectControlCreds(f.URL, ctrlCreds)
+	if err != nil {
+		t.Fatalf("connect control: %v", err)
+	}
+	minted, err := ctrl.MintTenant(ctx, "acme", "dana")
+	ctrl.Close()
+	if err != nil {
+		t.Fatalf("mint tenant: %v", err)
+	}
+	dana, err := client.Connect(f.URL, minted.AdminCreds)
+	if err != nil {
+		t.Fatalf("connect admin: %v", err)
+	}
+	defer dana.Close()
+
+	if _, err := dana.CreateLog(ctx, "orders", ""); err != nil {
+		t.Fatalf("create log: %v", err)
+	}
+	// A merge-effect type so a later append can move the reference.
+	if _, err := dana.SetSchema(ctx, "orders", "order.update", json.RawMessage(`{"type":"object"}`), "merge"); err != nil {
+		t.Fatalf("set schema: %v", err)
+	}
+	if _, err := dana.CreateThing(ctx, "orders", "invoice-1", json.RawMessage(`{"customer":"cust-1"}`)); err != nil {
+		t.Fatalf("create invoice-1: %v", err)
+	}
+	if _, err := dana.CreateThing(ctx, "orders", "invoice-2", json.RawMessage(`{"customer":"cust-1"}`)); err != nil {
+		t.Fatalf("create invoice-2: %v", err)
+	}
+
+	if _, err := dana.DeclareIndex(ctx, "orders", "refs", "graph", json.RawMessage(`{"edges":[{"field":"customer"}]}`)); err != nil {
+		t.Fatalf("declare graph index: %v", err)
+	}
+	// A config-less graph declaration is refused write-side strict.
+	if _, err := dana.DeclareIndex(ctx, "orders", "naked", "graph", nil); err == nil {
+		t.Fatal("graph declaration without config accepted")
+	}
+
+	// The workload catches up and both directions answer.
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		in, err := dana.GraphNeighbors(ctx, "orders", "refs", client.GraphQueryRequest{Thing: "cust-1", Direction: "in"})
+		if err == nil && in.Total == 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("declared graph never served: %v %+v", err, in)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// A merge op moves the reference; the live tail rewires the edges.
+	if _, err := dana.Append(ctx, "orders", "invoice-1", "order.update", []byte(`{"customer":"cust-2"}`)); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	deadline = time.Now().Add(15 * time.Second)
+	for {
+		in, err := dana.GraphNeighbors(ctx, "orders", "refs", client.GraphQueryRequest{Thing: "cust-2", Direction: "in"})
+		if err == nil && in.Total == 1 && in.Edges[0].From == "invoice-1" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("live tail never rewired the edge: %v %+v", err, in)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	walk, err := dana.GraphWalk(ctx, "orders", "refs", client.GraphQueryRequest{Thing: "invoice-1", Depth: 1})
+	if err != nil || len(walk.Things) != 1 || walk.Things[0].Thing != "cust-2" {
+		t.Fatalf("walk = %+v, %v", walk, err)
+	}
+
+	// Retiring the declaration takes the responder off the wire.
+	if _, err := dana.DeleteIndex(ctx, "orders", "refs"); err != nil {
+		t.Fatalf("delete index: %v", err)
+	}
+	deadline = time.Now().Add(15 * time.Second)
+	for {
+		if _, err := dana.GraphNeighbors(ctx, "orders", "refs", client.GraphQueryRequest{Thing: "cust-2", Direction: "in"}); err != nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("retired graph index still answers")
 		}
 		time.Sleep(50 * time.Millisecond)
 	}

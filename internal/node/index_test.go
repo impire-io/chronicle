@@ -34,7 +34,7 @@ func TestIndexVerbs(t *testing.T) {
 		t.Fatalf("create log: %v", err)
 	}
 
-	resp, err := alice.DeclareIndex(ctx, "orders", "text", "search")
+	resp, err := alice.DeclareIndex(ctx, "orders", "text", "search", nil)
 	if err != nil {
 		t.Fatalf("declare: %v", err)
 	}
@@ -46,17 +46,17 @@ func TestIndexVerbs(t *testing.T) {
 	}
 
 	// Create-if-absent: the second declare loses, and is told so.
-	_, err = alice.DeclareIndex(ctx, "orders", "text", "search")
+	_, err = alice.DeclareIndex(ctx, "orders", "text", "search", nil)
 	wantServiceError(t, err, "index-exists")
 
 	// Write-side strictness: a kind without a workload is refused.
-	_, err = alice.DeclareIndex(ctx, "orders", "vec", "semantic")
+	_, err = alice.DeclareIndex(ctx, "orders", "vec", "semantic", nil)
 	wantServiceError(t, err, "bad-kind")
 
 	// Names obey the grammar; logs must exist.
-	_, err = alice.DeclareIndex(ctx, "orders", "Bad_Name", "search")
+	_, err = alice.DeclareIndex(ctx, "orders", "Bad_Name", "search", nil)
 	wantServiceError(t, err, "bad-index-name")
-	_, err = alice.DeclareIndex(ctx, "ghost", "text", "search")
+	_, err = alice.DeclareIndex(ctx, "ghost", "text", "search", nil)
 	wantServiceError(t, err, "no-such-log")
 
 	// Declaring is configuration: admin only.
@@ -64,7 +64,7 @@ func TestIndexVerbs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("wrap reader: %v", err)
 	}
-	_, err = rita.DeclareIndex(ctx, "orders", "other", "search")
+	_, err = rita.DeclareIndex(ctx, "orders", "other", "search", nil)
 	wantServiceError(t, err, "forbidden")
 	_, err = rita.DeleteIndex(ctx, "orders", "text")
 	wantServiceError(t, err, "forbidden")
@@ -77,7 +77,7 @@ func TestIndexVerbs(t *testing.T) {
 	if _, err := alice.DeleteIndex(ctx, "orders", "text"); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
-	if _, err := alice.DeclareIndex(ctx, "orders", "text", "search"); err != nil {
+	if _, err := alice.DeclareIndex(ctx, "orders", "text", "search", nil); err != nil {
 		t.Fatalf("re-declare after delete: %v", err)
 	}
 }

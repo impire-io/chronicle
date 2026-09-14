@@ -322,7 +322,9 @@ func (s *service) recordDispatch(ctx context.Context, r contract.FleetDispatchRe
 	if err := contract.ValidateWorkloadName(r.Workload); err != nil {
 		return zero, "bad-workload", err.Error()
 	}
-	if r.Kind != contract.WorkloadKindNode && r.Kind != contract.WorkloadKindIndexSearch {
+	switch r.Kind {
+	case contract.WorkloadKindNode, contract.WorkloadKindIndexSearch, contract.WorkloadKindIndexGraph:
+	default:
 		return zero, "bad-kind", fmt.Sprintf("kind %q is not in this build's vocabulary", r.Kind)
 	}
 	replicas := r.Replicas
@@ -539,14 +541,15 @@ func (s *service) handleBridgeReport(req micro.Request) {
 
 	switch r.Action {
 	case contract.IndexReportDeclared:
-		if r.Kind != contract.IndexKindSearch {
+		workloadKind, known := indexWorkloadKind(r.Kind)
+		if !known {
 			// Read-side tolerance: a newer node may declare kinds this
 			// build has no workload for; the declaration stands in META.
 			s.logger.Warn("bridge: declared index kind has no workload here; left alone", "tenant", tenant, "log", r.Log, "index", r.Index, "kind", r.Kind)
 		} else if _, code, msg := s.recordDispatch(ctx, contract.FleetDispatchRequest{
 			Tenant:   tenant,
 			Workload: contract.WorkloadIndexName(r.Log, r.Index),
-			Kind:     contract.WorkloadKindIndexSearch,
+			Kind:     workloadKind,
 			Log:      r.Log,
 			Index:    r.Index,
 		}); code != "" {
@@ -574,4 +577,16 @@ func (s *service) handleBridgeReport(req micro.Request) {
 		return
 	}
 	_ = req.Respond(reply)
+}
+
+// indexWorkloadKind maps a declared index kind to its materializer's
+// workload kind.
+func indexWorkloadKind(indexKind string) (string, bool) {
+	switch indexKind {
+	case contract.IndexKindSearch:
+		return contract.WorkloadKindIndexSearch, true
+	case contract.IndexKindGraph:
+		return contract.WorkloadKindIndexGraph, true
+	}
+	return "", false
 }

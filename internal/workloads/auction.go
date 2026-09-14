@@ -173,7 +173,7 @@ func workloadName(thing string, ws contract.WorkloadState) string {
 	switch ws.Kind {
 	case contract.WorkloadKindNode:
 		return contract.WorkloadNodeName
-	case contract.WorkloadKindIndexSearch:
+	case contract.WorkloadKindIndexSearch, contract.WorkloadKindIndexGraph:
 		return contract.WorkloadIndexName(ws.Log, ws.Index)
 	}
 	// Unknown kinds keep their thing-tail name so destroy still addresses
