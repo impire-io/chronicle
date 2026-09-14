@@ -7,7 +7,16 @@
 executors: operator-started infrastructure, one per host) and
 [`03-DECISIONS/0014-the-fleet-runs-on-chronicle.md`](../../../chronicle-hq/03-DECISIONS/0014-the-fleet-runs-on-chronicle.md)
 (part 2: the bridge outside `CHRON.>`; part 3: per-host executors).
-**Status:** in progress on this branch ([plan.md](plan.md)).
+**Status:** implemented on this branch ([plan.md](plan.md)) — awaiting
+review and merge. Live read: the first heterogeneous fleet — `chronicle
+up` (embedded in-process executor) plus a standalone
+`chronicle-executor --backend microsandbox` joining over the wire; the
+auction placed the tenant node on the embedded executor and the indexer
+on the standalone one as a microVM, the declaration having traveled
+node → stamped bridge → workload service → auction; the query answered
+from the microVM. The bridge wire test runs on real operator-mode
+accounts: the stamp lands, a member cannot reach CHRONX.>, a forged
+report has no path to express.
 
 ## What this delivers
 
