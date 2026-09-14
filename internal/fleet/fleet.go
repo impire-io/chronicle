@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"sync"
 	"time"
 
 	"github.com/nats-io/nats-server/v2/server"
@@ -24,7 +23,6 @@ import (
 	"github.com/impire-io/chronicle/internal/devdir"
 	"github.com/impire-io/chronicle/internal/executor"
 	"github.com/impire-io/chronicle/internal/mint"
-	"github.com/impire-io/chronicle/internal/node"
 	"github.com/impire-io/chronicle/internal/version"
 	"github.com/impire-io/chronicle/internal/workloads"
 )
@@ -68,9 +66,6 @@ type Fleet struct {
 	wl    *workloads.Service
 	ex    *executor.Executor
 	conns []*nats.Conn
-
-	mu        sync.Mutex
-	reporters map[string]*metaIndexReporter
 }
 
 // Up boots the fleet: bootstrap material generated or loaded, the embedded
@@ -152,11 +147,8 @@ func Up(ctx context.Context, cfg Config) (*Fleet, error) {
 	switch cfg.Backend {
 	case "", BackendInProcess:
 		backend = &executor.InProcess{
-			URL:   f.URL,
-			Creds: pull,
-			NodeConfig: func(tenant string) node.Config {
-				return node.Config{Logger: logger, Indexes: &indexReporter{nc: ctrlConn, tenant: tenant, logger: logger}}
-			},
+			URL:    f.URL,
+			Creds:  pull,
 			Logger: logger,
 		}
 	case BackendMicrosandbox:
@@ -185,6 +177,7 @@ func Up(ctx context.Context, cfg Config) (*Fleet, error) {
 		OperatorSigningSeed: b.OperatorSigningSeed,
 		SysConn:             sysConn,
 		URL:                 f.URL,
+		ControlAccountPub:   b.ControlAccountPub,
 	}
 	ctrl, err := control.Start(ctrlConn, control.Config{
 		Driver:      driver,
@@ -201,14 +194,6 @@ func Up(ctx context.Context, cfg Config) (*Fleet, error) {
 				Kind:     contract.WorkloadKindNode,
 			}); err != nil {
 				return err
-			}
-			// An out-of-process node cannot reach the dispatch surface
-			// without the multi-host bridge; the composition carries its
-			// reports from META until the bridge lands.
-			if cfg.Backend == BackendMicrosandbox {
-				if err := f.startReporter(name, serviceCreds, ctrlConn, logger); err != nil {
-					return err
-				}
 			}
 			// Placement is asynchronous, but the mint's promise is not: a
 			// minted tenant answers verbs (onboarding § verify by
@@ -250,72 +235,12 @@ func waitForNode(ctx context.Context, url, tenant string, serviceCreds []byte) e
 	}
 }
 
-// indexReporter is the in-process transport of the node's dispatch
-// reports; the tenant-stamped account import is the multi-host
-// increment's transport for the same calls.
-type indexReporter struct {
-	nc     *nats.Conn
-	tenant string
-	logger *slog.Logger
-}
-
-func (r *indexReporter) IndexDeclared(ctx context.Context, log, index, kind string) error {
-	if kind != contract.IndexKindSearch {
-		// Read-side tolerance: a newer build may have declared kinds this
-		// composition has no workload for.
-		r.logger.Warn("declared index kind has no workload here; left alone", "tenant", r.tenant, "log", log, "index", index, "kind", kind)
-		return nil
-	}
-	_, err := workloads.Dispatch(ctx, r.nc, contract.FleetDispatchRequest{
-		Tenant:   r.tenant,
-		Workload: contract.WorkloadIndexName(log, index),
-		Kind:     contract.WorkloadKindIndexSearch,
-		Log:      log,
-		Index:    index,
-	})
-	return err
-}
-
-func (r *indexReporter) IndexDeleted(ctx context.Context, log, index string) error {
-	_, err := workloads.StopWorkload(ctx, r.nc, contract.FleetStopRequest{
-		Tenant:   r.tenant,
-		Workload: contract.WorkloadIndexName(log, index),
-	})
-	return err
-}
-
-// startReporter runs one tenant's META-derived report transport,
-// idempotently — the restart replay revisits every tenant.
-func (f *Fleet) startReporter(tenant string, serviceCreds []byte, dispatchConn *nats.Conn, logger *slog.Logger) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.reporters == nil {
-		f.reporters = map[string]*metaIndexReporter{}
-	}
-	if _, running := f.reporters[tenant]; running {
-		return nil
-	}
-	r, err := startMetaIndexReporter(f.URL, tenant, serviceCreds, dispatchConn, logger)
-	if err != nil {
-		return err
-	}
-	f.reporters[tenant] = r
-	return nil
-}
-
 // Stop tears the composition down: control verbs first, then the workload
 // service, then the executor and its placements, then the server. Appends
 // need none of them — writers lose nothing.
 func (f *Fleet) Stop() {
 	if f.ctrl != nil {
 		_ = f.ctrl.Stop()
-	}
-	f.mu.Lock()
-	reporters := f.reporters
-	f.reporters = nil
-	f.mu.Unlock()
-	for _, r := range reporters {
-		r.stop()
 	}
 	if f.wl != nil {
 		f.wl.Stop()

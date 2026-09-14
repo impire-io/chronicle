@@ -3,6 +3,7 @@ package contract
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // The fleet log (chronicle-hq/02-DESIGN/06-scheduler.md, decision 0014):
@@ -306,4 +307,55 @@ func ValidateExecutorName(name string) error {
 		return fmt.Errorf("executor name %q: must match [a-z0-9-]+", name)
 	}
 	return nil
+}
+
+// BridgeRoot is the reserved root of the cross-account bridge subjects
+// (06-scheduler.md § the dispatch surface) — deliberately outside Root,
+// because the member baseline grants CHRON.> to every member and
+// reporting belongs to service users alone.
+const BridgeRoot = "CHRONX"
+
+// FleetBridgeLocalSubject is what a tenant's node publishes to: the
+// import in its account JWT maps it to the stamped form, and the mapping
+// is unforgeable because chronicle signs the JWT (0006).
+const FleetBridgeLocalSubject = BridgeRoot + ".FLEET.REPORT"
+
+// FleetBridgeExport is the control account's service export pattern.
+const FleetBridgeExport = FleetBridgeLocalSubject + ".*"
+
+// FleetBridgeSubjectFor is the stamped form a report arrives on in the
+// control account. The tenant comes from this token, never the payload.
+func FleetBridgeSubjectFor(tenant string) string {
+	return FleetBridgeLocalSubject + "." + tenant
+}
+
+// TenantFromBridgeSubject recovers the stamp; "" when the subject is not
+// a stamped bridge subject.
+func TenantFromBridgeSubject(subject string) string {
+	rest, ok := strings.CutPrefix(subject, FleetBridgeLocalSubject+".")
+	if !ok || rest == "" || strings.Contains(rest, ".") {
+		return ""
+	}
+	return rest
+}
+
+// The report actions.
+const (
+	IndexReportDeclared = "declared"
+	IndexReportDeleted  = "deleted"
+)
+
+// FleetIndexReport is a node's report over the bridge: this index was
+// declared or deleted. The report is the request; the dispatch or stop
+// op the workload service lands is the record.
+type FleetIndexReport struct {
+	Action string `json:"action"`
+	Log    string `json:"log"`
+	Index  string `json:"index"`
+	Kind   string `json:"kind,omitempty"`
+}
+
+// FleetIndexReportAck acknowledges the report.
+type FleetIndexReportAck struct {
+	Recorded bool `json:"recorded"`
 }

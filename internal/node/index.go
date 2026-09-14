@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/nats-io/nats.go/micro"
 
@@ -130,11 +131,14 @@ func (n *node) handleIndexDelete(req micro.Request) {
 
 // rederiveIndexes reports every declared index — the boot half of the
 // level-triggered healing: idempotent at the dispatch surface, so a lost
-// report or a stale record converges on every node start.
-func (n *node) rederiveIndexes(ctx context.Context) error {
+// report or a stale record converges on every node start. Every failure
+// is a warning: declarations are the truth and the node serves them
+// whether or not anyone is listening for reports.
+func (n *node) rederiveIndexes(ctx context.Context) {
 	lister, err := n.meta.ListKeysFiltered(ctx, contract.MetaIndexPrefix+">")
 	if err != nil {
-		return fmt.Errorf("list index declarations: %w", err)
+		n.logger.Warn("re-derive: list index declarations", "err", err)
+		return
 	}
 	for key := range lister.Keys() {
 		rest := strings.TrimPrefix(key, contract.MetaIndexPrefix)
@@ -153,8 +157,41 @@ func (n *node) rederiveIndexes(ctx context.Context) error {
 			continue
 		}
 		if err := n.indexes.IndexDeclared(ctx, parts[0], parts[1], decl.Kind); err != nil {
-			return fmt.Errorf("report %s: %w", key, err)
+			n.logger.Warn("re-derive: report failed; the next boot heals", "key", key, "err", err)
 		}
 	}
+}
+
+// bridgeReporter is the node's default report transport: the
+// tenant-stamped bridge (06-scheduler.md § the dispatch surface),
+// published over the node's own connection — the import in the account
+// JWT maps the local subject to the stamped form, so the same code runs
+// in-process, in a microVM, or on another machine.
+type bridgeReporter struct {
+	nc *nats.Conn
+}
+
+func (r *bridgeReporter) report(ctx context.Context, report contract.FleetIndexReport) error {
+	data, err := json.Marshal(report)
+	if err != nil {
+		return err
+	}
+	reqCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	msg, err := r.nc.RequestWithContext(reqCtx, contract.FleetBridgeLocalSubject, data)
+	if err != nil {
+		return err
+	}
+	if code := msg.Header.Get(micro.ErrorCodeHeader); code != "" {
+		return fmt.Errorf("%s: %s", code, msg.Header.Get(micro.ErrorHeader))
+	}
 	return nil
+}
+
+func (r *bridgeReporter) IndexDeclared(ctx context.Context, log, index, kind string) error {
+	return r.report(ctx, contract.FleetIndexReport{Action: contract.IndexReportDeclared, Log: log, Index: index, Kind: kind})
+}
+
+func (r *bridgeReporter) IndexDeleted(ctx context.Context, log, index string) error {
+	return r.report(ctx, contract.FleetIndexReport{Action: contract.IndexReportDeleted, Log: log, Index: index})
 }

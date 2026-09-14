@@ -10,6 +10,7 @@ import (
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nkeys"
 
+	"github.com/impire-io/chronicle/contract"
 	"github.com/impire-io/chronicle/internal/devdir"
 )
 
@@ -102,20 +103,42 @@ var controlJetStreamLimits = jwt.JetStreamLimits{
 	MemoryStorage: -1, DiskStorage: -1, Streams: -1, Consumer: -1,
 }
 
+// bridgeExport is the control account's half of the tenant-stamped
+// bridge (06-scheduler.md § the dispatch surface): a service export every
+// tenant JWT imports with its own stamp. Unguarded on this substrate —
+// only chronicle's signing key can mint an importer; a token-gated export
+// is the synadia driver's concern when it exists.
+func bridgeExport() *jwt.Export {
+	return &jwt.Export{
+		Name:    "chronicle-fleet-bridge",
+		Type:    jwt.Service,
+		Subject: jwt.Subject(contract.FleetBridgeExport),
+	}
+}
+
 // ensureControlJetStream refreshes a control-account JWT minted before the
-// fleet log existed (decision 0014): account claims are signed by the
-// operator signing key, which the bootstrap keeps, so the upgrade needs no
-// account seed. The resolver preloads the refreshed JWT at every server
-// start.
+// fleet log or the bridge existed (decision 0014): account claims are
+// signed by the operator signing key, which the bootstrap keeps, so the
+// upgrade needs no account seed. The resolver preloads the refreshed JWT
+// at every server start.
 func (b *Bootstrap) ensureControlJetStream() error {
 	claims, err := jwt.DecodeAccountClaims(b.ControlAccountJWT)
 	if err != nil {
 		return fmt.Errorf("decode control account jwt: %w", err)
 	}
-	if claims.Limits.JetStreamLimits != (jwt.JetStreamLimits{}) {
+	hasExport := false
+	for _, e := range claims.Exports {
+		if string(e.Subject) == contract.FleetBridgeExport {
+			hasExport = true
+		}
+	}
+	if claims.Limits.JetStreamLimits != (jwt.JetStreamLimits{}) && hasExport {
 		return nil
 	}
 	claims.Limits.JetStreamLimits = controlJetStreamLimits
+	if !hasExport {
+		claims.Exports.Add(bridgeExport())
+	}
 	oskp, err := nkeys.FromSeed(b.OperatorSigningSeed)
 	if err != nil {
 		return fmt.Errorf("operator signing seed: %w", err)
@@ -175,6 +198,7 @@ func initBootstrap(dir string) (*Bootstrap, error) {
 	// The control plane has its own data plane — the fleet log (decision
 	// 0014) — so the control account gets JetStream like any tenant.
 	cac.Limits.JetStreamLimits = controlJetStreamLimits
+	cac.Exports.Add(bridgeExport())
 	controlJWT, err := cac.Encode(oskp)
 	if err != nil {
 		return nil, fmt.Errorf("encode control account jwt: %w", err)
