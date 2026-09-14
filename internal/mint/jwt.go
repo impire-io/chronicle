@@ -29,6 +29,11 @@ type JWTDriver struct {
 	SysConn *nats.Conn
 	// URL is the client URL the verify-by-connecting step dials.
 	URL string
+	// ControlAccountPub names the bridge's exporter: every minted tenant
+	// imports the fleet-report service from it, stamped with the tenant's
+	// own name (06-scheduler.md § the dispatch surface). Empty mints no
+	// import — a substrate without the fleet machinery still mints.
+	ControlAccountPub string
 	// Limits are the explicit JetStream limits every minted account gets —
 	// a fresh account has JetStream off until its JWT says otherwise. Zero
 	// means unlimited on the dev substrate.
@@ -79,6 +84,18 @@ func (d *JWTDriver) MintAccount(ctx context.Context, name string) (*Account, err
 	scope.Description = "the member baseline: granted once, at account creation"
 	scope.Template = MemberBaseline()
 	ac.SigningKeys.AddScopedSigner(scope)
+	if d.ControlAccountPub != "" {
+		// The bridge import: the tenant publishes the local subject, the
+		// server maps it to the stamped form — unforgeable, because this
+		// JWT is chronicle's to sign and the tenant never holds the pen.
+		ac.Imports.Add(&jwt.Import{
+			Name:         "chronicle-fleet-bridge",
+			Type:         jwt.Service,
+			Account:      d.ControlAccountPub,
+			Subject:      jwt.Subject(contract.FleetBridgeSubjectFor(name)),
+			LocalSubject: jwt.RenamingSubject(contract.FleetBridgeLocalSubject),
+		})
+	}
 
 	oskp, err := nkeys.FromSeed(d.OperatorSigningSeed)
 	if err != nil {

@@ -30,10 +30,6 @@ type InProcess struct {
 	// against chronicle-control, retried by the backend because the assign
 	// may still be landing when the placement starts.
 	Creds func(ctx context.Context, tenant, workload string) ([]byte, error)
-	// NodeConfig builds a node placement's config — the composition root
-	// wires the index reporter here, so INDEX verbs reach the dispatch
-	// surface.
-	NodeConfig func(tenant string) node.Config
 	// Logger; nil means slog.Default.
 	Logger *slog.Logger
 }
@@ -66,11 +62,9 @@ func (b *InProcess) Start(ctx context.Context, spec Spec) (Placement, error) {
 	var stop func()
 	switch spec.Kind {
 	case contract.WorkloadKindNode:
-		cfg := node.Config{Logger: logger}
-		if b.NodeConfig != nil {
-			cfg = b.NodeConfig(spec.Tenant)
-		}
-		n, err := node.Start(startCtx, nc, cfg)
+		// The node's reports ride its default bridge transport — the same
+		// path whether the placement is a goroutine or a microVM.
+		n, err := node.Start(startCtx, nc, node.Config{Logger: logger})
 		if err != nil {
 			nc.Close()
 			return nil, fmt.Errorf("start node: %w", err)

@@ -165,6 +165,7 @@ func Start(ctx context.Context, nc *nats.Conn, cfg Config) (*Service, error) {
 		{"fleet-stop", contract.FleetStopSubject, s.handleStop},
 		{"fleet-register", contract.FleetRegisterSubject, s.handleRegister},
 		{"fleet-report", contract.FleetReportSubject, s.handleReport},
+		{"fleet-bridge", contract.FleetBridgeExport, s.handleBridgeReport},
 	}
 	for _, e := range endpoints {
 		if err := svc.AddEndpoint(e.name, e.handler, micro.WithEndpointSubject(e.subject)); err != nil {
@@ -297,17 +298,32 @@ func (s *service) handleDispatch(req micro.Request) {
 		_ = req.Error("bad-request", err.Error(), nil)
 		return
 	}
-	if err := contract.ValidateLogName(r.Tenant); err != nil {
-		_ = req.Error("bad-tenant", err.Error(), nil)
+	resp, code, msg := s.recordDispatch(ctx, r)
+	if code != "" {
+		_ = req.Error(code, msg, nil)
 		return
+	}
+	reply, err := json.Marshal(resp)
+	if err != nil {
+		_ = req.Error("500", err.Error(), nil)
+		return
+	}
+	_ = req.Respond(reply)
+}
+
+// recordDispatch is the dispatch surface's core, shared by the direct
+// endpoint and the bridge: validate, land the birth snapshot under the
+// zero guard, kick the scan.
+func (s *service) recordDispatch(ctx context.Context, r contract.FleetDispatchRequest) (contract.FleetDispatchResponse, string, string) {
+	var zero contract.FleetDispatchResponse
+	if err := contract.ValidateLogName(r.Tenant); err != nil {
+		return zero, "bad-tenant", err.Error()
 	}
 	if err := contract.ValidateWorkloadName(r.Workload); err != nil {
-		_ = req.Error("bad-workload", err.Error(), nil)
-		return
+		return zero, "bad-workload", err.Error()
 	}
 	if r.Kind != contract.WorkloadKindNode && r.Kind != contract.WorkloadKindIndexSearch {
-		_ = req.Error("bad-kind", fmt.Sprintf("kind %q is not in this build's vocabulary", r.Kind), nil)
-		return
+		return zero, "bad-kind", fmt.Sprintf("kind %q is not in this build's vocabulary", r.Kind)
 	}
 	replicas := r.Replicas
 	if replicas == 0 {
@@ -323,13 +339,11 @@ func (s *service) handleDispatch(req micro.Request) {
 		Slots:    map[string]contract.WorkloadSlot{},
 	})
 	if err != nil {
-		_ = req.Error("500", err.Error(), nil)
-		return
+		return zero, "500", err.Error()
 	}
 	payload, err := json.Marshal(contract.Snapshot{State: state})
 	if err != nil {
-		_ = req.Error("500", err.Error(), nil)
-		return
+		return zero, "500", err.Error()
 	}
 
 	thing := contract.FleetWorkloadThing(r.Tenant, r.Workload)
@@ -339,17 +353,10 @@ func (s *service) handleDispatch(req micro.Request) {
 		// Born already — the idempotent case; the record stands.
 		resp.Existed = true
 	} else if err != nil {
-		_ = req.Error("500", fmt.Sprintf("dispatch: %v", err), nil)
-		return
+		return zero, "500", fmt.Sprintf("dispatch: %v", err)
 	}
 	s.kickScan()
-
-	reply, err := json.Marshal(resp)
-	if err != nil {
-		_ = req.Error("500", err.Error(), nil)
-		return
-	}
-	_ = req.Respond(reply)
+	return resp, "", ""
 }
 
 func (s *service) handleStop(req micro.Request) {
@@ -361,29 +368,37 @@ func (s *service) handleStop(req micro.Request) {
 		_ = req.Error("bad-request", err.Error(), nil)
 		return
 	}
-	thing := contract.FleetWorkloadThing(r.Tenant, r.Workload)
-	ws, seq, ok := s.workloadState(thing)
-	if !ok {
-		_ = req.Error("no-such-workload", fmt.Sprintf("workload %s/%s has no record", r.Tenant, r.Workload), nil)
+	code, msg := s.recordStop(ctx, r)
+	if code != "" {
+		_ = req.Error(code, msg, nil)
 		return
 	}
-	if !ws.Stopped {
-		if err := s.append(ctx, thing, contract.FleetOpStop, []byte(`{"stopped":true}`), seq); err != nil && !errors.Is(err, errConflict) {
-			_ = req.Error("500", fmt.Sprintf("stop: %v", err), nil)
-			return
-		}
-		// A conflict means the record moved under us; the scan re-reads and
-		// the caller may retry — the retirement intent is not lost silently
-		// because the caller sees Stopped only on a landed record.
-	}
-	s.kickScan()
-
 	reply, err := json.Marshal(contract.FleetStopResponse{Stopped: true})
 	if err != nil {
 		_ = req.Error("500", err.Error(), nil)
 		return
 	}
 	_ = req.Respond(reply)
+}
+
+// recordStop is the retirement core, shared by the direct endpoint and
+// the bridge.
+func (s *service) recordStop(ctx context.Context, r contract.FleetStopRequest) (string, string) {
+	thing := contract.FleetWorkloadThing(r.Tenant, r.Workload)
+	ws, seq, ok := s.workloadState(thing)
+	if !ok {
+		return "no-such-workload", fmt.Sprintf("workload %s/%s has no record", r.Tenant, r.Workload)
+	}
+	if !ws.Stopped {
+		if err := s.append(ctx, thing, contract.FleetOpStop, []byte(`{"stopped":true}`), seq); err != nil && !errors.Is(err, errConflict) {
+			return "500", fmt.Sprintf("stop: %v", err)
+		}
+		// A conflict means the record moved under us; the scan re-reads and
+		// the caller may retry — the retirement intent is not lost silently
+		// because the caller sees Stopped only on a landed record.
+	}
+	s.kickScan()
+	return "", ""
 }
 
 func (s *service) handleRegister(req micro.Request) {
@@ -500,4 +515,63 @@ func (s *service) kickScan() {
 	case s.kick <- struct{}{}:
 	default:
 	}
+}
+
+// handleBridgeReport serves the tenant-stamped bridge (06-scheduler.md §
+// the dispatch surface): a node's index report arrives on
+// CHRONX.FLEET.REPORT.<tenant>, where the tenant token was mapped in by
+// the account import chronicle signed — never taken from the payload.
+// The report is the request; the dispatch or stop op is the record.
+func (s *service) handleBridgeReport(req micro.Request) {
+	ctx, cancel := context.WithTimeout(s.ctx, 30*time.Second)
+	defer cancel()
+
+	tenant := contract.TenantFromBridgeSubject(req.Subject())
+	if tenant == "" {
+		_ = req.Error("bad-subject", "the bridge stamp is missing — this subject should be unreachable", nil)
+		return
+	}
+	var r contract.FleetIndexReport
+	if err := json.Unmarshal(req.Data(), &r); err != nil {
+		_ = req.Error("bad-request", err.Error(), nil)
+		return
+	}
+
+	switch r.Action {
+	case contract.IndexReportDeclared:
+		if r.Kind != contract.IndexKindSearch {
+			// Read-side tolerance: a newer node may declare kinds this
+			// build has no workload for; the declaration stands in META.
+			s.logger.Warn("bridge: declared index kind has no workload here; left alone", "tenant", tenant, "log", r.Log, "index", r.Index, "kind", r.Kind)
+		} else if _, code, msg := s.recordDispatch(ctx, contract.FleetDispatchRequest{
+			Tenant:   tenant,
+			Workload: contract.WorkloadIndexName(r.Log, r.Index),
+			Kind:     contract.WorkloadKindIndexSearch,
+			Log:      r.Log,
+			Index:    r.Index,
+		}); code != "" {
+			_ = req.Error(code, msg, nil)
+			return
+		}
+	case contract.IndexReportDeleted:
+		if code, msg := s.recordStop(ctx, contract.FleetStopRequest{
+			Tenant:   tenant,
+			Workload: contract.WorkloadIndexName(r.Log, r.Index),
+		}); code != "" && code != "no-such-workload" {
+			// An unknown workload on delete is converged already, not an
+			// error the node can act on.
+			_ = req.Error(code, msg, nil)
+			return
+		}
+	default:
+		_ = req.Error("bad-action", fmt.Sprintf("action %q is not in this build's vocabulary (declared, deleted)", r.Action), nil)
+		return
+	}
+
+	reply, err := json.Marshal(contract.FleetIndexReportAck{Recorded: true})
+	if err != nil {
+		_ = req.Error("500", err.Error(), nil)
+		return
+	}
+	_ = req.Respond(reply)
 }

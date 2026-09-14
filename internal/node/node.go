@@ -36,8 +36,11 @@ type Config struct {
 	// Indexes reports the node's index slice to the dispatch surface
 	// (06-scheduler.md § the dispatch surface): the same handler that
 	// writes the META key reports the workload, and boot re-derives the
-	// whole slice from META — the level-triggered healing. Nil means no
-	// scheduling exists (tests exercising the node alone).
+	// whole slice from META — the level-triggered healing. Nil means the
+	// default: the tenant-stamped bridge over the node's own connection,
+	// the one transport wherever the node runs. Reports are soft
+	// everywhere — a substrate without the fleet machinery warns and
+	// serves.
 	Indexes IndexReporter
 }
 
@@ -126,13 +129,17 @@ func Start(ctx context.Context, nc *nats.Conn, cfg Config) (*Node, error) {
 	}
 
 	foldCtx, cancel := context.WithCancel(context.Background())
+	indexes := cfg.Indexes
+	if indexes == nil {
+		indexes = &bridgeReporter{nc: nc}
+	}
 	n := &node{
 		nc:          nc,
 		js:          js,
 		meta:        meta,
 		logger:      logger,
 		rollupEvery: rollupEvery,
-		indexes:     cfg.Indexes,
+		indexes:     indexes,
 		foldCtx:     foldCtx,
 		wg:          &sync.WaitGroup{},
 		folds:       map[string]*foldRun{},
@@ -158,12 +165,9 @@ func Start(ctx context.Context, nc *nats.Conn, cfg Config) (*Node, error) {
 	// Re-derive the index slice from META: declarations are the truth, and
 	// re-reporting them is idempotent at the dispatch surface — skew
 	// between META and the record heals on every boot (06-scheduler.md).
-	if cfg.Indexes != nil {
-		if err := n.rederiveIndexes(ctx); err != nil {
-			cancel()
-			return nil, fmt.Errorf("re-derive index slice: %w", err)
-		}
-	}
+	// Failures warn and never block the node: the log's projections must
+	// serve even when the fleet machinery is absent.
+	n.rederiveIndexes(ctx)
 
 	svc, err := micro.AddService(nc, micro.Config{
 		Name:        "chronicle-node",
