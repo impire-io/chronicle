@@ -230,6 +230,12 @@ type FleetDelegateResponse struct {
 	Reason   string `json:"reason,omitempty"`
 }
 
+// RefusalAlreadyCarrying is the one refusal that means convergence, not
+// failure: the executor already runs this placement, so the assign is on
+// the log (or in flight) ahead of the auctioneer's fold. The auction stops
+// and waits for the fold instead of trying other bidders.
+const RefusalAlreadyCarrying = "already carrying this workload"
+
 // FleetStatusRequest asks the backend witness about one placement.
 type FleetStatusRequest struct {
 	Tenant   string `json:"tenant"`

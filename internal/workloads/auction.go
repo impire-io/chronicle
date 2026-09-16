@@ -43,9 +43,17 @@ func (s *service) auctionSlot(ctx context.Context, thing string, ws contract.Wor
 	})
 
 	for _, bid := range bids {
-		accepted, err := s.delegate(ctx, bid.Executor, thing, ws, slot)
-		if err != nil || !accepted {
-			s.logger.Info("workloads: delegation not accepted", "thing", thing, "slot", slot, "executor", bid.Executor, "accepted", accepted, "err", err)
+		resp, err := s.delegate(ctx, bid.Executor, thing, ws, slot)
+		if err == nil && !resp.Accepted && resp.Reason == contract.RefusalAlreadyCarrying {
+			// Convergence, not refusal: the executor already runs this
+			// placement, so its assign is on the log ahead of our fold.
+			// Trying another bidder would place a doomed duplicate; the
+			// next scan reads the caught-up fold and sees the slot filled.
+			s.logger.Info("workloads: executor already carries the slot; awaiting the fold", "thing", thing, "slot", slot, "executor", bid.Executor)
+			return
+		}
+		if err != nil || !resp.Accepted {
+			s.logger.Info("workloads: delegation not accepted", "thing", thing, "slot", slot, "executor", bid.Executor, "reason", resp.Reason, "err", err)
 			continue // stale bid or a gone executor; try the next bidder
 		}
 		patch, err := json.Marshal(map[string]any{
@@ -65,7 +73,10 @@ func (s *service) auctionSlot(ctx context.Context, thing string, ws contract.Wor
 			return
 		}
 		if err != nil {
-			s.logger.Warn("workloads: assign append failed", "thing", thing, "slot", slot, "err", err)
+			// Same undo as the conflict path: without the record, the
+			// started placement would be an orphan no scan reconciles.
+			s.logger.Warn("workloads: assign append failed; undoing delegation", "thing", thing, "slot", slot, "err", err)
+			s.destroyPlacement(ctx, bid.Executor, ws.Tenant, workloadName(thing, ws))
 			return
 		}
 		s.logger.Info("workloads: slot assigned", "thing", thing, "slot", slot, "executor", bid.Executor)
@@ -128,7 +139,8 @@ func (s *service) gatherBids(ctx context.Context, ws contract.WorkloadState) ([]
 // delegate offers the slot to one executor and waits for the accept or the
 // refusal. The executor starts the placement on accept — optimistically;
 // the guard settles who won, and the loser is destroyed.
-func (s *service) delegate(ctx context.Context, executor, thing string, ws contract.WorkloadState, slot string) (bool, error) {
+func (s *service) delegate(ctx context.Context, executor, thing string, ws contract.WorkloadState, slot string) (contract.FleetDelegateResponse, error) {
+	var resp contract.FleetDelegateResponse
 	reqData, err := json.Marshal(contract.FleetDelegateRequest{
 		Tenant:   ws.Tenant,
 		Workload: workloadName(thing, ws),
@@ -138,17 +150,16 @@ func (s *service) delegate(ctx context.Context, executor, thing string, ws contr
 		Index:    ws.Index,
 	})
 	if err != nil {
-		return false, err
+		return resp, err
 	}
 	msg, err := s.nc.RequestWithContext(ctx, contract.FleetDelegateSubject(executor), reqData)
 	if err != nil {
-		return false, err
+		return resp, err
 	}
-	var resp contract.FleetDelegateResponse
 	if err := json.Unmarshal(msg.Data, &resp); err != nil {
-		return false, err
+		return contract.FleetDelegateResponse{}, err
 	}
-	return resp.Accepted, nil
+	return resp, nil
 }
 
 // destroyPlacement tells one executor to tear a placement down. Absence is

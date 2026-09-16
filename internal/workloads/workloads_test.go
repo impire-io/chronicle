@@ -17,21 +17,25 @@ import (
 )
 
 // fakeExecutor answers the executor's wire surface from a test: bids on
-// every auction, accepts every delegation, and reports the status the test
-// sets — the muscle reduced to its protocol.
+// every auction, answers delegations with the response the test sets
+// (accept by default), and reports the status the test sets — the muscle
+// reduced to its protocol.
 type fakeExecutor struct {
-	t      *testing.T
-	nc     *nats.Conn
-	id     string
-	status atomic.Value // string
+	t        *testing.T
+	nc       *nats.Conn
+	id       string
+	status   atomic.Value // string
+	delegate atomic.Value // contract.FleetDelegateResponse
 
-	destroys atomic.Int64
+	delegations atomic.Int64
+	destroys    atomic.Int64
 }
 
 func startFakeExecutor(t *testing.T, nc *nats.Conn, id string) *fakeExecutor {
 	t.Helper()
 	f := &fakeExecutor{t: t, nc: nc, id: id}
 	f.status.Store(contract.PlacementRunning)
+	f.delegate.Store(contract.FleetDelegateResponse{Accepted: true})
 
 	subs := []struct {
 		subject string
@@ -42,7 +46,8 @@ func startFakeExecutor(t *testing.T, nc *nats.Conn, id string) *fakeExecutor {
 			_ = msg.Respond(bid)
 		}},
 		{contract.FleetDelegateSubject(id), func(msg *nats.Msg) {
-			resp, _ := json.Marshal(contract.FleetDelegateResponse{Accepted: true})
+			f.delegations.Add(1)
+			resp, _ := json.Marshal(f.delegate.Load().(contract.FleetDelegateResponse))
 			_ = msg.Respond(resp)
 		}},
 		{contract.FleetStatusSubject(id), func(msg *nats.Msg) {
@@ -266,4 +271,52 @@ func TestGuardRejectsTheOutrunWriter(t *testing.T) {
 	if !errors.As(err, &apiErr) || apiErr.ErrorCode != jetstream.JSErrCodeStreamWrongLastSequence {
 		t.Fatalf("competing assign: want wrong-last-sequence, got %v", err)
 	}
+}
+
+// TestAlreadyCarryingRefusalStopsTheAuction: the one refusal that means
+// convergence. An executor that already carries the placement refuses with
+// RefusalAlreadyCarrying — its assign is on the log ahead of the
+// auctioneer's fold — so the auction stops and waits for the fold instead
+// of falling through and placing a doomed duplicate on the next bidder. A
+// generic refusal keeps the fall-through.
+func TestAlreadyCarryingRefusalStopsTheAuction(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	nc, _ := startService(ctx, t)
+
+	// Equal load sorts by name: "aa" is delegated before "zz".
+	carrying := startFakeExecutor(t, nc, "aa")
+	open := startFakeExecutor(t, nc, "zz")
+	carrying.delegate.Store(contract.FleetDelegateResponse{Accepted: false, Reason: contract.RefusalAlreadyCarrying})
+	for _, id := range []string{"aa", "zz"} {
+		if _, err := workloads.Register(ctx, nc, contract.FleetRegisterRequest{Executor: id, Backend: "test"}); err != nil {
+			t.Fatalf("register %s: %v", id, err)
+		}
+	}
+
+	if _, err := workloads.Dispatch(ctx, nc, contract.FleetDispatchRequest{
+		Tenant: "t2", Workload: contract.WorkloadNodeName, Kind: contract.WorkloadKindNode,
+	}); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	// Several scan ticks: each auction delegates to "aa", reads the
+	// already-carrying refusal as convergence, and stops — "zz" never
+	// hears a delegation and no assign lands.
+	waitFor(t, "the carrying executor refused at least two delegations", func() bool {
+		return carrying.delegations.Load() >= 2
+	})
+	if got := open.delegations.Load(); got != 0 {
+		t.Fatalf("already-carrying refusal fell through to the next bidder: %d delegations", got)
+	}
+	if ws, ok := workloadFromBucket(ctx, t, nc, "t2", contract.WorkloadNodeName); ok && len(ws.Slots) != 0 {
+		t.Fatalf("no assign should land while the auction waits for the fold: %+v", ws.Slots)
+	}
+
+	// A generic refusal is a real refusal: the auction moves to the next
+	// bidder, which accepts, and the assign lands there.
+	carrying.delegate.Store(contract.FleetDelegateResponse{Accepted: false, Reason: "backend at capacity"})
+	waitFor(t, "the open executor placed after the generic refusal", func() bool {
+		ws, ok := workloadFromBucket(ctx, t, nc, "t2", contract.WorkloadNodeName)
+		return ok && ws.Slots["0"].Executor == "zz"
+	})
 }
