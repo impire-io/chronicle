@@ -217,3 +217,82 @@ func scoreOf(resp client.SemanticQueryResponse, thing string) float64 {
 	}
 	return -1
 }
+
+// TestSemanticOpsSource proves 0020 for the semantic kind: effect-none
+// ops embed as their own documents, hits stay thing-level scored by the
+// best op — one hit per thing however many ops matched — and the live
+// tail embeds a fresh op without any effect declared.
+func TestSemanticOpsSource(t *testing.T) {
+	nc, alice := setup(t)
+	provider := startTestProvider(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	if _, err := alice.CreateLog(ctx, "items", ""); err != nil {
+		t.Fatalf("create log: %v", err)
+	}
+	// note.add stays effect-none: invisible to any state-sourced index.
+	if _, err := alice.SetSchema(ctx, "items", "note.add", json.RawMessage(`{"type":"object"}`), ""); err != nil {
+		t.Fatalf("set schema: %v", err)
+	}
+	if _, err := alice.CreateThing(ctx, "items", "item-1", json.RawMessage(`{}`)); err != nil {
+		t.Fatalf("create item-1: %v", err)
+	}
+	if _, err := alice.CreateThing(ctx, "items", "item-2", json.RawMessage(`{}`)); err != nil {
+		t.Fatalf("create item-2: %v", err)
+	}
+	if _, err := alice.Append(ctx, "items", "item-1", "note.add", []byte(`{"body":"a widget hums"}`)); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	if _, err := alice.Append(ctx, "items", "item-1", "note.add", []byte(`{"body":"widget widget maintenance"}`)); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	if _, err := alice.Append(ctx, "items", "item-2", "note.add", []byte(`{"body":"a gadget spins"}`)); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+
+	if _, err := alice.DeclareIndex(ctx, "items", "meaning", "semantic", json.RawMessage(`{"source":"ops","types":["note.add"]}`)); err != nil {
+		t.Fatalf("declare ops-sourced semantic index: %v", err)
+	}
+	svc, err := semantic.Start(ctx, nc, semantic.Config{
+		Log: "items", Index: "meaning",
+		Provider: semantic.ProviderConfig{BaseURL: provider.URL + "/v1", Model: "test-embed"},
+	})
+	if err != nil {
+		t.Fatalf("start semantic service: %v", err)
+	}
+	t.Cleanup(svc.Stop)
+
+	// Meaning living only in history is queryable; two matching ops on
+	// item-1 still make one thing-level hit, ranked first.
+	resp, err := alice.QuerySemantic(ctx, "items", "meaning", "widget", 0, 0)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if resp.Unembedded != 0 || len(resp.Hits) == 0 || resp.Hits[0].Thing != "item-1" {
+		t.Fatalf("widget query = %+v", resp)
+	}
+	for i, h := range resp.Hits {
+		for j := i + 1; j < len(resp.Hits); j++ {
+			if h.Thing == resp.Hits[j].Thing {
+				t.Fatalf("a thing hit twice: %+v", resp.Hits)
+			}
+		}
+	}
+
+	// The live tail: a fresh op embeds and answers, no effects involved.
+	if _, err := alice.Append(ctx, "items", "item-2", "note.add", []byte(`{"body":"gadget gadget gadget"}`)); err != nil {
+		t.Fatalf("append live: %v", err)
+	}
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		resp, err = alice.QuerySemantic(ctx, "items", "meaning", "gadget", 0, 0)
+		if err == nil && resp.Unembedded == 0 && len(resp.Hits) > 0 && resp.Hits[0].Thing == "item-2" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("live op never answered: %+v %v", resp, err)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}

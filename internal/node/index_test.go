@@ -57,10 +57,16 @@ func TestIndexVerbs(t *testing.T) {
 	if _, err = alice.DeclareIndex(ctx, "orders", "vec", "semantic", nil); err != nil {
 		t.Fatalf("declare semantic: %v", err)
 	}
-	// Config belongs to the kind: search refuses one, graph requires one.
+	// Config belongs to the kind: search admits exactly the source (0020)
+	// and its narrowing, graph requires edge rules and stays state-only.
 	_, err = alice.DeclareIndex(ctx, "orders", "text2", "search", json.RawMessage(`{"anything":true}`))
 	wantServiceError(t, err, "bad-config")
+	if _, err = alice.DeclareIndex(ctx, "orders", "trail", "search", json.RawMessage(`{"source":"ops"}`)); err != nil {
+		t.Fatalf("declare ops-sourced search: %v", err)
+	}
 	_, err = alice.DeclareIndex(ctx, "orders", "refs", "graph", nil)
+	wantServiceError(t, err, "bad-config")
+	_, err = alice.DeclareIndex(ctx, "orders", "refs", "graph", json.RawMessage(`{"edges":[{"field":"customer"}],"source":"ops"}`))
 	wantServiceError(t, err, "bad-config")
 
 	// Names obey the grammar; logs must exist.

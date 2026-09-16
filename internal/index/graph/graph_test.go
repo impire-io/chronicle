@@ -119,9 +119,14 @@ func TestParseGraphConfigIsWriteSideStrict(t *testing.T) {
 		"dotted hole":  json.RawMessage(`{"edges":[{"field":"a..b"}]}`),
 		"unknown keys": json.RawMessage(`{"edges":[{"field":"a"}],"mystery":true}`),
 		"duplicate":    json.RawMessage(`{"edges":[{"field":"a"},{"field":"a"}]}`),
+		"ops source":   json.RawMessage(`{"edges":[{"field":"a"}],"source":"ops"}`),
 	} {
 		if _, err := contract.ParseGraphConfig(raw); err == nil {
 			t.Fatalf("%s config accepted", name)
 		}
+	}
+	// Graph is state-only (0020 § 4), and saying so explicitly is fine.
+	if _, err := contract.ParseGraphConfig(json.RawMessage(`{"edges":[{"field":"a"}],"source":"state"}`)); err != nil {
+		t.Fatalf("explicit state source refused: %v", err)
 	}
 }

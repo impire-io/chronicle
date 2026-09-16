@@ -12,6 +12,7 @@ import (
 
 	"github.com/impire-io/chronicle/client"
 	"github.com/impire-io/chronicle/contract"
+	"github.com/impire-io/chronicle/internal/index/projection"
 )
 
 // chunk is one embeddable piece of a thing's state: which field it came
@@ -206,6 +207,26 @@ func (r *semanticRun) Upsert(thing string, state json.RawMessage) {
 	}
 }
 
+// UpsertOp queues one op's text for embedding (0020): a document of its
+// own, keyed by thing and seq. Fields narrows the op payload exactly as
+// it narrows state; an op with no selected text is simply no document.
+// Ops are immutable, so a document embeds once and is never re-embedded.
+func (r *semanticRun) UpsertOp(thing string, seq uint64, payload json.RawMessage) {
+	chunks := chunksFor(payload, r.fields, r.budget)
+	if len(chunks) == 0 {
+		return
+	}
+	id := projection.DocID(thing, seq)
+	r.mu.Lock()
+	r.gen[id]++
+	r.pending[id] = chunks
+	r.mu.Unlock()
+	select {
+	case r.notify <- struct{}{}:
+	default:
+	}
+}
+
 // worker drains pending things one at a time, with backoff on provider
 // trouble. A thing re-folded mid-embed keeps its queue slot: the
 // generation guard drops the stale vectors.
@@ -285,9 +306,14 @@ func (r *semanticRun) query(ctx context.Context, req client.SemanticQueryRequest
 	}
 	qv := vecs[0]
 
+	// Documents group to things — a state-sourced document's ID is the
+	// thing itself; an ops-sourced thing owns one document per op, and its
+	// best chunk anywhere wins (0020: score by best op).
 	r.mu.Lock()
+	byThing := map[string]int{}
 	hits := make([]client.SemanticHit, 0, len(r.embedded))
-	for thing, cvs := range r.embedded {
+	for id, cvs := range r.embedded {
+		thing := projection.DocThing(id)
 		best := client.SemanticHit{Thing: thing, Score: math.Inf(-1)}
 		for _, cv := range cvs {
 			if s := cosine(qv, cv.vec); s > best.Score {
@@ -295,9 +321,17 @@ func (r *semanticRun) query(ctx context.Context, req client.SemanticQueryRequest
 				best.Field = cv.field
 			}
 		}
-		if !math.IsInf(best.Score, -1) {
-			hits = append(hits, best)
+		if math.IsInf(best.Score, -1) {
+			continue
 		}
+		if at, seen := byThing[thing]; seen {
+			if best.Score > hits[at].Score {
+				hits[at] = best
+			}
+			continue
+		}
+		byThing[thing] = len(hits)
+		hits = append(hits, best)
 	}
 	pending := len(r.pending)
 	r.mu.Unlock()
