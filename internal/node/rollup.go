@@ -48,6 +48,18 @@ func (n *node) rollupThing(ctx context.Context, log, thing string) (rollupResult
 	mu.Lock()
 	defer mu.Unlock()
 
+	// The log-level gate sits above the effect gate (0019): a preserved
+	// log's trail is the product, and the node never compacts any of it.
+	// Read-side tolerant — an unreadable config reads as compactable; the
+	// stream's own AllowRollup refusal stays the guarantee regardless.
+	if entry, err := n.meta.Get(ctx, contract.MetaLogConfig(log)); err == nil {
+		var cfg contract.LogConfig
+		if jerr := json.Unmarshal(entry.Value(), &cfg); jerr == nil &&
+			contract.NormalizeHistory(cfg.History) == contract.HistoryPreserved {
+			return rollupResult{reason: "the log declares history preserved (0019)"}, nil
+		}
+	}
+
 	subject := contract.OpsSubject(log, thing)
 	stream, err := n.js.Stream(ctx, contract.StreamName(log))
 	if err != nil {

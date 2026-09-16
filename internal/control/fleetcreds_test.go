@@ -39,7 +39,7 @@ func TestFleetCredsIsRecordVerified(t *testing.T) {
 
 	// The fleet log with a workload's custody tail: born, then assigned to
 	// "right". No STATE_FLEET exists — the tail is the record.
-	if _, err := js.CreateStream(ctx, contract.LogStreamConfig(contract.FleetLog, 0)); err != nil {
+	if _, err := js.CreateStream(ctx, contract.LogStreamConfig(contract.FleetLog, 0, "")); err != nil {
 		t.Fatalf("create fleet stream: %v", err)
 	}
 	subject := contract.OpsSubject(contract.FleetLog, contract.FleetWorkloadThing("t1", contract.WorkloadNodeName))

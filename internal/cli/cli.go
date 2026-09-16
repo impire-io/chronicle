@@ -90,7 +90,7 @@ func usage(out io.Writer) error {
 
   chronicle up [--dir D] [--port N]                     run the local fleet
   chronicle tenant create <name> [--dir D] [--admin P] [--out F]
-  chronicle log create <log> --creds F [--url U] [--desc S]
+  chronicle log create <log> --creds F [--url U] [--desc S] [--history H]
   chronicle schema set <log> <op.type> --creds F --schema JSON | --file F [--effect E]
   chronicle thing create <log> <thing> --creds F [--state JSON]
   chronicle thing rollup <log> <thing> --creds F
@@ -206,6 +206,7 @@ func logCreate(ctx context.Context, args []string, out io.Writer) error {
 	fs.SetOutput(out)
 	cf := addConnectFlags(fs)
 	desc := fs.String("desc", "", "log description")
+	history := fs.String("history", "", "history declaration (0019): compactable (default) or preserved")
 	pos, err := parseArgs(fs, args)
 	if err != nil {
 		return err
@@ -218,7 +219,11 @@ func logCreate(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	defer c.Close()
-	resp, err := c.CreateLog(ctx, pos[0], *desc)
+	var opts []client.LogOpt
+	if *history != "" {
+		opts = append(opts, client.WithHistory(*history))
+	}
+	resp, err := c.CreateLog(ctx, pos[0], *desc, opts...)
 	if err != nil {
 		return err
 	}
