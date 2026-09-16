@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/nats-io/nats.go/micro"
 
 	"github.com/impire-io/chronicle/client"
@@ -31,21 +32,48 @@ type Service struct {
 	micro micro.Service
 }
 
-// Start materializes the index over the shared projection spine — replay
-// from 1, live tail, effect-change rebuilds — and registers the query
-// endpoint only once the fold has caught up: a responder implies a
-// current index (05-indexes.md).
+// Start reads the index's declaration, materializes it over the shared
+// projection spine — replay from 1, live tail, effect-change rebuilds for
+// the state source — and registers the query endpoint only once the fold
+// has caught up: a responder implies a current index (05-indexes.md).
 func Start(ctx context.Context, nc *nats.Conn, cfg Config) (*Service, error) {
 	logger := cfg.Logger
 	if logger == nil {
 		logger = slog.Default()
 	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		return nil, fmt.Errorf("jetstream: %w", err)
+	}
+	meta, err := js.KeyValue(ctx, contract.MetaBucket)
+	if err != nil {
+		return nil, fmt.Errorf("open META: %w", err)
+	}
+	entry, err := meta.Get(ctx, contract.MetaIndex(cfg.Log, cfg.Index))
+	if err != nil {
+		return nil, fmt.Errorf("read declaration for %s/%s: %w", cfg.Log, cfg.Index, err)
+	}
+	var decl contract.IndexDeclaration
+	if err := json.Unmarshal(entry.Value(), &decl); err != nil {
+		return nil, fmt.Errorf("decode declaration: %w", err)
+	}
+	if decl.Kind != contract.IndexKindSearch {
+		return nil, fmt.Errorf("declaration %s/%s is kind %q, not search", cfg.Log, cfg.Index, decl.Kind)
+	}
+	scfg, err := contract.ParseSearchConfig(decl.Config)
+	if err != nil {
+		return nil, err
+	}
+	ops := contract.NormalizeSource(scfg.Source) == contract.SourceOps
+
 	proj, err := projection.Start(ctx, nc, projection.Config{
 		Log:    cfg.Log,
 		Index:  cfg.Index,
 		Kind:   "search index",
+		Source: scfg.Source,
+		Types:  scfg.Types,
 		Logger: logger,
-		NewRun: func() (projection.Run, error) { return newSearchRun(cfg.Log, logger) },
+		NewRun: func() (projection.Run, error) { return newSearchRun(cfg.Log, ops, logger) },
 	})
 	if err != nil {
 		return nil, err

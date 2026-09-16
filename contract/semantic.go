@@ -18,11 +18,16 @@ const IndexKindSemantic = "semantic"
 // SemanticConfig is the semantic kind's declaration config. Model names
 // what the index is embedded under (empty means the install default;
 // changing it is delete + declare, and the rebuild re-embeds). Fields
-// narrows which state fields carry meaning — dotted paths, the graph
-// kind's grammar — defaulting to every string field, search's own rule.
+// narrows which fields carry meaning — dotted paths, the graph kind's
+// grammar — defaulting to every string field, search's own rule; under
+// the ops source it narrows op payloads exactly as it narrows state.
+// Source picks which face of the log is embedded (0020), and Types
+// narrows which op types an ops-sourced index reads.
 type SemanticConfig struct {
 	Model  string   `json:"model,omitempty"`
 	Fields []string `json:"fields,omitempty"`
+	Source string   `json:"source,omitempty"`
+	Types  []string `json:"types,omitempty"`
 }
 
 // ParseSemanticConfig validates a semantic declaration's config
@@ -42,6 +47,12 @@ func ParseSemanticConfig(raw json.RawMessage) (SemanticConfig, error) {
 		if err := validateFieldPath(f); err != nil {
 			return zero, fmt.Errorf("semantic config: field %d: %w", i, err)
 		}
+	}
+	if err := validateSource(cfg.Source); err != nil {
+		return zero, fmt.Errorf("semantic config: %w", err)
+	}
+	if err := validateSourcedTypes(cfg.Source, cfg.Types); err != nil {
+		return zero, fmt.Errorf("semantic config: %w", err)
 	}
 	return cfg, nil
 }

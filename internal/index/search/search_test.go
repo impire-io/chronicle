@@ -114,6 +114,9 @@ func TestSearchEndToEnd(t *testing.T) {
 		t.Fatalf("query before the indexer runs: %v", err)
 	}
 
+	if _, err := alice.DeclareIndex(ctx, "orders", "text", "search", nil); err != nil {
+		t.Fatalf("declare index: %v", err)
+	}
 	svc, err := search.Start(ctx, nc, search.Config{Log: "orders", Index: "text"})
 	if err != nil {
 		t.Fatalf("start indexer: %v", err)
@@ -183,6 +186,9 @@ func TestSearchFollowsEffects(t *testing.T) {
 		t.Fatalf("append: %v", err)
 	}
 
+	if _, err := alice.DeclareIndex(ctx, "notes", "text", "search", nil); err != nil {
+		t.Fatalf("declare index: %v", err)
+	}
 	svc, err := search.Start(ctx, nc, search.Config{Log: "notes", Index: "text"})
 	if err != nil {
 		t.Fatalf("start indexer: %v", err)
@@ -203,4 +209,118 @@ func TestSearchFollowsEffects(t *testing.T) {
 		t.Fatalf("change effect: %v", err)
 	}
 	waitHit(ctx, t, alice, "notes", "text", "xyzzy", "n1")
+}
+
+// TestSearchOpsSource proves 0020's contract for the search kind: an
+// ops-sourced index finds text that lives only in history — effect-none
+// ops — with thing-level hits scored by the best op, an honest thing
+// total, and the types narrowing honored.
+func TestSearchOpsSource(t *testing.T) {
+	nc, alice := setup(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	if _, err := alice.CreateLog(ctx, "items", ""); err != nil {
+		t.Fatalf("create log: %v", err)
+	}
+	// note.add stays effect-none: its content is invisible to any
+	// state-sourced index, which is exactly the gap the ops source fills.
+	if _, err := alice.SetSchema(ctx, "items", "note.add", json.RawMessage(`{"type":"object"}`), ""); err != nil {
+		t.Fatalf("set schema: %v", err)
+	}
+	if _, err := alice.CreateThing(ctx, "items", "item-1", json.RawMessage(`{"title":"a widget"}`)); err != nil {
+		t.Fatalf("create thing: %v", err)
+	}
+	if _, err := alice.CreateThing(ctx, "items", "item-2", json.RawMessage(`{"title":"a gadget"}`)); err != nil {
+		t.Fatalf("create thing: %v", err)
+	}
+	if _, err := alice.Append(ctx, "items", "item-1", "note.add", []byte(`{"body":"the flux capacitor hums"}`)); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	if _, err := alice.Append(ctx, "items", "item-1", "note.add", []byte(`{"body":"the flux capacitor still hums"}`)); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	if _, err := alice.Append(ctx, "items", "item-2", "note.add", []byte(`{"body":"nothing flux about this one"}`)); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+
+	if _, err := alice.DeclareIndex(ctx, "items", "trail", "search", json.RawMessage(`{"source":"ops"}`)); err != nil {
+		t.Fatalf("declare ops index: %v", err)
+	}
+	svc, err := search.Start(ctx, nc, search.Config{Log: "items", Index: "trail"})
+	if err != nil {
+		t.Fatalf("start indexer: %v", err)
+	}
+	defer svc.Stop()
+
+	// Text living only in history is findable; hits name things, one per
+	// thing however many ops matched, best op first.
+	resp, err := alice.QueryIndex(ctx, "items", "trail", "flux", 0, 0)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if resp.Total != 2 || len(resp.Hits) != 2 {
+		t.Fatalf("flux hits: %+v", resp)
+	}
+	seen := map[string]bool{}
+	for _, h := range resp.Hits {
+		seen[h.Thing] = true
+	}
+	if !seen["item-1"] || !seen["item-2"] {
+		t.Fatalf("hits must name the things: %+v", resp.Hits)
+	}
+
+	// The live tail: a fresh op becomes findable without any effect help.
+	if _, err := alice.Append(ctx, "items", "item-2", "note.add", []byte(`{"body":"zorble"}`)); err != nil {
+		t.Fatalf("append live: %v", err)
+	}
+	waitHit(ctx, t, alice, "items", "trail", "zorble", "item-2")
+
+	// The types narrowing: an index reading only note.add cannot see the
+	// birth snapshots' state text.
+	if _, err := alice.DeclareIndex(ctx, "items", "notes-only", "search", json.RawMessage(`{"source":"ops","types":["note.add"]}`)); err != nil {
+		t.Fatalf("declare narrowed index: %v", err)
+	}
+	svc2, err := search.Start(ctx, nc, search.Config{Log: "items", Index: "notes-only"})
+	if err != nil {
+		t.Fatalf("start narrowed indexer: %v", err)
+	}
+	defer svc2.Stop()
+	resp, err = alice.QueryIndex(ctx, "items", "notes-only", "widget", 0, 0)
+	if err != nil {
+		t.Fatalf("narrowed query: %v", err)
+	}
+	if len(resp.Hits) != 0 {
+		t.Fatalf("a types-narrowed index saw another type's op: %+v", resp)
+	}
+	if resp, err = alice.QueryIndex(ctx, "items", "notes-only", "flux", 0, 0); err != nil || resp.Total != 2 {
+		t.Fatalf("narrowed flux hits: %v %+v", err, resp)
+	}
+}
+
+// TestParseSearchConfigIsWriteSideStrict pins the search config grammar
+// (0020): the source vocabulary, the types narrowing, and nothing else —
+// search stays no-knobs.
+func TestParseSearchConfigIsWriteSideStrict(t *testing.T) {
+	if _, err := contract.ParseSearchConfig(nil); err != nil {
+		t.Fatalf("absent config: %v", err)
+	}
+	if cfg, err := contract.ParseSearchConfig(json.RawMessage(`{"source":"ops"}`)); err != nil || cfg.Source != "ops" {
+		t.Fatalf("ops source: %v %+v", err, cfg)
+	}
+	if _, err := contract.ParseSearchConfig(json.RawMessage(`{"source":"tape"}`)); err == nil {
+		t.Fatal("unknown source accepted")
+	}
+	if _, err := contract.ParseSearchConfig(json.RawMessage(`{"analyzer":"keyword"}`)); err == nil {
+		t.Fatal("an analysis knob accepted — search is no-knobs")
+	}
+	if _, err := contract.ParseSearchConfig(json.RawMessage(`{"types":["note.add"]}`)); err == nil {
+		t.Fatal("types accepted on the state source")
+	}
+	if _, err := contract.ParseSearchConfig(json.RawMessage(`{"source":"ops","types":["note.add"]}`)); err != nil {
+		t.Fatalf("ops types narrowing refused: %v", err)
+	}
+	if _, err := contract.ParseSearchConfig(json.RawMessage(`{"source":"ops","types":[""]}`)); err == nil {
+		t.Fatal("empty type accepted")
+	}
 }

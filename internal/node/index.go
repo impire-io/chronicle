@@ -47,8 +47,14 @@ func (n *node) handleIndexDeclare(req micro.Request) {
 		return
 	}
 	// Config belongs to the kind — write-side strict (0015): graph
-	// requires well-formed edge rules, search stays no-knobs.
+	// requires well-formed edge rules and stays state-only (0020 § 4);
+	// search and semantic admit the source (0020) and its narrowing.
 	switch r.Kind {
+	case contract.IndexKindSearch:
+		if _, err := contract.ParseSearchConfig(r.Config); err != nil {
+			_ = req.Error("bad-config", err.Error(), nil)
+			return
+		}
 	case contract.IndexKindGraph:
 		if _, err := contract.ParseGraphConfig(r.Config); err != nil {
 			_ = req.Error("bad-config", err.Error(), nil)

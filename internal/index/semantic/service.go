@@ -89,6 +89,8 @@ func Start(ctx context.Context, nc *nats.Conn, cfg Config) (*Service, error) {
 		Log:    cfg.Log,
 		Index:  cfg.Index,
 		Kind:   "semantic index",
+		Source: scfg.Source,
+		Types:  scfg.Types,
 		Logger: logger,
 		NewRun: func() (projection.Run, error) {
 			return newSemanticRun(cfg.Log, prov, model, scfg.Fields, cfg.ChunkBytes, logger), nil

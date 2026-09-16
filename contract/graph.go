@@ -32,9 +32,13 @@ func (r GraphEdgeRule) EdgeLabel() string {
 	return r.Field
 }
 
-// GraphConfig is the graph kind's declaration config.
+// GraphConfig is the graph kind's declaration config. Source may be
+// stated but only as "state": graph is state-only — out-edges are a pure
+// function of current state (0015), and edges asserted by ops would need
+// a retraction story a future decision must carry (0020 § 4).
 type GraphConfig struct {
-	Edges []GraphEdgeRule `json:"edges"`
+	Edges  []GraphEdgeRule `json:"edges"`
+	Source string          `json:"source,omitempty"`
 }
 
 // ParseGraphConfig validates a graph declaration's config write-side
@@ -54,6 +58,12 @@ func ParseGraphConfig(raw json.RawMessage) (GraphConfig, error) {
 	}
 	if len(cfg.Edges) == 0 {
 		return zero, fmt.Errorf("graph config: at least one edge rule is required")
+	}
+	if err := validateSource(cfg.Source); err != nil {
+		return zero, fmt.Errorf("graph config: %w", err)
+	}
+	if NormalizeSource(cfg.Source) == SourceOps {
+		return zero, fmt.Errorf("graph config: the graph kind is state-only — out-edges are a pure function of current state (0020 § 4)")
 	}
 	seen := map[string]struct{}{}
 	for i, rule := range cfg.Edges {

@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -33,6 +34,30 @@ type Run interface {
 	Upsert(thing string, state json.RawMessage)
 }
 
+// OpRun is the target of an ops-sourced pass (0020): each op is its own
+// document, keyed by thing and stream sequence. Ops are immutable, so a
+// document handed over is handed over once. An ops-sourced engine
+// implements this beside Run.
+type OpRun interface {
+	UpsertOp(thing string, seq uint64, payload json.RawMessage)
+}
+
+// DocID keys one op's document: the thing tail and the op's stream seq,
+// NUL-separated — NUL cannot appear in a subject token, so the split is
+// unambiguous against any thing name.
+func DocID(thing string, seq uint64) string {
+	return thing + "\x00" + strconv.FormatUint(seq, 10)
+}
+
+// DocThing names the thing a document ID belongs to — the ID itself when
+// it carries no seq (a state-sourced document).
+func DocThing(id string) string {
+	if i := strings.IndexByte(id, 0); i >= 0 {
+		return id[:i]
+	}
+	return id
+}
+
 // Config wires one projection.
 type Config struct {
 	// Log is the log this projection folds.
@@ -41,8 +66,18 @@ type Config struct {
 	Index string
 	// Kind labels log lines ("search index", "graph index").
 	Kind string
+	// Source is the declaration's source (0020): state (the default) or
+	// ops. An ops-sourced pass hands every op to the engine as its own
+	// document — no fold, no effects, no snapshot gate — and never
+	// rebuilds on an effect change, because effects don't shape op
+	// documents.
+	Source string
+	// Types narrows which op types an ops-sourced pass reads; empty
+	// means every op.
+	Types []string
 	// NewRun opens a fresh materialization for one fold pass — the boot
-	// replay or an effect-change rebuild.
+	// replay or an effect-change rebuild. For an ops-sourced projection
+	// the run must also implement OpRun.
 	NewRun func() (Run, error)
 	// Logger; nil means slog.Default.
 	Logger *slog.Logger
@@ -50,8 +85,10 @@ type Config struct {
 
 // Projection is one running spine.
 type Projection struct {
-	cfg    Config
-	logger *slog.Logger
+	cfg       Config
+	opsSource bool
+	types     map[string]struct{}
+	logger    *slog.Logger
 
 	nc     *nats.Conn
 	js     jetstream.JetStream
@@ -97,6 +134,7 @@ func Start(ctx context.Context, nc *nats.Conn, cfg Config) (*Projection, error) 
 	runCtx, cancel := context.WithCancel(context.Background())
 	p := &Projection{
 		cfg:       cfg,
+		opsSource: contract.NormalizeSource(cfg.Source) == contract.SourceOps,
 		logger:    logger,
 		nc:        nc,
 		js:        js,
@@ -106,10 +144,21 @@ func Start(ctx context.Context, nc *nats.Conn, cfg Config) (*Projection, error) 
 		runCtx:    runCtx,
 		cancel:    cancel,
 	}
+	if len(cfg.Types) > 0 {
+		p.types = make(map[string]struct{}, len(cfg.Types))
+		for _, t := range cfg.Types {
+			p.types[t] = struct{}{}
+		}
+	}
 
-	if err := p.watchTypes(); err != nil {
-		cancel()
-		return nil, err
+	// An ops-sourced pass never folds, so effect changes cannot make it
+	// suspect — the type watcher and its rebuilds belong to the state
+	// source alone (0020).
+	if !p.opsSource {
+		if err := p.watchTypes(); err != nil {
+			cancel()
+			return nil, err
+		}
 	}
 
 	cc, ready, run, err := p.startRun(ctx)
@@ -188,9 +237,11 @@ func (v *serving) get() Run {
 
 // pass is one fold over the log: its own engine run, its own per-thing
 // states, its own backlog countdown. Only the consume callback touches
-// its fields.
+// its fields. An ops-sourced pass carries the engine's OpRun face and
+// never folds.
 type pass struct {
 	run     Run
+	opRun   OpRun
 	states  map[string]*thingState
 	pending uint64
 	ready   chan struct{}
@@ -213,6 +264,14 @@ func (p *Projection) startRun(ctx context.Context) (jetstream.ConsumeContext, ch
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	var opRun OpRun
+	if p.opsSource {
+		var ok bool
+		if opRun, ok = run.(OpRun); !ok {
+			closeRun(run)
+			return nil, nil, nil, fmt.Errorf("the %s engine cannot source from ops", p.cfg.Kind)
+		}
+	}
 	sinfo, err := p.stream.Info(ctx, jetstream.WithSubjectFilter(contract.OpsFilter(p.cfg.Log)))
 	if err != nil {
 		closeRun(run)
@@ -223,7 +282,7 @@ func (p *Projection) startRun(ctx context.Context) (jetstream.ConsumeContext, ch
 		pending += n
 	}
 
-	ps := &pass{run: run, states: map[string]*thingState{}, pending: pending, ready: make(chan struct{}), p: p}
+	ps := &pass{run: run, opRun: opRun, states: map[string]*thingState{}, pending: pending, ready: make(chan struct{}), p: p}
 	if pending == 0 {
 		p.serving.set(run)
 		close(ps.ready)
@@ -273,6 +332,19 @@ func (ps *pass) apply(msg jetstream.Msg) {
 		return
 	}
 	st.seq = op.Seq
+
+	if ps.opRun != nil {
+		// History as it is (0020): every op is its own document — no
+		// judge, no snapshot gate, no effects. Schemas and effects shape
+		// state, never history's visibility.
+		if p.types != nil {
+			if _, selected := p.types[op.Type]; !selected {
+				return
+			}
+		}
+		ps.opRun.UpsertOp(thing, op.Seq, op.Payload)
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
