@@ -100,7 +100,7 @@ func usage(out io.Writer) error {
   chronicle semantic query <log> <index> <text...> --creds F [--limit N] [--offset N]
   chronicle graph neighbors <log> <index> <thing> --creds F [--direction D] [--label L] [--limit N] [--offset N]
   chronicle graph walk <log> <index> <thing> --creds F [--direction D] [--labels a,b] [--depth N] [--limit N]
-  chronicle append <log> <thing> <op.type> --creds F [--payload JSON] [--parents a,b]
+  chronicle append <log> <thing> <op.type> --creds F [--payload JSON] [--parents a,b] [--expect-seq N]
   chronicle state <log> <thing> --creds F
   chronicle replay <log> <thing> --creds F
   chronicle version                                     print the version
@@ -411,6 +411,7 @@ func appendOp(ctx context.Context, args []string, out io.Writer) error {
 	cf := addConnectFlags(fs)
 	payload := fs.String("payload", "{}", "the op's payload")
 	parents := fs.String("parents", "", "comma-separated parent op IDs")
+	expectSeq := fs.Int64("expect-seq", -1, "expected-sequence guard: the last op seq observed on the thing (unguarded when absent)")
 	pos, err := parseArgs(fs, args)
 	if err != nil {
 		return err
@@ -426,6 +427,9 @@ func appendOp(ctx context.Context, args []string, out io.Writer) error {
 	var opts []client.AppendOpt
 	if *parents != "" {
 		opts = append(opts, client.WithParents(strings.Split(*parents, ",")...))
+	}
+	if *expectSeq >= 0 {
+		opts = append(opts, client.WithExpectedSeq(uint64(*expectSeq)))
 	}
 	ack, err := c.Append(ctx, pos[0], pos[1], pos[2], []byte(*payload), opts...)
 	if err != nil {
