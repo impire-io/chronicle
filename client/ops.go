@@ -27,6 +27,12 @@ var ErrThingExists = errors.New("thing already exists")
 // covers the history it would destroy. Re-read, re-fold, retry.
 var ErrStaleVersion = errors.New("the log moved past this version")
 
+// ErrThingMoved is a guarded append refused because the thing's history
+// moved past the guard: something landed on the subject after the expected
+// seq, so whatever the writer validated no longer holds. Re-read,
+// re-validate, retry (0018).
+var ErrThingMoved = errors.New("the thing moved past the guard")
+
 // Ack is where an accepted op landed.
 type Ack struct {
 	OpID string
@@ -37,8 +43,9 @@ type Ack struct {
 type AppendOpt func(*appendOpts)
 
 type appendOpts struct {
-	parents []string
-	opID    string
+	parents     []string
+	opID        string
+	expectedSeq *uint64
 }
 
 // WithParents records the op IDs the writer had seen — the DAG edges.
@@ -50,6 +57,17 @@ func WithParents(parents ...string) AppendOpt {
 // process restarts make it once and keep it.
 func WithOpID(id string) AppendOpt {
 	return func(o *appendOpts) { o.opID = id }
+}
+
+// WithExpectedSeq arms an append with the expected-sequence guard (0018):
+// the publish carries the last stream sequence the writer observed on the
+// thing's subject, and the server refuses it if anything landed since —
+// CAS per exact subject, server-enforced. A refusal is ErrThingMoved:
+// re-read, re-validate, retry. The exactness recipe yields the value
+// (State's seq, advanced by FoldTail). Append only: birth guards at 0 by
+// definition and SaveVersion guards at upTo.
+func WithExpectedSeq(seq uint64) AppendOpt {
+	return func(o *appendOpts) { o.expectedSeq = &seq }
 }
 
 // CreateThing births a thing: publishing its first snapshot with the
@@ -64,6 +82,9 @@ func (c *Client) CreateThing(ctx context.Context, log, thing string, state json.
 		return Ack{}, err
 	}
 	o := applyOpts(opts)
+	if o.expectedSeq != nil {
+		return Ack{}, errors.New("WithExpectedSeq: a birth guards at 0 by definition")
+	}
 	if state == nil {
 		state = json.RawMessage(`{}`)
 	}
@@ -96,18 +117,13 @@ func (c *Client) CreateThing(ctx context.Context, log, thing string, state json.
 	// 0008): a retried birth also surfaces wrong-last-sequence. Read the
 	// subject's last op and compare IDs to tell "my birth landed" from
 	// "someone else was first".
-	var apiErr *jetstream.APIError
-	if errors.As(err, &apiErr) && apiErr.ErrorCode == jetstream.JSErrCodeStreamWrongLastSequence {
-		stream, serr := c.js.Stream(ctx, contract.StreamName(log))
-		if serr != nil {
-			return Ack{}, fmt.Errorf("birth refused and stream unreadable: %w", errors.Join(err, serr))
+	if guardRefused(err) {
+		landed, ok, lerr := c.ownOpLanded(ctx, log, subject, o.opID)
+		if lerr != nil {
+			return Ack{}, fmt.Errorf("birth refused and %w", errors.Join(lerr, err))
 		}
-		last, gerr := stream.GetLastMsgForSubject(ctx, subject)
-		if gerr != nil {
-			return Ack{}, fmt.Errorf("birth refused and last op unreadable: %w", errors.Join(err, gerr))
-		}
-		if last.Header.Get(contract.HdrMsgID) == o.opID {
-			return Ack{OpID: o.opID, Seq: last.Sequence}, nil
+		if ok {
+			return landed, nil
 		}
 		return Ack{}, fmt.Errorf("%w: %s in %s", ErrThingExists, thing, log)
 	}
@@ -136,6 +152,9 @@ func (c *Client) SaveVersion(ctx context.Context, log, thing string, state json.
 		return Ack{}, errors.New("upTo: the seq of the last op the state covers; birth is CreateThing")
 	}
 	o := applyOpts(opts)
+	if o.expectedSeq != nil {
+		return Ack{}, errors.New("WithExpectedSeq: a save guards at upTo")
+	}
 	if state == nil {
 		state = json.RawMessage(`{}`)
 	}
@@ -171,18 +190,13 @@ func (c *Client) SaveVersion(ctx context.Context, log, thing string, state json.
 	// The guard fires before dedup, so a retried save also surfaces
 	// wrong-last-sequence: read the subject's last op and compare IDs to
 	// tell "my save landed" from "the log moved".
-	var apiErr *jetstream.APIError
-	if errors.As(err, &apiErr) && apiErr.ErrorCode == jetstream.JSErrCodeStreamWrongLastSequence {
-		stream, serr := c.js.Stream(ctx, contract.StreamName(log))
-		if serr != nil {
-			return Ack{}, fmt.Errorf("save refused and stream unreadable: %w", errors.Join(err, serr))
+	if guardRefused(err) {
+		landed, ok, lerr := c.ownOpLanded(ctx, log, subject, o.opID)
+		if lerr != nil {
+			return Ack{}, fmt.Errorf("save refused and %w", errors.Join(lerr, err))
 		}
-		last, gerr := stream.GetLastMsgForSubject(ctx, subject)
-		if gerr != nil {
-			return Ack{}, fmt.Errorf("save refused and last op unreadable: %w", errors.Join(err, gerr))
-		}
-		if last.Header.Get(contract.HdrMsgID) == o.opID {
-			return Ack{OpID: o.opID, Seq: last.Sequence}, nil
+		if ok {
+			return landed, nil
 		}
 		return Ack{}, fmt.Errorf("%w: %s in %s", ErrStaleVersion, thing, log)
 	}
@@ -192,7 +206,9 @@ func (c *Client) SaveVersion(ctx context.Context, log, thing string, state json.
 // Append publishes one operation — a direct JetStream publish, nothing in
 // between. Pre-flight validates the payload against the log's declared
 // schema for the op type, when one exists; the log's vocabulary is
-// discoverable, not enforced at the wire (0008 point 1).
+// discoverable, not enforced at the wire (0008 point 1). WithExpectedSeq
+// arms the optional expected-sequence guard (0018) — read-validate-append
+// with the server as the only arbiter; unguarded stays the default.
 func (c *Client) Append(ctx context.Context, log, thing, opType string, payload []byte, opts ...AppendOpt) (Ack, error) {
 	if err := contract.ValidateLogName(log); err != nil {
 		return Ack{}, err
@@ -218,16 +234,59 @@ func (c *Client) Append(ctx context.Context, log, thing, opType string, payload 
 		Parents: o.parents,
 		Ts:      time.Now(),
 	}.Header()
+	if o.expectedSeq != nil {
+		msg.Header.Set(contract.HdrExpectedLastSubjSeq, strconv.FormatUint(*o.expectedSeq, 10))
+	}
 	msg.Data = payload
 
 	lock := c.subjectLock(subject)
 	lock.Lock()
 	defer lock.Unlock()
 	ack, err := c.js.PublishMsg(ctx, msg)
-	if err != nil {
-		return Ack{}, fmt.Errorf("append %s: %w", subject, err)
+	if err == nil {
+		return Ack{OpID: o.opID, Seq: ack.Sequence}, nil
 	}
-	return Ack{OpID: o.opID, Seq: ack.Sequence}, nil
+
+	// The guard fires before dedup, so a retried guarded append also
+	// surfaces wrong-last-sequence: read the subject's last op and compare
+	// IDs to tell "my op landed" from "the thing moved".
+	if o.expectedSeq != nil && guardRefused(err) {
+		landed, ok, lerr := c.ownOpLanded(ctx, log, subject, o.opID)
+		if lerr != nil {
+			return Ack{}, fmt.Errorf("append refused and %w", errors.Join(lerr, err))
+		}
+		if ok {
+			return landed, nil
+		}
+		return Ack{}, fmt.Errorf("%w: %s in %s", ErrThingMoved, thing, log)
+	}
+	return Ack{}, fmt.Errorf("append %s: %w", subject, err)
+}
+
+// guardRefused reports whether err is the server's wrong-last-sequence
+// refusal — the expected-sequence guard firing.
+func guardRefused(err error) bool {
+	var apiErr *jetstream.APIError
+	return errors.As(err, &apiErr) && apiErr.ErrorCode == jetstream.JSErrCodeStreamWrongLastSequence
+}
+
+// ownOpLanded tells a retry from a conflict after a guard refusal: the
+// guard fires before dedup, so a retried guarded publish surfaces
+// wrong-last-sequence too. If the subject's last op carries opID, the
+// earlier attempt landed and the refusal was dedup's echo.
+func (c *Client) ownOpLanded(ctx context.Context, log, subject, opID string) (Ack, bool, error) {
+	stream, err := c.js.Stream(ctx, contract.StreamName(log))
+	if err != nil {
+		return Ack{}, false, fmt.Errorf("stream unreadable: %w", err)
+	}
+	last, err := stream.GetLastMsgForSubject(ctx, subject)
+	if err != nil {
+		return Ack{}, false, fmt.Errorf("last op unreadable: %w", err)
+	}
+	if last.Header.Get(contract.HdrMsgID) == opID {
+		return Ack{OpID: opID, Seq: last.Sequence}, true, nil
+	}
+	return Ack{}, false, nil
 }
 
 func applyOpts(opts []AppendOpt) appendOpts {

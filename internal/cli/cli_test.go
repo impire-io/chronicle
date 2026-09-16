@@ -3,7 +3,9 @@ package cli_test
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -47,14 +49,30 @@ func TestCLISpine(t *testing.T) {
 	if !strings.Contains(out, "born: invoice-1") {
 		t.Fatalf("thing create output: %s", out)
 	}
-	run(ctx, t, "append", "orders", "invoice-1", "comment.add", "--dir", dir, "--creds", creds,
+	out = run(ctx, t, "append", "orders", "invoice-1", "comment.add", "--dir", dir, "--creds", creds,
 		"--payload", `{"body":"hi"}`)
+	var head uint64
+	if _, err := fmt.Sscanf(out, "appended: seq %d", &head); err != nil {
+		t.Fatalf("append output: %s", out)
+	}
 
 	// Pre-flight refusal happens before the wire — the CLI surfaces it.
 	var errOut bytes.Buffer
 	if err := cli.Run(ctx, []string{"append", "orders", "invoice-1", "comment.add",
 		"--dir", dir, "--creds", creds, "--payload", `{"nobody":1}`}, &errOut); err == nil {
 		t.Fatal("invalid payload appended")
+	}
+
+	// The expected-sequence guard reaches the wire (0018): guarded at the
+	// observed head the append lands; the same guard re-used is a typed
+	// refusal — the thing moved.
+	run(ctx, t, "append", "orders", "invoice-1", "comment.add", "--dir", dir, "--creds", creds,
+		"--payload", `{"body":"guarded"}`, "--expect-seq", strconv.FormatUint(head, 10))
+	var stale bytes.Buffer
+	if err := cli.Run(ctx, []string{"append", "orders", "invoice-1", "comment.add",
+		"--dir", dir, "--creds", creds, "--payload", `{"body":"late"}`,
+		"--expect-seq", strconv.FormatUint(head, 10)}, &stale); err == nil || !strings.Contains(err.Error(), "moved past the guard") {
+		t.Fatalf("stale guard not refused: %v", err)
 	}
 
 	deadline := time.Now().Add(10 * time.Second)
