@@ -291,7 +291,7 @@ func (e *executor) handleDelegate(req micro.Request) {
 	e.mu.Lock()
 	if _, exists := e.placements[k]; exists {
 		e.mu.Unlock()
-		refuse("already carrying this workload")
+		refuse(contract.RefusalAlreadyCarrying)
 		return
 	}
 	runCtx, cancel := context.WithCancel(e.ctx)
