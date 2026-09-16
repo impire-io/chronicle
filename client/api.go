@@ -46,6 +46,9 @@ type LogCreateRequest struct {
 	// MaxBytes overrides the stream's default byte budget; zero means the
 	// decided default (1 GiB).
 	MaxBytes int64 `json:"max_bytes,omitempty"`
+	// History is the log's 0019 declaration: "compactable" (the default
+	// when unset) or "preserved". Set at creation, immutable for now.
+	History string `json:"history,omitempty"`
 }
 
 // LogCreateResponse names the created stream.
@@ -203,13 +206,28 @@ func request[Req, Resp any](ctx context.Context, nc *nats.Conn, subject string, 
 	return resp, nil
 }
 
+// LogOpt adjusts one log creation.
+type LogOpt func(*LogCreateRequest)
+
+// WithHistory declares the log's history posture (0019): "preserved"
+// makes the trail the product — the node never compacts the log, and its
+// stream refuses rollup writes outright. Unset means "compactable",
+// today's behavior. Declared at creation, immutable for now.
+func WithHistory(history string) LogOpt {
+	return func(r *LogCreateRequest) { r.History = history }
+}
+
 // CreateLog creates a log through the node's control verb.
-func (c *Client) CreateLog(ctx context.Context, log, description string) (LogCreateResponse, error) {
-	return request[LogCreateRequest, LogCreateResponse](ctx, c.nc, LogCreateSubject, LogCreateRequest{
+func (c *Client) CreateLog(ctx context.Context, log, description string, opts ...LogOpt) (LogCreateResponse, error) {
+	r := LogCreateRequest{
 		Principal:   c.author,
 		Log:         log,
 		Description: description,
-	})
+	}
+	for _, apply := range opts {
+		apply(&r)
+	}
+	return request[LogCreateRequest, LogCreateResponse](ctx, c.nc, LogCreateSubject, r)
 }
 
 // SetSchema records a new revision of an op-type's payload schema and its

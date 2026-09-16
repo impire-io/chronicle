@@ -233,6 +233,12 @@ func (n *node) handleLogCreate(req micro.Request) {
 		_ = req.Error("bad-log-name", err.Error(), nil)
 		return
 	}
+	// Write-side strict, like effects and index kinds: the history
+	// vocabulary (0019) refuses values outside it.
+	if h := contract.NormalizeHistory(r.History); h != contract.HistoryCompactable && h != contract.HistoryPreserved {
+		_ = req.Error("bad-history", fmt.Sprintf("history %q: %q or %q", r.History, contract.HistoryCompactable, contract.HistoryPreserved), nil)
+		return
+	}
 
 	// The META key is the claim: create-if-absent, so two racing creates
 	// settle without a lock.
@@ -240,6 +246,7 @@ func (n *node) handleLogCreate(req micro.Request) {
 		Status:      contract.LogStatusActive,
 		Description: r.Description,
 		MaxBytes:    r.MaxBytes,
+		History:     r.History,
 	})
 	if err != nil {
 		_ = req.Error("500", err.Error(), nil)
@@ -254,7 +261,7 @@ func (n *node) handleLogCreate(req micro.Request) {
 		return
 	}
 
-	if _, err := n.js.CreateStream(ctx, contract.LogStreamConfig(r.Log, r.MaxBytes)); err != nil {
+	if _, err := n.js.CreateStream(ctx, contract.LogStreamConfig(r.Log, r.MaxBytes, r.History)); err != nil {
 		_ = req.Error("500", fmt.Sprintf("create stream: %v", err), nil)
 		return
 	}

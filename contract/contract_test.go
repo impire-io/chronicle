@@ -92,7 +92,7 @@ func TestOpHeaderRoundTrip(t *testing.T) {
 }
 
 func TestLogStreamConfig(t *testing.T) {
-	cfg := LogStreamConfig("my-log", 0)
+	cfg := LogStreamConfig("my-log", 0, "")
 	if cfg.Name != "LOG_MY_LOG" {
 		t.Errorf("stream name %q", cfg.Name)
 	}
@@ -114,8 +114,20 @@ func TestLogStreamConfig(t *testing.T) {
 	if cfg.MaxBytes != 1<<30 {
 		t.Errorf("decided default is 1 GiB, got %d", cfg.MaxBytes)
 	}
-	if over := LogStreamConfig("my-log", 42); over.MaxBytes != 42 {
+	if over := LogStreamConfig("my-log", 42, ""); over.MaxBytes != 42 {
 		t.Errorf("per-log override lost: %d", over.MaxBytes)
+	}
+	// The 0019 declaration reaches the stream: a preserved log refuses
+	// rollup writes outright, and everything else in the table stands.
+	preserved := LogStreamConfig("my-log", 0, HistoryPreserved)
+	if preserved.AllowRollup {
+		t.Error("a preserved log's stream must refuse rollup writes (0019)")
+	}
+	if !preserved.DenyDelete {
+		t.Error("DenyDelete stands on a preserved log")
+	}
+	if explicit := LogStreamConfig("my-log", 0, HistoryCompactable); !explicit.AllowRollup {
+		t.Error("an explicitly compactable log keeps AllowRollup")
 	}
 }
 

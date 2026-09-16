@@ -79,10 +79,35 @@ type LogConfig struct {
 	// MaxBytes is the per-log byte-budget override; zero means the decided
 	// default.
 	MaxBytes int64 `json:"max_bytes,omitempty"`
+	// History is the log's 0019 declaration: HistoryCompactable (the
+	// default when unset) or HistoryPreserved. Set at creation, immutable
+	// until a config-edit verb exists.
+	History string `json:"history,omitempty"`
 }
 
 // LogStatusActive is the one status the skeleton knows.
 const LogStatusActive = "active"
+
+// The history vocabulary (decision 0019). Write-side strict at LOG.CREATE,
+// read-side tolerant: an unknown stored value reads as compactable — the
+// stream's own AllowRollup setting stays the guarantee either way.
+const (
+	// HistoryCompactable: node-driven rollup acts wherever the effect gate
+	// (0011) allows. The default.
+	HistoryCompactable = "compactable"
+	// HistoryPreserved: the log's trail is the product — the node never
+	// compacts it, and its stream is created with AllowRollup false so no
+	// writer can replace a subject's history.
+	HistoryPreserved = "preserved"
+)
+
+// NormalizeHistory maps the unset declaration to its meaning.
+func NormalizeHistory(history string) string {
+	if history == "" {
+		return HistoryCompactable
+	}
+	return history
+}
 
 // TypeSchema is the value at log.<log>.type.<op.type>. Revisions are
 // recorded, never rewritten in place: each revision is a new KV put, and the

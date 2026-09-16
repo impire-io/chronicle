@@ -16,8 +16,10 @@ const DuplicateWindow = 2 * time.Minute
 
 // LogStreamConfig is the wire contract's stream settings table, applied by
 // chronicle at log creation — the customer never hand-configures a stream.
-// maxBytes zero means the decided default.
-func LogStreamConfig(log string, maxBytes int64) jetstream.StreamConfig {
+// maxBytes zero means the decided default; history is the log's 0019
+// declaration (empty means compactable) — a preserved log's stream refuses
+// rollup writes outright, so nothing can replace a subject's history.
+func LogStreamConfig(log string, maxBytes int64, history string) jetstream.StreamConfig {
 	if maxBytes == 0 {
 		maxBytes = DefaultMaxBytes
 	}
@@ -28,7 +30,7 @@ func LogStreamConfig(log string, maxBytes int64) jetstream.StreamConfig {
 		Retention:   jetstream.LimitsPolicy,
 		// MaxAge stays unset: rollup keeps the stream small; age-based
 		// expiry would delete independently of the state referencing it.
-		AllowRollup: true,
+		AllowRollup: NormalizeHistory(history) != HistoryPreserved,
 		DenyDelete:  true,
 		Duplicates:  DuplicateWindow,
 		Storage:     jetstream.FileStorage,

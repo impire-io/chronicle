@@ -60,7 +60,7 @@ func TestMintAccountAndVerifyByConnecting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
-	if _, err := js.CreateStream(ctx, contract.LogStreamConfig("orders", 0)); err != nil {
+	if _, err := js.CreateStream(ctx, contract.LogStreamConfig("orders", 0, "")); err != nil {
 		t.Fatalf("service user must create streams: %v", err)
 	}
 }
@@ -90,7 +90,7 @@ func TestMemberBaseline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
-	if _, err := sjs.CreateStream(ctx, contract.LogStreamConfig("orders", 0)); err != nil {
+	if _, err := sjs.CreateStream(ctx, contract.LogStreamConfig("orders", 0, "")); err != nil {
 		t.Fatalf("create stream: %v", err)
 	}
 	meta, err := sjs.CreateKeyValue(ctx, contract.MetaBucketConfig())
@@ -171,7 +171,7 @@ func TestMemberBaseline(t *testing.T) {
 	}
 	shortCtx2, cancelShort2 := context.WithTimeout(ctx, 2*time.Second)
 	defer cancelShort2()
-	if _, err := mjs.CreateStream(shortCtx2, contract.LogStreamConfig("rogue", 0)); err == nil {
+	if _, err := mjs.CreateStream(shortCtx2, contract.LogStreamConfig("rogue", 0, "")); err == nil {
 		t.Fatal("member created a stream: the baseline is broken")
 	}
 
@@ -234,7 +234,7 @@ func TestDedupAndBirthGuardAreServerEnforced(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
-	if _, err := sjs.CreateStream(ctx, contract.LogStreamConfig("orders", 0)); err != nil {
+	if _, err := sjs.CreateStream(ctx, contract.LogStreamConfig("orders", 0, "")); err != nil {
 		t.Fatalf("create stream: %v", err)
 	}
 

@@ -217,7 +217,7 @@ func provision(ctx context.Context, js jetstream.JetStream) (meta, states jetstr
 		}
 	}
 
-	if _, err := js.CreateStream(ctx, contract.LogStreamConfig(contract.FleetLog, 0)); err != nil && !errors.Is(err, jetstream.ErrStreamNameAlreadyInUse) {
+	if _, err := js.CreateStream(ctx, contract.LogStreamConfig(contract.FleetLog, 0, "")); err != nil && !errors.Is(err, jetstream.ErrStreamNameAlreadyInUse) {
 		return nil, nil, fmt.Errorf("create %s: %w", contract.StreamName(contract.FleetLog), err)
 	}
 	states, err = js.KeyValue(ctx, contract.StateBucket(contract.FleetLog))

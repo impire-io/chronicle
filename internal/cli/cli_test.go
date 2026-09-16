@@ -133,6 +133,20 @@ func TestCLISpine(t *testing.T) {
 		t.Fatalf("replay after rollup: %s", out)
 	}
 
+	// A preserved log (0019): declared at creation, the node declines its
+	// rollup with the declaration named.
+	run(ctx, t, "log", "create", "audit", "--dir", dir, "--creds", creds, "--history", "preserved")
+	run(ctx, t, "schema", "set", "audit", "status.set", "--dir", dir, "--creds", creds,
+		"--schema", `{"type":"object"}`, "--effect", "merge")
+	run(ctx, t, "thing", "create", "audit", "case-1", "--dir", dir, "--creds", creds,
+		"--state", `{}`)
+	run(ctx, t, "append", "audit", "case-1", "status.set", "--dir", dir, "--creds", creds,
+		"--payload", `{"status":"open"}`)
+	out = run(ctx, t, "thing", "rollup", "audit", "case-1", "--dir", dir, "--creds", creds)
+	if !strings.Contains(out, "not compacted") || !strings.Contains(out, "preserved") {
+		t.Fatalf("preserved rollup output: %s", out)
+	}
+
 	// Bad flags fail before dialing anything.
 	var bad bytes.Buffer
 	if err := cli.Run(ctx, []string{"log", "create", "orders"}, &bad); err == nil {
