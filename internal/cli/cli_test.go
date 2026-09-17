@@ -226,3 +226,50 @@ func TestCLIVersion(t *testing.T) {
 		t.Errorf("version output = %q, want %q", out.String(), want)
 	}
 }
+
+// TestCLIMemberVerbs drives the membership lifecycle the way an operator
+// would: add a member, revoke the leak, rekey the tenant, and end up
+// holding only credentials that work.
+func TestCLIMemberVerbs(t *testing.T) {
+	dir := t.TempDir()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	f, err := fleet.Up(ctx, fleet.Config{Dir: dir, Port: -1})
+	if err != nil {
+		t.Fatalf("up: %v", err)
+	}
+	defer f.Stop()
+
+	danaCreds := filepath.Join(t.TempDir(), "dana.creds")
+	run(ctx, t, "tenant", "create", "acme", "--dir", dir, "--admin", "dana", "--out", danaCreds)
+	run(ctx, t, "log", "create", "orders", "--dir", dir, "--creds", danaCreds)
+
+	erinCreds := filepath.Join(t.TempDir(), "erin.creds")
+	out := run(ctx, t, "member", "add", "acme", "erin", "--dir", dir, "--out", erinCreds)
+	if !strings.Contains(out, "member erin added to acme: role writer") || !strings.Contains(out, "only copy") {
+		t.Fatalf("member add output: %s", out)
+	}
+	run(ctx, t, "thing", "create", "orders", "ticket-1", "--dir", dir, "--creds", erinCreds, "--state", `{}`)
+
+	out = run(ctx, t, "member", "revoke", "acme", "erin", "--dir", dir)
+	if !strings.Contains(out, "member erin revoked from acme") {
+		t.Fatalf("member revoke output: %s", out)
+	}
+	var dead bytes.Buffer
+	if err := cli.Run(ctx, []string{"replay", "orders", "ticket-1", "--dir", dir, "--creds", erinCreds}, &dead); err == nil {
+		t.Fatal("revoked creds still speak")
+	}
+
+	outDir := t.TempDir()
+	out = run(ctx, t, "member", "rekey", "acme", "--dir", dir, "--out-dir", outDir)
+	if !strings.Contains(out, "tenant acme rekeyed") || !strings.Contains(out, "member dana (admin) re-issued") {
+		t.Fatalf("member rekey output: %s", out)
+	}
+	var stale bytes.Buffer
+	if err := cli.Run(ctx, []string{"log", "create", "late", "--dir", dir, "--creds", danaCreds}, &stale); err == nil {
+		t.Fatal("pre-rekey creds still speak")
+	}
+	newDana := filepath.Join(outDir, "acme-dana.creds")
+	run(ctx, t, "log", "create", "after-rekey", "--dir", dir, "--creds", newDana)
+}

@@ -25,6 +25,9 @@ const (
 	IndexDeleteSubject  = "CHRON.API.INDEX.DELETE"
 	PingSubject         = "CHRON.API.PING"
 	TenantMintSubject   = "CHRON.CTRL.TENANT.MINT"
+	MemberAddSubject    = "CHRON.CTRL.MEMBER.ADD"
+	MemberRevokeSubject = "CHRON.CTRL.MEMBER.REVOKE"
+	MemberRekeySubject  = "CHRON.CTRL.MEMBER.REKEY"
 )
 
 // IndexQuerySubject is the endpoint one index serves, in-account —
@@ -174,6 +177,58 @@ type TenantMintResponse struct {
 	Account    string `json:"account"`
 	Admin      string `json:"admin"`
 	AdminCreds []byte `json:"admin_creds"`
+}
+
+// MemberAddRequest mints a principal into an existing tenant: a user under
+// the tenant's scoped key, a registry entry with the given role. The verb
+// chronicle-15 was missing — before it, replacing a burned admin meant
+// destroying the install.
+type MemberAddRequest struct {
+	Tenant    string `json:"tenant"`
+	Principal string `json:"principal"`
+	// Role is one of admin, writer, reader; "writer" when empty.
+	Role string `json:"role,omitempty"`
+}
+
+// MemberAddResponse hands back the new member's .creds — the only copy;
+// chronicle keeps the registry, not the secret.
+type MemberAddResponse struct {
+	Principal string `json:"principal"`
+	Role      string `json:"role"`
+	Creds     []byte `json:"creds"`
+}
+
+// MemberRevokeRequest invalidates one principal's credential: the account
+// JWT's revocation list kills the wire — new connections refused, live
+// ones evicted — and the membership record leaves the registry. The
+// principal record stays: it is the durable identity past records
+// attribute to, and a re-added member is the same principal.
+type MemberRevokeRequest struct {
+	Tenant    string `json:"tenant"`
+	Principal string `json:"principal"`
+}
+
+// MemberRevokeResponse names the revoked user key.
+type MemberRevokeResponse struct {
+	Principal string `json:"principal"`
+	PublicKey string `json:"public_key"`
+}
+
+// MemberRekeyRequest is the coarse kill switch: assume every member
+// credential is burned. The tenant's member-issuing scoped key is
+// replaced — one push evicts every member at once, while the service user
+// (issued under the plain signing key) rides through — and every member is
+// re-issued under the new key.
+type MemberRekeyRequest struct {
+	Tenant string `json:"tenant"`
+}
+
+// MemberRekeyResponse carries every re-issued member credential — each the
+// only copy. The response is one NATS message: with ~1 KiB per creds file
+// and the default 1 MiB payload ceiling, a tenant beyond a few hundred
+// members needs pagination this verb does not have yet.
+type MemberRekeyResponse struct {
+	Members []MemberAddResponse `json:"members"`
 }
 
 // ServiceError is a micro endpoint's refusal, code and description intact.
@@ -328,6 +383,33 @@ func (c *Control) MintTenant(ctx context.Context, name, admin string) (TenantMin
 	return request[TenantMintRequest, TenantMintResponse](ctx, c.nc, TenantMintSubject, TenantMintRequest{
 		Name:  name,
 		Admin: admin,
+	})
+}
+
+// AddMember mints a principal into an existing tenant and returns the only
+// copy of their credentials.
+func (c *Control) AddMember(ctx context.Context, tenant, principal, role string) (MemberAddResponse, error) {
+	return request[MemberAddRequest, MemberAddResponse](ctx, c.nc, MemberAddSubject, MemberAddRequest{
+		Tenant:    tenant,
+		Principal: principal,
+		Role:      role,
+	})
+}
+
+// RevokeMember invalidates a principal's credential — evicted from the
+// wire, retired from the registry.
+func (c *Control) RevokeMember(ctx context.Context, tenant, principal string) (MemberRevokeResponse, error) {
+	return request[MemberRevokeRequest, MemberRevokeResponse](ctx, c.nc, MemberRevokeSubject, MemberRevokeRequest{
+		Tenant:    tenant,
+		Principal: principal,
+	})
+}
+
+// RekeyMembers replaces the tenant's member-issuing key, evicting every
+// member credential at once, and returns the re-issued set.
+func (c *Control) RekeyMembers(ctx context.Context, tenant string) (MemberRekeyResponse, error) {
+	return request[MemberRekeyRequest, MemberRekeyResponse](ctx, c.nc, MemberRekeySubject, MemberRekeyRequest{
+		Tenant: tenant,
 	})
 }
 

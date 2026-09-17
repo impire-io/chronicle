@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/impire-io/chronicle/client"
@@ -27,6 +28,17 @@ func Run(ctx context.Context, args []string, out io.Writer) error {
 	case "tenant":
 		if len(args) >= 2 && args[1] == "create" {
 			return tenantCreate(ctx, args[2:], out)
+		}
+		return usage(out)
+	case "member":
+		if len(args) >= 2 && args[1] == "add" {
+			return memberAdd(ctx, args[2:], out)
+		}
+		if len(args) >= 2 && args[1] == "revoke" {
+			return memberRevoke(ctx, args[2:], out)
+		}
+		if len(args) >= 2 && args[1] == "rekey" {
+			return memberRekey(ctx, args[2:], out)
 		}
 		return usage(out)
 	case "log":
@@ -96,6 +108,10 @@ func usage(out io.Writer) error {
 
   chronicle up [--dir D] [--port N]                     run the local fleet
   chronicle tenant create <name> [--dir D] [--admin P] [--out F]
+  chronicle member add <tenant> <principal> [--dir D] [--role R] [--out F]
+  chronicle member revoke <tenant> <principal> [--dir D]
+  chronicle member rekey <tenant> [--dir D] [--out-dir P]
+  chronicle operator rotate-signing-key [--dir D]       rotate the trust root (fleet stopped)
   chronicle log create <log> --creds F [--url U] [--desc S] [--history H]
   chronicle type define <log> <type> --creds F --def JSON | --file F
   chronicle type inspect <log> <type> --creds F
@@ -164,6 +180,20 @@ func (cf connectFlags) dial() (*client.Client, error) {
 	return client.ConnectFile(url, *cf.creds)
 }
 
+// dialControl is the control-plane verbs' shared preamble: the fleet
+// dir's recorded url, dialed with its control creds.
+func dialControl(dir string) (*client.Control, error) {
+	url, err := devdir.ReadClientURL(dir)
+	if err != nil {
+		return nil, err
+	}
+	creds, err := os.ReadFile(devdir.ControlCredsPath(dir))
+	if err != nil {
+		return nil, fmt.Errorf("read control creds: %w", err)
+	}
+	return client.ConnectControlCreds(url, creds)
+}
+
 func tenantCreate(ctx context.Context, args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("chronicle tenant create", flag.ContinueOnError)
 	fs.SetOutput(out)
@@ -179,15 +209,7 @@ func tenantCreate(ctx context.Context, args []string, out io.Writer) error {
 	}
 	name := pos[0]
 
-	url, err := devdir.ReadClientURL(*dir)
-	if err != nil {
-		return err
-	}
-	creds, err := os.ReadFile(devdir.ControlCredsPath(*dir))
-	if err != nil {
-		return fmt.Errorf("read control creds: %w", err)
-	}
-	nc, err := client.ConnectControlCreds(url, creds)
+	nc, err := dialControl(*dir)
 	if err != nil {
 		return err
 	}
@@ -206,6 +228,103 @@ func tenantCreate(ctx context.Context, args []string, out io.Writer) error {
 	}
 	fmt.Fprintf(out, "tenant %s minted: account %s\n", name, resp.Account)
 	fmt.Fprintf(out, "admin creds (the only copy): %s\n", path)
+	return nil
+}
+
+func memberAdd(ctx context.Context, args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("chronicle member add", flag.ContinueOnError)
+	fs.SetOutput(out)
+	dir := fs.String("dir", devdir.Default(), "local fleet data dir")
+	role := fs.String("role", contract.RoleWriter, "membership role: admin, writer, or reader")
+	outFile := fs.String("out", "", "where to write the member .creds (default <tenant>-<principal>.creds)")
+	pos, err := parseArgs(fs, args)
+	if err != nil {
+		return err
+	}
+	if len(pos) != 2 {
+		return fmt.Errorf("member add: <tenant> <principal>")
+	}
+
+	nc, err := dialControl(*dir)
+	if err != nil {
+		return err
+	}
+	defer nc.Close()
+
+	resp, err := nc.AddMember(ctx, pos[0], pos[1], *role)
+	if err != nil {
+		return err
+	}
+	path := *outFile
+	if path == "" {
+		path = fmt.Sprintf("%s-%s.creds", pos[0], resp.Principal)
+	}
+	if err := os.WriteFile(path, resp.Creds, 0o600); err != nil {
+		return fmt.Errorf("write member creds: %w", err)
+	}
+	fmt.Fprintf(out, "member %s added to %s: role %s\n", resp.Principal, pos[0], resp.Role)
+	fmt.Fprintf(out, "member creds (the only copy): %s\n", path)
+	return nil
+}
+
+func memberRevoke(ctx context.Context, args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("chronicle member revoke", flag.ContinueOnError)
+	fs.SetOutput(out)
+	dir := fs.String("dir", devdir.Default(), "local fleet data dir")
+	pos, err := parseArgs(fs, args)
+	if err != nil {
+		return err
+	}
+	if len(pos) != 2 {
+		return fmt.Errorf("member revoke: <tenant> <principal>")
+	}
+
+	nc, err := dialControl(*dir)
+	if err != nil {
+		return err
+	}
+	defer nc.Close()
+
+	resp, err := nc.RevokeMember(ctx, pos[0], pos[1])
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "member %s revoked from %s: user %s is dead on the wire and gone from the registry\n", resp.Principal, pos[0], resp.PublicKey)
+	return nil
+}
+
+func memberRekey(ctx context.Context, args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("chronicle member rekey", flag.ContinueOnError)
+	fs.SetOutput(out)
+	dir := fs.String("dir", devdir.Default(), "local fleet data dir")
+	outDir := fs.String("out-dir", ".", "where to write the re-issued .creds files")
+	pos, err := parseArgs(fs, args)
+	if err != nil {
+		return err
+	}
+	if len(pos) != 1 {
+		return fmt.Errorf("member rekey: exactly one tenant name")
+	}
+	tenant := pos[0]
+
+	nc, err := dialControl(*dir)
+	if err != nil {
+		return err
+	}
+	defer nc.Close()
+
+	resp, err := nc.RekeyMembers(ctx, tenant)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "tenant %s rekeyed: every prior member credential is dead\n", tenant)
+	for _, m := range resp.Members {
+		path := filepath.Join(*outDir, fmt.Sprintf("%s-%s.creds", tenant, m.Principal))
+		if err := os.WriteFile(path, m.Creds, 0o600); err != nil {
+			return fmt.Errorf("write %s creds: %w", m.Principal, err)
+		}
+		fmt.Fprintf(out, "member %s (%s) re-issued (the only copy): %s\n", m.Principal, m.Role, path)
+	}
 	return nil
 }
 
