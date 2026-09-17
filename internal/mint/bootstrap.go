@@ -22,7 +22,11 @@ import (
 type Bootstrap struct {
 	Dir string
 
-	OperatorJWT         string
+	OperatorJWT string
+	// OperatorSeed is the operator IDENTITY seed — used only to re-issue
+	// the operator JWT when the signing key rotates. Empty on installs
+	// bootstrapped before it was persisted; those cannot rotate.
+	OperatorSeed        []byte
 	OperatorSigningSeed []byte
 
 	SystemAccountPub string
@@ -39,6 +43,7 @@ type Bootstrap struct {
 // package.
 const (
 	fOperatorJWT  = "operator.jwt"
+	fOperatorNK   = "operator.nk"
 	fOperatorSK   = "operator-signing.nk"
 	fSysAcctJWT   = "sys-account.jwt"
 	fSysAcctPub   = "sys-account.pub"
@@ -82,6 +87,12 @@ func loadBootstrap(dir string) (*Bootstrap, error) {
 	ctrlCreds := read(fCtrlCreds)
 	if b == nil {
 		return nil, fmt.Errorf("bootstrap dir %s is incomplete; move it aside to regenerate", dir)
+	}
+	// The operator identity seed arrived after the first installs shipped:
+	// absent is a valid state — only signing-key rotation needs it, and
+	// rotation refuses with guidance when it is missing.
+	if opSeed, err := os.ReadFile(filepath.Join(dir, fOperatorNK)); err == nil {
+		b.OperatorSeed = opSeed
 	}
 	b.OperatorJWT = string(opJWT)
 	b.OperatorSigningSeed = opSK
@@ -213,6 +224,10 @@ func initBootstrap(dir string) (*Bootstrap, error) {
 		return nil, fmt.Errorf("control user: %w", err)
 	}
 
+	oSeed, err := okp.Seed()
+	if err != nil {
+		return nil, fmt.Errorf("operator seed: %w", err)
+	}
 	osSeed, err := oskp.Seed()
 	if err != nil {
 		return nil, fmt.Errorf("operator signing seed: %w", err)
@@ -224,6 +239,7 @@ func initBootstrap(dir string) (*Bootstrap, error) {
 		mode os.FileMode
 	}{
 		{fOperatorJWT, []byte(operatorJWT), plainFileMode},
+		{fOperatorNK, oSeed, keyFileMode},
 		{fOperatorSK, osSeed, keyFileMode},
 		{fSysAcctJWT, []byte(sysJWT), plainFileMode},
 		{fSysAcctPub, []byte(sapub), plainFileMode},
@@ -241,6 +257,7 @@ func initBootstrap(dir string) (*Bootstrap, error) {
 	return &Bootstrap{
 		Dir:                 dir,
 		OperatorJWT:         operatorJWT,
+		OperatorSeed:        oSeed,
 		OperatorSigningSeed: osSeed,
 		SystemAccountPub:    sapub,
 		SystemAccountJWT:    sysJWT,
