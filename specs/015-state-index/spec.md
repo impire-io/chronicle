@@ -6,8 +6,8 @@
 and [`02-DESIGN/05-indexes.md`](../../../chronicle-hq/02-DESIGN/05-indexes.md)
 § the declaration, § the state kind, [`02-DESIGN/03-meta-and-state.md`](../../../chronicle-hq/02-DESIGN/03-meta-and-state.md)
 § the state buckets.
-**Status:** specified. Independent of specs 013/014 in substance;
-lands after them on this branch.
+**Status:** implemented on this branch ([plan.md](plan.md)) — awaiting
+review and merge.
 
 ## What this delivers
 
@@ -53,12 +53,18 @@ projection spine (with a third hand-written copy in the fleet service).
   refuses kind `state` and index name `state` write-side with the rule
   named; DELETE declines `index.<log>.state` with the reason. Log
   destruction removes it with everything else.
-- **FR-02 The spine.** `internal/index/projection` gains an engine
-  face the node's state fold implements (KV-CAS upsert, delete-on-mark,
-  the active-set callback); `internal/node/fold.go`'s loop and
-  `internal/workloads/fold.go` are reimplemented on the spine; the
-  fold-rule switches exist once. Behavior holds: same bucket writes,
-  same purge-and-refold on declaration change, roll-up still fed.
+- **FR-02 The spine.** The fold rules exist once: a shared per-op
+  state machine (`foldcore.Pass` — resolve, judge, per-thing frontier,
+  sink) drives the node's fold (sink: the KV-CAS write; Track: the
+  active-set feed), the indexers' state-sourced passes (sink: the
+  engine upsert), and the fleet's fold (its own family resolver; sink:
+  the STATE_FLEET mirror plus the scan kick). Lifecycles stay native —
+  build-and-swap where the store is memory, purge-in-place where the
+  store is the KV: exactly the two rebuild strategies the decision
+  names. Behavior holds: same bucket writes, same purge-and-refold on
+  declaration change, roll-up still fed, the fleet's knowledge horizon
+  unchanged (the pass tracks the frontier and the last state move
+  separately).
 - **FR-03 The checkpoint.** The state materialization records, beside
   its keys, a fold watermark naming the type-declaration revisions it
   was derived under; a state-sourced indexer boots from `{seq, state}`

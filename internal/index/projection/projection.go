@@ -235,13 +235,15 @@ func (v *serving) get() Run {
 	return v.r
 }
 
-// pass is one fold over the log: its own engine run, its own per-thing
-// states, its own backlog countdown. Only the consume callback touches
-// its fields. An ops-sourced pass carries the engine's OpRun face and
-// never folds.
+// pass is one fold over the log: its own engine run, its own backlog
+// countdown. A state-sourced pass folds through the shared foldcore.Pass
+// (0023 § 3 — the fold rules exist once) with the engine as its sink; an
+// ops-sourced pass carries the engine's OpRun face, never folds, and
+// keeps only its per-thing seq guard.
 type pass struct {
 	run     Run
 	opRun   OpRun
+	fold    *foldcore.Pass
 	states  map[string]*thingState
 	pending uint64
 	ready   chan struct{}
@@ -249,16 +251,16 @@ type pass struct {
 }
 
 type thingState struct {
-	seq         uint64
-	state       json.RawMessage
-	sawSnapshot bool
+	seq uint64
 }
 
-// startRun measures the ops-family backlog, then consumes from sequence
-// 1. The consumer is filtered, so the stream head alone cannot say when
-// the fold is caught up — the head may be another family's message. When
-// the measured backlog reaches zero the pass's run is swapped into
-// serving and ready closes; the consumer keeps running as the live tail.
+// startRun measures the ops-family backlog, then consumes — from
+// sequence 1, or from a state checkpoint when the fold watermark matches
+// the current declarations (0023 § 4). The consumer is filtered, so the
+// stream head alone cannot say when the fold is caught up — the head may
+// be another family's message. When the measured backlog reaches zero
+// the pass's run is swapped into serving and ready closes; the consumer
+// keeps running as the live tail.
 func (p *Projection) startRun(ctx context.Context) (jetstream.ConsumeContext, chan struct{}, Run, error) {
 	run, err := p.cfg.NewRun()
 	if err != nil {
@@ -272,28 +274,44 @@ func (p *Projection) startRun(ctx context.Context) (jetstream.ConsumeContext, ch
 			return nil, nil, nil, fmt.Errorf("the %s engine cannot source from ops", p.cfg.Kind)
 		}
 	}
-	sinfo, err := p.stream.Info(ctx, jetstream.WithSubjectFilter(contract.OpsFilter(p.cfg.Log)))
-	if err != nil {
-		closeRun(run)
-		return nil, nil, nil, fmt.Errorf("stream info: %w", err)
-	}
-	var pending uint64
-	for _, n := range sinfo.State.Subjects {
-		pending += n
-	}
 
-	ps := &pass{run: run, opRun: opRun, states: map[string]*thingState{}, pending: pending, ready: make(chan struct{}), p: p}
-	if pending == 0 {
-		p.serving.set(run)
-		close(ps.ready)
-	}
-
-	cons, err := p.stream.OrderedConsumer(ctx, jetstream.OrderedConsumerConfig{
+	ps := &pass{run: run, opRun: opRun, states: map[string]*thingState{}, ready: make(chan struct{}), p: p}
+	consCfg := jetstream.OrderedConsumerConfig{
 		FilterSubjects: []string{contract.OpsFilter(p.cfg.Log)},
-	})
+	}
+	if !p.opsSource {
+		ps.fold = &foldcore.Pass{
+			Resolve: func(ctx context.Context, thing string) (contract.Resolution, error) {
+				return foldcore.ResolveThing(ctx, p.meta, p.cfg.Log, thing)
+			},
+			Sink: func(_ context.Context, thing string, _ uint64, state json.RawMessage) {
+				run.Upsert(thing, state)
+			},
+			Warn: func(msg string, args ...any) {
+				p.logger.Warn(p.cfg.Kind+": "+msg, append([]any{"log", p.cfg.Log}, args...)...)
+			},
+		}
+		if from, seeded := p.seedFromCheckpoint(ctx, ps.fold, run); seeded > 0 {
+			consCfg.DeliverPolicy = jetstream.DeliverByStartSequencePolicy
+			consCfg.OptStartSeq = from
+			p.logger.Info(p.cfg.Kind+": state checkpoint seeded", "log", p.cfg.Log, "index", p.cfg.Index, "things", seeded, "from", from)
+		}
+	}
+
+	cons, err := p.stream.OrderedConsumer(ctx, consCfg)
 	if err != nil {
 		closeRun(run)
 		return nil, nil, nil, fmt.Errorf("ordered consumer: %w", err)
+	}
+	info, err := cons.Info(ctx)
+	if err != nil {
+		closeRun(run)
+		return nil, nil, nil, fmt.Errorf("consumer info: %w", err)
+	}
+	ps.pending = info.NumPending
+	if ps.pending == 0 {
+		p.serving.set(run)
+		close(ps.ready)
 	}
 	cc, err := cons.Consume(ps.apply)
 	if err != nil {
@@ -303,9 +321,64 @@ func (p *Projection) startRun(ctx context.Context) (jetstream.ConsumeContext, ch
 	return cc, ps.ready, run, nil
 }
 
+// seedFromCheckpoint loads the state index's {seq, state} values into a
+// fresh fold when the bucket's watermark names the current declarations
+// (0023 § 4): the pass then consumes from just past the oldest seeded
+// seq instead of replaying from sequence 1 — the per-thing guards skip
+// what the seeds already cover. Anything less than a clean, matching
+// read voids the shortcut and the pass replays whole: the suspicion rule.
+func (p *Projection) seedFromCheckpoint(ctx context.Context, fold *foldcore.Pass, run Run) (uint64, int) {
+	states, err := p.js.KeyValue(ctx, contract.StateBucket(p.cfg.Log))
+	if err != nil {
+		return 0, 0
+	}
+	entry, err := states.Get(ctx, contract.StateFoldKey)
+	if err != nil {
+		return 0, 0
+	}
+	var wm contract.FoldWatermark
+	if json.Unmarshal(entry.Value(), &wm) != nil {
+		return 0, 0
+	}
+	current, err := foldcore.LogFingerprint(ctx, p.meta, p.cfg.Log)
+	if err != nil || wm.Declarations != current {
+		return 0, 0
+	}
+	keys, err := states.Keys(ctx)
+	if err != nil {
+		return 0, 0
+	}
+	var minSeq uint64
+	seeded := 0
+	for _, k := range keys {
+		if k == contract.StateFoldKey {
+			continue
+		}
+		e, err := states.Get(ctx, k)
+		if err != nil {
+			return 0, 0
+		}
+		var sv contract.StateValue
+		if json.Unmarshal(e.Value(), &sv) != nil {
+			return 0, 0
+		}
+		fold.Seed(k, sv.Seq, sv.State)
+		run.Upsert(k, sv.State)
+		if minSeq == 0 || sv.Seq < minSeq {
+			minSeq = sv.Seq
+		}
+		seeded++
+	}
+	if seeded == 0 {
+		return 0, 0
+	}
+	return minSeq + 1, seeded
+}
+
 // apply folds one message into the pass. Ordered consumers redeliver on
-// gaps, so apply stays idempotent: the per-thing seq skips anything at or
-// below what was already folded.
+// gaps, so apply stays idempotent: the per-thing seq — the shared pass's
+// for the state source, this pass's own for the ops source — skips
+// anything at or below what was already folded.
 func (ps *pass) apply(msg jetstream.Msg) {
 	defer ps.countdown()
 
@@ -323,20 +396,20 @@ func (ps *pass) apply(msg jetstream.Msg) {
 		// projection stays tolerant.
 		return
 	}
-	st, ok := ps.states[thing]
-	if !ok {
-		st = &thingState{}
-		ps.states[thing] = st
-	}
-	if op.Seq <= st.seq {
-		return
-	}
-	st.seq = op.Seq
 
 	if ps.opRun != nil {
 		// History as it is (0020): every op is its own document — no
 		// judge, no snapshot gate, no effects. Schemas and effects shape
 		// state, never history's visibility.
+		st, ok := ps.states[thing]
+		if !ok {
+			st = &thingState{}
+			ps.states[thing] = st
+		}
+		if op.Seq <= st.seq {
+			return
+		}
+		st.seq = op.Seq
 		if p.types != nil {
 			if _, selected := p.types[op.Type]; !selected {
 				return
@@ -348,69 +421,7 @@ func (ps *pass) apply(msg jetstream.Msg) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-
-	// Resolve the thing first (0021 § 4, 0022 § 2): an undeclared aspect
-	// is marked whole — invisible under source state, while the ops
-	// source (above) reads its history as it is.
-	res, err := foldcore.ResolveThing(ctx, p.meta, p.cfg.Log, thing)
-	if err != nil {
-		p.logger.Warn(kind+": resolve failed; op takes no effect", "log", p.cfg.Log, "thing", thing, "op", op.ID, "err", err)
-		return
-	}
-	if res.Kind == contract.ResolvedUndeclared {
-		p.logger.Warn(kind+": marked undeclared aspect", "log", p.cfg.Log, "thing", thing, "op", op.ID, "detail", res.Detail)
-		return
-	}
-
-	if op.Type == contract.OpTypeSnapshot {
-		snap, err := contract.ParseSnapshot(op.Payload)
-		if err != nil {
-			p.logger.Warn(kind+": marked malformed snapshot", "log", p.cfg.Log, "thing", thing, "op", op.ID, "err", err)
-			return
-		}
-		if res.Kind == contract.ResolvedTyped {
-			if detail := foldcore.JudgeSnapshot(res.Record, snap.State); detail != "" {
-				p.logger.Warn(kind+": marked snapshot state", "log", p.cfg.Log, "thing", thing, "op", op.ID, "detail", detail)
-				return
-			}
-		}
-		st.state = snap.State
-		st.sawSnapshot = true
-		ps.run.Upsert(thing, st.state)
-		return
-	}
-
-	var decision foldcore.Decision
-	var detail string
-	if res.Kind == contract.ResolvedTyped {
-		decision, detail = foldcore.JudgeRecord(res.Record, op)
-	} else {
-		decision, detail = foldcore.UnknownType, fmt.Sprintf("thing is untyped: %s", res.Detail)
-	}
-	switch decision {
-	case foldcore.Merge:
-		if !st.sawSnapshot {
-			p.logger.Warn(kind+": op before any snapshot takes no effect", "log", p.cfg.Log, "thing", thing, "op", op.ID)
-			return
-		}
-		merged, err := contract.MergePatch(st.state, op.Payload)
-		if err != nil {
-			p.logger.Warn(kind+": merge failed; marked", "log", p.cfg.Log, "thing", thing, "op", op.ID, "err", err)
-			return
-		}
-		st.state = merged
-		ps.run.Upsert(thing, st.state)
-	case foldcore.None:
-		// The op lives in history; no index is its home.
-	case foldcore.UnknownType:
-		p.logger.Warn(kind+": unknown op type ignored", "log", p.cfg.Log, "thing", thing, "op", op.ID, "type", op.Type)
-	case foldcore.UnknownEffect:
-		p.logger.Warn(kind+": unknown effect treated as none", "log", p.cfg.Log, "type", op.Type, "detail", detail)
-	case foldcore.BadTypeRecord:
-		p.logger.Warn(kind+": type record unusable", "log", p.cfg.Log, "type", op.Type, "detail", detail)
-	case foldcore.Invalid:
-		p.logger.Warn(kind+": marked invalid payload", "log", p.cfg.Log, "thing", thing, "op", op.ID, "type", op.Type, "detail", detail)
-	}
+	ps.fold.Fold(ctx, thing, op)
 }
 
 // countdown counts the measured backlog off; at zero the pass's run

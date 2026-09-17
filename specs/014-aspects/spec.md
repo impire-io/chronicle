@@ -7,7 +7,8 @@ and [`02-DESIGN/03-meta-and-state.md`](../../../chronicle-hq/02-DESIGN/03-meta-a
 § the state buckets, [`02-DESIGN/04-fleet.md`](../../../chronicle-hq/02-DESIGN/04-fleet.md)
 § the node's duties (rollups), [`02-DESIGN/05-indexes.md`](../../../chronicle-hq/02-DESIGN/05-indexes.md)
 § what an index materializes.
-**Status:** specified. Builds on spec 013.
+**Status:** implemented on this branch ([plan.md](plan.md)) — awaiting
+review and merge. Builds on spec 013.
 
 ## What this delivers
 

@@ -7,9 +7,11 @@
 // copy at once.
 //
 // Since 0021 the vocabulary lives in type records, so judgment is in two
-// halves: resolve the thing to its type (ResolveThing — the tenant path;
-// the fleet log resolves by family and calls JudgeAs), then judge the op
-// through the type's operations (JudgeRecord).
+// halves: resolve the thing to its type (the pair walk of ResolveThing
+// for tenant logs; the fleet resolves by family), then judge the op
+// through the type's operations (JudgeRecord). Pass drives both halves
+// per op and keeps the per-thing frontier — the one fold implementation
+// every materialization shares (0023 § 3).
 package foldcore
 
 import (
@@ -17,6 +19,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 
 	"github.com/nats-io/nats.go/jetstream"
 
@@ -78,37 +82,6 @@ func ResolveThing(ctx context.Context, meta jetstream.KeyValue, log, thing strin
 	return contract.ResolveTail(thing, Lookup(ctx, meta, log))
 }
 
-// JudgeThing is the tenant path: resolve the thing, then judge the op
-// through its type. An untyped thing's ops judge UnknownType — the
-// vocabulary-less floor; an undeclared aspect's judge Undeclared.
-func JudgeThing(ctx context.Context, meta jetstream.KeyValue, log, thing string, op contract.Op) (Decision, string) {
-	res, err := ResolveThing(ctx, meta, log, thing)
-	if err != nil {
-		return BadTypeRecord, err.Error()
-	}
-	switch res.Kind {
-	case contract.ResolvedUntyped:
-		return UnknownType, fmt.Sprintf("thing is untyped: %s", res.Detail)
-	case contract.ResolvedUndeclared:
-		return Undeclared, res.Detail
-	}
-	return JudgeRecord(res.Record, op)
-}
-
-// JudgeAs judges an op through one named type record — the fleet log's
-// path, where the family names the type and no pair resolution applies.
-// A missing record judges UnknownType, like any unknown vocabulary.
-func JudgeAs(ctx context.Context, meta jetstream.KeyValue, log, typeName string, op contract.Op) (Decision, string) {
-	rec, ok, err := Lookup(ctx, meta, log)(typeName)
-	if err != nil {
-		return BadTypeRecord, err.Error()
-	}
-	if !ok {
-		return UnknownType, fmt.Sprintf("type %s has no declaration", typeName)
-	}
-	return JudgeRecord(rec, op)
-}
-
 // FoldFingerprint captures the facets of a type record whose change makes
 // derived state suspect (0021 § 5): history, aspects, and each effective
 // operation's effect. Schema-only revisions — thing or op — change no
@@ -137,6 +110,42 @@ func FoldFingerprint(rec *contract.TypeRecord) string {
 	}
 	b, _ := json.Marshal(fp)
 	return string(b)
+}
+
+// LogFingerprint combines every type record's fold fingerprint into the
+// log's declaration watermark (0023 § 4): equal watermarks mean a state
+// bucket's values were derived under the current declarations, so a
+// state-sourced indexer may bootstrap from them.
+func LogFingerprint(ctx context.Context, meta jetstream.KeyValue, log string) (string, error) {
+	prefix := contract.MetaLogType(log, "")
+	lister, err := meta.ListKeysFiltered(ctx, prefix+">")
+	if err != nil {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
+			return "", nil
+		}
+		return "", fmt.Errorf("list type records: %w", err)
+	}
+	var names []string
+	for key := range lister.Keys() {
+		names = append(names, strings.TrimPrefix(key, prefix))
+	}
+	sort.Strings(names)
+	lookup := Lookup(ctx, meta, log)
+	var b strings.Builder
+	for _, name := range names {
+		rec, ok, err := lookup(name)
+		if err != nil {
+			return "", err
+		}
+		if !ok {
+			continue
+		}
+		b.WriteString(name)
+		b.WriteByte('=')
+		b.WriteString(FoldFingerprint(rec))
+		b.WriteByte('\n')
+	}
+	return b.String(), nil
 }
 
 // JudgeSnapshot validates a snapshot's state against a resolved type's

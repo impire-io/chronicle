@@ -269,6 +269,17 @@ func (n *node) handleLogCreate(req micro.Request) {
 		_ = req.Error("500", fmt.Sprintf("create state bucket: %v", err), nil)
 		return
 	}
+	// State joins the index framework (0023): the declaration is born
+	// with the log — kind state, node-materialized, refused deletion.
+	decl, err := json.Marshal(contract.IndexDeclaration{Kind: contract.IndexKindState})
+	if err != nil {
+		_ = req.Error("500", err.Error(), nil)
+		return
+	}
+	if _, err := n.meta.Create(ctx, contract.MetaIndex(r.Log, contract.StateIndexName), decl); err != nil && !errors.Is(err, jetstream.ErrKeyExists) {
+		_ = req.Error("500", fmt.Sprintf("declare state index: %v", err), nil)
+		return
+	}
 	if err := n.startFold(ctx, r.Log); err != nil {
 		_ = req.Error("500", fmt.Sprintf("start fold: %v", err), nil)
 		return

@@ -54,10 +54,8 @@ func (s *service) scan() {
 
 // workloadThings snapshots the fold's workload things.
 func (s *service) workloadThings() []string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	var things []string
-	for thing := range s.mem {
+	for _, thing := range s.pass.Things() {
 		if strings.HasPrefix(thing, "workload.") {
 			things = append(things, thing)
 		}

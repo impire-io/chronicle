@@ -3,7 +3,9 @@ package search_test
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -334,5 +336,107 @@ func TestParseSearchConfigIsWriteSideStrict(t *testing.T) {
 	}
 	if _, err := contract.ParseSearchConfig(json.RawMessage(`{"source":"ops","types":[""]}`)); err == nil {
 		t.Fatal("empty type accepted")
+	}
+}
+
+// lineCatcher collects log lines so a test can assert which boot path a
+// service took.
+type lineCatcher struct {
+	mu  sync.Mutex
+	buf strings.Builder
+}
+
+func (l *lineCatcher) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.Write(p)
+}
+
+func (l *lineCatcher) has(sub string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return strings.Contains(l.buf.String(), sub)
+}
+
+// TestSearchBootsFromStateCheckpoint proves 0023 § 4: a state-sourced
+// indexer boots from the state index's {seq, state} checkpoint when the
+// fold watermark names the current declarations — and answers exactly as
+// a full replay would — while a stale watermark voids the shortcut and
+// the pass replays from sequence 1, the suspicion rule.
+func TestSearchBootsFromStateCheckpoint(t *testing.T) {
+	nc, alice := setup(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	if _, err := alice.CreateLog(ctx, "orders", ""); err != nil {
+		t.Fatalf("create log: %v", err)
+	}
+	if _, err := alice.DefineType(ctx, "orders", "invoice", client.TypeDefinition{
+		Schema:     json.RawMessage(`{"type":"object"}`),
+		Operations: map[string]contract.OpDef{"status.set": {Schema: json.RawMessage(`{"type":"object"}`), Effect: contract.EffectMerge}},
+	}); err != nil {
+		t.Fatalf("define type: %v", err)
+	}
+	if _, err := alice.CreateThing(ctx, "orders", "invoice.invoice-1", json.RawMessage(`{"title":"quantum widgets"}`)); err != nil {
+		t.Fatalf("create thing: %v", err)
+	}
+	if _, err := alice.CreateThing(ctx, "orders", "invoice.invoice-2", json.RawMessage(`{"title":"plain paperclips"}`)); err != nil {
+		t.Fatalf("create thing: %v", err)
+	}
+	moved, err := alice.Append(ctx, "orders", "invoice.invoice-1", "status.set", []byte(`{"title":"chrono gadgets"}`))
+	if err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	// The node's state index must hold the checkpoint before the indexer
+	// boots.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		sv, err := alice.State(ctx, "orders", "invoice.invoice-1")
+		if err == nil && sv.Seq == moved.Seq {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("state never caught up: %v", err)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+
+	if _, err := alice.DeclareIndex(ctx, "orders", "text", "search", nil); err != nil {
+		t.Fatalf("declare index: %v", err)
+	}
+	catcher := &lineCatcher{}
+	svc, err := search.Start(ctx, nc, search.Config{Log: "orders", Index: "text", Logger: slog.New(slog.NewTextHandler(catcher, nil))})
+	if err != nil {
+		t.Fatalf("start indexer: %v", err)
+	}
+	waitHit(ctx, t, alice, "orders", "text", "gadgets", "invoice.invoice-1")
+	if !catcher.has("state checkpoint seeded") {
+		t.Fatal("the boot did not use the state checkpoint")
+	}
+	svc.Stop()
+
+	// A stale watermark voids the shortcut: the pass replays whole and
+	// still answers the same.
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	states, err := js.KeyValue(ctx, contract.StateBucket("orders"))
+	if err != nil {
+		t.Fatalf("open state bucket: %v", err)
+	}
+	stale, _ := json.Marshal(contract.FoldWatermark{Declarations: "stale"})
+	if _, err := states.Put(ctx, contract.StateFoldKey, stale); err != nil {
+		t.Fatalf("tamper watermark: %v", err)
+	}
+	catcher2 := &lineCatcher{}
+	svc2, err := search.Start(ctx, nc, search.Config{Log: "orders", Index: "text", Logger: slog.New(slog.NewTextHandler(catcher2, nil))})
+	if err != nil {
+		t.Fatalf("restart indexer: %v", err)
+	}
+	defer svc2.Stop()
+	waitHit(ctx, t, alice, "orders", "text", "gadgets", "invoice.invoice-1")
+	if catcher2.has("state checkpoint seeded") {
+		t.Fatal("a stale watermark must void the checkpoint")
 	}
 }

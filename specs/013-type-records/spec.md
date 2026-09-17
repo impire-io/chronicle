@@ -5,7 +5,8 @@
 [`03-DECISIONS/0021-the-type-is-the-unit-of-definition.md`](../../../chronicle-hq/03-DECISIONS/0021-the-type-is-the-unit-of-definition.md)
 and [`02-DESIGN/03-meta-and-state.md`](../../../chronicle-hq/02-DESIGN/03-meta-and-state.md)
 § type records, § the state buckets (fold rules).
-**Status:** specified.
+**Status:** implemented on this branch ([plan.md](plan.md)) — awaiting
+review and merge.
 
 ## What this delivers
 

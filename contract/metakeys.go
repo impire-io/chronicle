@@ -52,6 +52,33 @@ type IndexDeclaration struct {
 // thing state through an embedded engine.
 const IndexKindSearch = "search"
 
+// IndexKindState is the log's own current-state view (decision 0023):
+// current value per key, last write wins, materialized by the node into
+// STATE_<LOG>. Its declaration is written at log creation and refused to
+// DECLARE and DELETE — the exactness recipe and roll-up are its
+// consumers, so this is the one derived view whose loss would break a
+// contract. It places no workload: the state index rides the node.
+const IndexKindState = "state"
+
+// StateIndexName is the reserved index name the state declaration lives
+// under: index.<log>.state.
+const StateIndexName = "state"
+
+// StateFoldKey is the reserved state-bucket key carrying the fold
+// watermark (0023 § 4): the declarations the bucket's values derive
+// under, written at every fold start. "=" is legal in a KV key and
+// refused in a thing token, so no thing tail can ever collide with it.
+const StateFoldKey = "=fold"
+
+// FoldWatermark is the value at StateFoldKey. A state-sourced indexer
+// whose computed declaration fingerprint equals the watermark may
+// bootstrap from the bucket's {seq, state} values and consume from past
+// them; anything else replays from sequence 1 — the same suspicion rule
+// as everywhere.
+type FoldWatermark struct {
+	Declarations string `json:"declarations"`
+}
+
 // KnownIndexKind reports whether the kind is in this build's vocabulary.
 // INDEX.DECLARE refuses kinds outside it (write-side strictness), while a
 // supervisor reading a newer build's declaration ignores it with a warning
