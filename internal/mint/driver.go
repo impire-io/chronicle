@@ -31,8 +31,21 @@ type Account struct {
 // Driver mints tenant accounts on one substrate. MintAccount creates the
 // account with explicit JetStream limits, establishes the keys, and
 // verifies by connecting — a successful push does not prove trust.
+//
+// The two mutation verbs are the onboarding design's revocation row held
+// at the seam: account-claims surgery is driver-specific (the jwt driver
+// edits and re-pushes the account JWT; a vendor driver would call the
+// vendor's API), while everything above the seam speaks in principals and
+// public keys.
 type Driver interface {
 	MintAccount(ctx context.Context, name string) (*Account, error)
+	// RevokeUser invalidates one user credential: new connections are
+	// refused and live ones are evicted.
+	RevokeUser(ctx context.Context, accountPub, userPub string) error
+	// RotateScopedSigner replaces the account's member-issuing scoped key
+	// with newScopedPub, evicting every user the old key signed. The plain
+	// signing key — and the service user it signed — stays untouched.
+	RotateScopedSigner(ctx context.Context, accountPub, newScopedPub string) error
 }
 
 // Creds is an issued user: the decorated .creds content and the user's

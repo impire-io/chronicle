@@ -11,6 +11,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"github.com/nats-io/nkeys"
 
 	"github.com/impire-io/chronicle/contract"
 	"github.com/impire-io/chronicle/internal/mint"
@@ -210,6 +211,141 @@ func TestMemberBaseline(t *testing.T) {
 	if !found {
 		t.Fatalf("expected a permissions violation for a non-CHRON publish, got %v", violations)
 	}
+}
+
+// waitDisconnected polls until the connection loses the server or the
+// deadline passes — eviction arrives as a server-side close, and the
+// client parks in reconnect.
+func waitDisconnected(t *testing.T, nc *nats.Conn) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for nc.IsConnected() {
+		if time.Now().After(deadline) {
+			t.Fatal("connection still up: eviction did not land")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+func TestRevokeUserEvictsAndBlocks(t *testing.T) {
+	url, d := startDriver(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	acct, err := d.MintAccount(ctx, "acme")
+	if err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+	alice, err := mint.IssueMember(acct, "alice")
+	if err != nil {
+		t.Fatalf("issue member: %v", err)
+	}
+	bob, err := mint.IssueMember(acct, "bob")
+	if err != nil {
+		t.Fatalf("issue second member: %v", err)
+	}
+
+	anc, err := mint.ConnectCreds(url, alice.File, "alice")
+	if err != nil {
+		t.Fatalf("connect alice: %v", err)
+	}
+	defer anc.Close()
+	bnc, err := mint.ConnectCreds(url, bob.File, "bob")
+	if err != nil {
+		t.Fatalf("connect bob: %v", err)
+	}
+	defer bnc.Close()
+
+	if err := d.RevokeUser(ctx, acct.PublicKey, alice.PublicKey); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+
+	// The revoked connection is actively closed; a fresh dial with the
+	// same creds is refused.
+	waitDisconnected(t, anc)
+	if nc, err := mint.ConnectCreds(url, alice.File, "alice-again"); err == nil {
+		nc.Close()
+		t.Fatal("revoked creds reconnected: revocation is not enforced")
+	}
+
+	// Revocation is surgical: the other member never blinks.
+	if !bnc.IsConnected() {
+		t.Fatal("unrevoked member lost its connection")
+	}
+	if _, err := mint.ConnectCreds(url, bob.File, "bob-again"); err != nil {
+		t.Fatalf("unrevoked member refused a fresh dial: %v", err)
+	}
+}
+
+func TestRotateScopedSignerEvictsMembersKeepsService(t *testing.T) {
+	url, d := startDriver(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	acct, err := d.MintAccount(ctx, "acme")
+	if err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+	svc, err := mint.IssueServiceUser(acct, "chronicle-node")
+	if err != nil {
+		t.Fatalf("issue service: %v", err)
+	}
+	alice, err := mint.IssueMember(acct, "alice")
+	if err != nil {
+		t.Fatalf("issue member: %v", err)
+	}
+
+	snc, err := mint.ConnectCreds(url, svc.File, "svc")
+	if err != nil {
+		t.Fatalf("connect service: %v", err)
+	}
+	defer snc.Close()
+	anc, err := mint.ConnectCreds(url, alice.File, "alice")
+	if err != nil {
+		t.Fatalf("connect alice: %v", err)
+	}
+	defer anc.Close()
+
+	newScoped, err := nkeys.CreateAccount()
+	if err != nil {
+		t.Fatalf("new scoped key: %v", err)
+	}
+	newScopedPub, err := newScoped.PublicKey()
+	if err != nil {
+		t.Fatalf("scoped public key: %v", err)
+	}
+	if err := d.RotateScopedSigner(ctx, acct.PublicKey, newScopedPub); err != nil {
+		t.Fatalf("rotate: %v", err)
+	}
+
+	// Every member the old key signed is out — evicted and refused.
+	waitDisconnected(t, anc)
+	if nc, err := mint.ConnectCreds(url, alice.File, "alice-again"); err == nil {
+		nc.Close()
+		t.Fatal("old-key member reconnected: rotation did not evict")
+	}
+
+	// The service user rides through: its issuer, the plain signing key,
+	// stays in the account.
+	if !snc.IsConnected() {
+		t.Fatal("service user lost its connection during member rekey")
+	}
+
+	// Creds under the new scoped key work the moment the push returns.
+	newSeed, err := newScoped.Seed()
+	if err != nil {
+		t.Fatalf("scoped seed: %v", err)
+	}
+	rekeyed := &mint.Account{Name: acct.Name, PublicKey: acct.PublicKey, ScopedSeed: newSeed}
+	alice2, err := mint.IssueMember(rekeyed, "alice")
+	if err != nil {
+		t.Fatalf("re-issue member: %v", err)
+	}
+	nc2, err := mint.ConnectCreds(url, alice2.File, "alice-rekeyed")
+	if err != nil {
+		t.Fatalf("re-issued member refused: %v", err)
+	}
+	nc2.Close()
 }
 
 func TestDedupAndBirthGuardAreServerEnforced(t *testing.T) {
