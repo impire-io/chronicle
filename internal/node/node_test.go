@@ -153,33 +153,61 @@ func TestCreateLogAndSpine(t *testing.T) {
 		}
 	}
 
-	// Schemas: declared, revisioned, compiled before recorded.
+	// Types: defined in one act, revisioned whole, compiled before
+	// recorded (0021).
 	schema := json.RawMessage(`{"type":"object","required":["body"],"properties":{"body":{"type":"string"}}}`)
-	rev, err := alice.SetSchema(ctx, "orders", "comment.add", schema, "")
+	def := client.TypeDefinition{
+		Schema:     json.RawMessage(`{"type":"object"}`),
+		Operations: map[string]contract.OpDef{"comment.add": {Schema: schema}},
+	}
+	rev, err := alice.DefineType(ctx, "orders", "invoice", def)
 	if err != nil {
-		t.Fatalf("set schema: %v", err)
+		t.Fatalf("define type: %v", err)
 	}
 	if rev.Revision != 1 {
 		t.Fatalf("first revision = %d", rev.Revision)
 	}
-	rev2, err := alice.SetSchema(ctx, "orders", "comment.add", schema, "")
+	rev2, err := alice.DefineType(ctx, "orders", "invoice", def)
 	if err != nil {
-		t.Fatalf("set schema again: %v", err)
+		t.Fatalf("define type again: %v", err)
 	}
 	if rev2.Revision != 2 {
 		t.Fatalf("second revision = %d", rev2.Revision)
 	}
-	if _, err := alice.SetSchema(ctx, "orders", "broken", json.RawMessage(`{"type":"nope"}`), ""); err == nil {
-		t.Fatal("uncompilable schema recorded")
+	if _, err := alice.DefineType(ctx, "orders", "broken", client.TypeDefinition{
+		Schema: json.RawMessage(`{"type":"nope"}`),
+	}); err == nil {
+		t.Fatal("uncompilable thing schema recorded")
+	}
+	if _, err := alice.DefineType(ctx, "orders", "broken", client.TypeDefinition{
+		Schema:     json.RawMessage(`{"type":"object"}`),
+		Operations: map[string]contract.OpDef{"x.y": {Schema: json.RawMessage(`{"type":"nope"}`)}},
+	}); err == nil {
+		t.Fatal("uncompilable operation schema recorded")
+	}
+	// The record is discoverable: read back and listed.
+	rec, err := alice.GetType(ctx, "orders", "invoice")
+	if err != nil {
+		t.Fatalf("get type: %v", err)
+	}
+	if rec.Revision != 2 || len(rec.Operations) != 1 {
+		t.Fatalf("read-back record: %+v", rec)
+	}
+	names, err := alice.ListTypes(ctx, "orders")
+	if err != nil {
+		t.Fatalf("list types: %v", err)
+	}
+	if len(names) != 1 || names[0] != "invoice" {
+		t.Fatalf("type list: %v", names)
 	}
 
 	// FR-03: birth, then appends with pre-flight.
-	birth, err := alice.CreateThing(ctx, "orders", "invoice-1", json.RawMessage(`{"total":0}`))
+	birth, err := alice.CreateThing(ctx, "orders", "invoice.invoice-1", json.RawMessage(`{"total":0}`))
 	if err != nil {
 		t.Fatalf("create thing: %v", err)
 	}
 	// Idempotent birth retry: same op ID reports the same landing.
-	again, err := alice.CreateThing(ctx, "orders", "invoice-1", json.RawMessage(`{"total":0}`), client.WithOpID(birth.OpID))
+	again, err := alice.CreateThing(ctx, "orders", "invoice.invoice-1", json.RawMessage(`{"total":0}`), client.WithOpID(birth.OpID))
 	if err != nil {
 		t.Fatalf("birth retry: %v", err)
 	}
@@ -187,16 +215,16 @@ func TestCreateLogAndSpine(t *testing.T) {
 		t.Fatalf("birth retry landed elsewhere: %d vs %d", again.Seq, birth.Seq)
 	}
 	// A different writer's birth of the same thing is refused.
-	if _, err := alice.CreateThing(ctx, "orders", "invoice-1", nil); !errors.Is(err, client.ErrThingExists) {
+	if _, err := alice.CreateThing(ctx, "orders", "invoice.invoice-1", nil); !errors.Is(err, client.ErrThingExists) {
 		t.Fatalf("expected ErrThingExists, got %v", err)
 	}
 
 	// Pre-flight refuses an invalid payload before the wire.
-	if _, err := alice.Append(ctx, "orders", "invoice-1", "comment.add", []byte(`{"nobody":1}`)); !errors.Is(err, client.ErrSchemaViolation) {
+	if _, err := alice.Append(ctx, "orders", "invoice.invoice-1", "comment.add", []byte(`{"nobody":1}`)); !errors.Is(err, client.ErrSchemaViolation) {
 		t.Fatalf("expected schema violation, got %v", err)
 	}
 	// A valid op lands.
-	ack, err := alice.Append(ctx, "orders", "invoice-1", "comment.add", []byte(`{"body":"first"}`), client.WithParents(birth.OpID))
+	ack, err := alice.Append(ctx, "orders", "invoice.invoice-1", "comment.add", []byte(`{"body":"first"}`), client.WithParents(birth.OpID))
 	if err != nil {
 		t.Fatalf("append: %v", err)
 	}
@@ -209,7 +237,7 @@ func TestCreateLogAndSpine(t *testing.T) {
 		t.Helper()
 		deadline := time.Now().Add(5 * time.Second)
 		for {
-			sv, err := alice.State(ctx, "orders", "invoice-1")
+			sv, err := alice.State(ctx, "orders", "invoice.invoice-1")
 			if err == nil && sv.Seq == wantSeq {
 				return sv
 			}
@@ -229,7 +257,7 @@ func TestCreateLogAndSpine(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	snapAck, err := alice.Append(ctx, "orders", "invoice-1", contract.OpTypeSnapshot, snap2)
+	snapAck, err := alice.Append(ctx, "orders", "invoice.invoice-1", contract.OpTypeSnapshot, snap2)
 	if err != nil {
 		t.Fatalf("snapshot append: %v", err)
 	}
@@ -240,7 +268,7 @@ func TestCreateLogAndSpine(t *testing.T) {
 
 	// FR-05: replay returns the full history in stream order; FoldTail
 	// picks up exactly after the state's seq.
-	ops, err := alice.Replay(ctx, "orders", "invoice-1")
+	ops, err := alice.Replay(ctx, "orders", "invoice.invoice-1")
 	if err != nil {
 		t.Fatalf("replay: %v", err)
 	}
@@ -254,7 +282,7 @@ func TestCreateLogAndSpine(t *testing.T) {
 		t.Fatalf("the record lost author or parents: %+v", ops[1])
 	}
 	var tail []contract.Op
-	if err := alice.FoldTail(ctx, "orders", "invoice-1", sv.Seq, func(op contract.Op) error {
+	if err := alice.FoldTail(ctx, "orders", "invoice.invoice-1", sv.Seq, func(op contract.Op) error {
 		tail = append(tail, op)
 		return nil
 	}); err != nil {
@@ -266,11 +294,18 @@ func TestCreateLogAndSpine(t *testing.T) {
 
 	// Tolerance: unknown op types warn; invalid payloads of known types
 	// are marked; neither drops, and the log keeps both.
-	if _, err := alice.Append(ctx, "orders", "invoice-1", "mystery.op", []byte(`{}`)); err != nil {
-		t.Fatalf("unknown type must publish: %v", err)
+	mystery := nats.NewMsg(contract.OpsSubject("orders", "invoice.invoice-1"))
+	mystery.Header = contract.Op{ID: "mystery-1", Type: "mystery.op", Author: "mallory"}.Header()
+	mystery.Data = []byte(`{}`)
+	mysteryJS, err := jetstream.New(aliceConn(alice))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mysteryJS.PublishMsg(ctx, mystery); err != nil {
+		t.Fatalf("raw unknown-type publish: %v", err)
 	}
 	catcher.wait(t, "unknown op type ignored")
-	raw := nats.NewMsg(contract.OpsSubject("orders", "invoice-1"))
+	raw := nats.NewMsg(contract.OpsSubject("orders", "invoice.invoice-1"))
 	raw.Header = contract.Op{ID: "bad-1", Type: "comment.add", Author: "mallory"}.Header()
 	raw.Data = []byte(`{"nobody":1}`)
 	js, err := jetstream.New(aliceConn(alice))
@@ -281,7 +316,7 @@ func TestCreateLogAndSpine(t *testing.T) {
 		t.Fatalf("raw invalid publish: %v", err)
 	}
 	catcher.wait(t, "marked invalid payload")
-	ops, err = alice.Replay(ctx, "orders", "invoice-1")
+	ops, err = alice.Replay(ctx, "orders", "invoice.invoice-1")
 	if err != nil {
 		t.Fatalf("replay after junk: %v", err)
 	}
@@ -315,7 +350,7 @@ func TestNodeRestartsFoldsFromMeta(t *testing.T) {
 	if _, err := alice.CreateLog(ctx, "orders", ""); err != nil {
 		t.Fatalf("create log: %v", err)
 	}
-	birth, err := alice.CreateThing(ctx, "orders", "invoice-1", json.RawMessage(`{"n":1}`))
+	birth, err := alice.CreateThing(ctx, "orders", "invoice.invoice-1", json.RawMessage(`{"n":1}`))
 	if err != nil {
 		t.Fatalf("create thing: %v", err)
 	}
@@ -330,7 +365,7 @@ func TestNodeRestartsFoldsFromMeta(t *testing.T) {
 
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		sv, err := alice.State(ctx, "orders", "invoice-1")
+		sv, err := alice.State(ctx, "orders", "invoice.invoice-1")
 		if err == nil && sv.Seq == birth.Seq {
 			break
 		}

@@ -98,13 +98,16 @@ func TestSearchEndToEnd(t *testing.T) {
 	if _, err := alice.CreateLog(ctx, "orders", ""); err != nil {
 		t.Fatalf("create log: %v", err)
 	}
-	if _, err := alice.SetSchema(ctx, "orders", "status.set", json.RawMessage(`{"type":"object"}`), "merge"); err != nil {
-		t.Fatalf("set schema: %v", err)
+	if _, err := alice.DefineType(ctx, "orders", "invoice", client.TypeDefinition{
+		Schema:     json.RawMessage(`{"type":"object"}`),
+		Operations: map[string]contract.OpDef{"status.set": {Schema: json.RawMessage(`{"type":"object"}`), Effect: contract.EffectMerge}},
+	}); err != nil {
+		t.Fatalf("define type: %v", err)
 	}
-	if _, err := alice.CreateThing(ctx, "orders", "invoice-1", json.RawMessage(`{"title":"quantum widgets"}`)); err != nil {
+	if _, err := alice.CreateThing(ctx, "orders", "invoice.invoice-1", json.RawMessage(`{"title":"quantum widgets"}`)); err != nil {
 		t.Fatalf("create thing: %v", err)
 	}
-	if _, err := alice.CreateThing(ctx, "orders", "invoice-2", json.RawMessage(`{"title":"boring paperclips"}`)); err != nil {
+	if _, err := alice.CreateThing(ctx, "orders", "invoice.invoice-2", json.RawMessage(`{"title":"boring paperclips"}`)); err != nil {
 		t.Fatalf("create thing: %v", err)
 	}
 
@@ -129,15 +132,15 @@ func TestSearchEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
-	if len(resp.Hits) != 1 || resp.Hits[0].Thing != "invoice-1" || resp.Hits[0].Score <= 0 {
+	if len(resp.Hits) != 1 || resp.Hits[0].Thing != "invoice.invoice-1" || resp.Hits[0].Score <= 0 {
 		t.Fatalf("boot replay hits: %+v", resp)
 	}
 
 	// The live tail: a merge op changes the state the index sees.
-	if _, err := alice.Append(ctx, "orders", "invoice-1", "status.set", []byte(`{"title":"chrono gadgets"}`)); err != nil {
+	if _, err := alice.Append(ctx, "orders", "invoice.invoice-1", "status.set", []byte(`{"title":"chrono gadgets"}`)); err != nil {
 		t.Fatalf("append: %v", err)
 	}
-	waitHit(ctx, t, alice, "orders", "text", "gadgets", "invoice-1")
+	waitHit(ctx, t, alice, "orders", "text", "gadgets", "invoice.invoice-1")
 
 	// An empty query matches everything — the total counts things, not ops.
 	resp, err = alice.QueryIndex(ctx, "orders", "text", "", 0, 0)
@@ -176,13 +179,16 @@ func TestSearchFollowsEffects(t *testing.T) {
 	if _, err := alice.CreateLog(ctx, "notes", ""); err != nil {
 		t.Fatalf("create log: %v", err)
 	}
-	if _, err := alice.SetSchema(ctx, "notes", "note.add", json.RawMessage(`{"type":"object"}`), ""); err != nil {
-		t.Fatalf("set schema: %v", err)
+	if _, err := alice.DefineType(ctx, "notes", "note", client.TypeDefinition{
+		Schema:     json.RawMessage(`{"type":"object"}`),
+		Operations: map[string]contract.OpDef{"note.add": {Schema: json.RawMessage(`{"type":"object"}`)}},
+	}); err != nil {
+		t.Fatalf("define type: %v", err)
 	}
-	if _, err := alice.CreateThing(ctx, "notes", "n1", json.RawMessage(`{}`)); err != nil {
+	if _, err := alice.CreateThing(ctx, "notes", "note.n1", json.RawMessage(`{}`)); err != nil {
 		t.Fatalf("create thing: %v", err)
 	}
-	if _, err := alice.Append(ctx, "notes", "n1", "note.add", []byte(`{"body":"xyzzy plugh"}`)); err != nil {
+	if _, err := alice.Append(ctx, "notes", "note.n1", "note.add", []byte(`{"body":"xyzzy plugh"}`)); err != nil {
 		t.Fatalf("append: %v", err)
 	}
 
@@ -205,10 +211,13 @@ func TestSearchFollowsEffects(t *testing.T) {
 	}
 
 	// Latest declaration wins: none → merge re-folds the index in place.
-	if _, err := alice.SetSchema(ctx, "notes", "note.add", json.RawMessage(`{"type":"object"}`), "merge"); err != nil {
+	if _, err := alice.DefineType(ctx, "notes", "note", client.TypeDefinition{
+		Schema:     json.RawMessage(`{"type":"object"}`),
+		Operations: map[string]contract.OpDef{"note.add": {Schema: json.RawMessage(`{"type":"object"}`), Effect: contract.EffectMerge}},
+	}); err != nil {
 		t.Fatalf("change effect: %v", err)
 	}
-	waitHit(ctx, t, alice, "notes", "text", "xyzzy", "n1")
+	waitHit(ctx, t, alice, "notes", "text", "xyzzy", "note.n1")
 }
 
 // TestSearchOpsSource proves 0020's contract for the search kind: an
@@ -225,22 +234,25 @@ func TestSearchOpsSource(t *testing.T) {
 	}
 	// note.add stays effect-none: its content is invisible to any
 	// state-sourced index, which is exactly the gap the ops source fills.
-	if _, err := alice.SetSchema(ctx, "items", "note.add", json.RawMessage(`{"type":"object"}`), ""); err != nil {
-		t.Fatalf("set schema: %v", err)
+	if _, err := alice.DefineType(ctx, "items", "item", client.TypeDefinition{
+		Schema:     json.RawMessage(`{"type":"object"}`),
+		Operations: map[string]contract.OpDef{"note.add": {Schema: json.RawMessage(`{"type":"object"}`)}},
+	}); err != nil {
+		t.Fatalf("define type: %v", err)
 	}
-	if _, err := alice.CreateThing(ctx, "items", "item-1", json.RawMessage(`{"title":"a widget"}`)); err != nil {
+	if _, err := alice.CreateThing(ctx, "items", "item.item-1", json.RawMessage(`{"title":"a widget"}`)); err != nil {
 		t.Fatalf("create thing: %v", err)
 	}
-	if _, err := alice.CreateThing(ctx, "items", "item-2", json.RawMessage(`{"title":"a gadget"}`)); err != nil {
+	if _, err := alice.CreateThing(ctx, "items", "item.item-2", json.RawMessage(`{"title":"a gadget"}`)); err != nil {
 		t.Fatalf("create thing: %v", err)
 	}
-	if _, err := alice.Append(ctx, "items", "item-1", "note.add", []byte(`{"body":"the flux capacitor hums"}`)); err != nil {
+	if _, err := alice.Append(ctx, "items", "item.item-1", "note.add", []byte(`{"body":"the flux capacitor hums"}`)); err != nil {
 		t.Fatalf("append: %v", err)
 	}
-	if _, err := alice.Append(ctx, "items", "item-1", "note.add", []byte(`{"body":"the flux capacitor still hums"}`)); err != nil {
+	if _, err := alice.Append(ctx, "items", "item.item-1", "note.add", []byte(`{"body":"the flux capacitor still hums"}`)); err != nil {
 		t.Fatalf("append: %v", err)
 	}
-	if _, err := alice.Append(ctx, "items", "item-2", "note.add", []byte(`{"body":"nothing flux about this one"}`)); err != nil {
+	if _, err := alice.Append(ctx, "items", "item.item-2", "note.add", []byte(`{"body":"nothing flux about this one"}`)); err != nil {
 		t.Fatalf("append: %v", err)
 	}
 
@@ -266,15 +278,15 @@ func TestSearchOpsSource(t *testing.T) {
 	for _, h := range resp.Hits {
 		seen[h.Thing] = true
 	}
-	if !seen["item-1"] || !seen["item-2"] {
+	if !seen["item.item-1"] || !seen["item.item-2"] {
 		t.Fatalf("hits must name the things: %+v", resp.Hits)
 	}
 
 	// The live tail: a fresh op becomes findable without any effect help.
-	if _, err := alice.Append(ctx, "items", "item-2", "note.add", []byte(`{"body":"zorble"}`)); err != nil {
+	if _, err := alice.Append(ctx, "items", "item.item-2", "note.add", []byte(`{"body":"zorble"}`)); err != nil {
 		t.Fatalf("append live: %v", err)
 	}
-	waitHit(ctx, t, alice, "items", "trail", "zorble", "item-2")
+	waitHit(ctx, t, alice, "items", "trail", "zorble", "item.item-2")
 
 	// The types narrowing: an index reading only note.add cannot see the
 	// birth snapshots' state text.

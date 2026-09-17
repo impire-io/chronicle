@@ -88,6 +88,9 @@ func (c *Client) CreateThing(ctx context.Context, log, thing string, state json.
 	if state == nil {
 		state = json.RawMessage(`{}`)
 	}
+	if err := c.types.preflightSnapshot(ctx, log, thing, state); err != nil {
+		return Ack{}, err
+	}
 	payload, err := json.Marshal(contract.Snapshot{State: state, Frontier: []string{}})
 	if err != nil {
 		return Ack{}, fmt.Errorf("snapshot payload: %w", err)
@@ -161,6 +164,9 @@ func (c *Client) SaveVersion(ctx context.Context, log, thing string, state json.
 	if frontier == nil {
 		frontier = []string{}
 	}
+	if err := c.types.preflightSnapshot(ctx, log, thing, state); err != nil {
+		return Ack{}, err
+	}
 	payload, err := json.Marshal(contract.Snapshot{State: state, Frontier: frontier})
 	if err != nil {
 		return Ack{}, fmt.Errorf("snapshot payload: %w", err)
@@ -221,7 +227,7 @@ func (c *Client) Append(ctx context.Context, log, thing, opType string, payload 
 	}
 	o := applyOpts(opts)
 
-	if err := c.schemas.preflight(ctx, log, opType, payload); err != nil {
+	if err := c.types.preflightAppend(ctx, log, thing, opType, payload); err != nil {
 		return Ack{}, err
 	}
 
@@ -301,85 +307,159 @@ func applyOpts(opts []AppendOpt) appendOpts {
 }
 
 // ErrSchemaViolation is a pre-flight refusal: the payload does not satisfy
-// the log's declared schema for the op type.
+// the declared schema.
 var ErrSchemaViolation = errors.New("payload fails the declared schema")
 
-// schemaCache serves pre-flight validation: schemas are read from META and
-// kept per (log, op type, revision). It reads through the KV bucket — the
-// member baseline's read side — and never writes.
-type schemaCache struct {
+// ErrUndeclaredAspect is a pre-flight refusal: the thing's prefix resolves
+// to a parent type that does not declare the created type as an aspect
+// (0022 § 3). The fold would mark the subject; the SDK refuses first.
+var ErrUndeclaredAspect = errors.New("undeclared aspect")
+
+// ErrUndefinedOperation is a pre-flight refusal: the thing's type defines
+// no such operation (0021 § 2).
+var ErrUndefinedOperation = errors.New("operation not defined on the type")
+
+// typeCache serves pre-flight: type records are read fresh from META —
+// latest declaration wins — and their compiled schemas kept per
+// (log, type, revision, op). It reads through the KV bucket — the member
+// baseline's read side — and never writes.
+type typeCache struct {
 	js jetstream.JetStream
 
 	mu       sync.Mutex
-	buckets  map[string]jetstream.KeyValue
-	compiled map[string]*jsonschema.Schema // keyed log/opType@revision
+	meta     jetstream.KeyValue
+	compiled map[string]*jsonschema.Schema
 }
 
-func newSchemaCache(js jetstream.JetStream) *schemaCache {
-	return &schemaCache{
-		js:       js,
-		buckets:  map[string]jetstream.KeyValue{},
-		compiled: map[string]*jsonschema.Schema{},
+func newTypeCache(js jetstream.JetStream) *typeCache {
+	return &typeCache{js: js, compiled: map[string]*jsonschema.Schema{}}
+}
+
+func (t *typeCache) bucket(ctx context.Context) (jetstream.KeyValue, error) {
+	t.mu.Lock()
+	meta := t.meta
+	t.mu.Unlock()
+	if meta != nil {
+		return meta, nil
 	}
+	meta, err := t.js.KeyValue(ctx, contract.MetaBucket)
+	if err != nil {
+		return nil, fmt.Errorf("open META: %w", err)
+	}
+	t.mu.Lock()
+	t.meta = meta
+	t.mu.Unlock()
+	return meta, nil
 }
 
-func (s *schemaCache) preflight(ctx context.Context, log, opType string, payload []byte) error {
-	sch, err := s.lookup(ctx, log, opType)
-	if err != nil || sch == nil {
-		// No declared schema: nothing to validate against. Readers stay
-		// tolerant either way.
+// resolve walks the thing tail against the log's declared types (0021
+// § 4, 0022 § 2) — the same pair walk every projection runs.
+func (t *typeCache) resolve(ctx context.Context, log, thing string) (contract.Resolution, error) {
+	meta, err := t.bucket(ctx)
+	if err != nil {
+		return contract.Resolution{}, err
+	}
+	return contract.ResolveTail(thing, func(name string) (*contract.TypeRecord, bool, error) {
+		entry, err := meta.Get(ctx, contract.MetaLogType(log, name))
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
+			return nil, false, nil
+		}
+		if err != nil {
+			return nil, false, fmt.Errorf("read type record %s: %w", name, err)
+		}
+		var rec contract.TypeRecord
+		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
+			return nil, false, fmt.Errorf("decode type record %s: %w", name, err)
+		}
+		return &rec, true, nil
+	})
+}
+
+func (t *typeCache) compile(key string, raw json.RawMessage) (*jsonschema.Schema, error) {
+	t.mu.Lock()
+	cached, ok := t.compiled[key]
+	t.mu.Unlock()
+	if ok {
+		return cached, nil
+	}
+	compiled, err := CompileSchema(raw)
+	if err != nil {
+		return nil, fmt.Errorf("compile schema %s: %w", key, err)
+	}
+	t.mu.Lock()
+	t.compiled[key] = compiled
+	t.mu.Unlock()
+	return compiled, nil
+}
+
+// preflightAppend refuses an op a typed thing's type does not define and
+// validates the payload where it does; an untyped thing publishes as-is —
+// readers stay tolerant either way.
+func (t *typeCache) preflightAppend(ctx context.Context, log, thing, opType string, payload []byte) error {
+	if opType == contract.OpTypeSnapshot {
+		// The pattern's own vocabulary, not the type's: any member may
+		// publish a snapshot. Its state is validated like a birth's;
+		// a malformed envelope is marked read-side, never gated.
+		if snap, err := contract.ParseSnapshot(payload); err == nil {
+			return t.preflightSnapshot(ctx, log, thing, snap.State)
+		}
+		return nil
+	}
+	res, err := t.resolve(ctx, log, thing)
+	if err != nil {
 		return err
 	}
-	var v any
-	if err := json.Unmarshal(payload, &v); err != nil {
-		return fmt.Errorf("%w: payload is not JSON: %v", ErrSchemaViolation, err)
-	}
-	if err := sch.Validate(v); err != nil {
-		return fmt.Errorf("%w: %s %s: %v", ErrSchemaViolation, log, opType, err)
+	switch res.Kind {
+	case contract.ResolvedUndeclared:
+		return fmt.Errorf("%w: %s", ErrUndeclaredAspect, res.Detail)
+	case contract.ResolvedTyped:
+		def, ok := res.Record.Operations[opType]
+		if !ok {
+			return fmt.Errorf("%w: type %q defines no operation %q", ErrUndefinedOperation, res.TypeName, opType)
+		}
+		sch, err := t.compile(fmt.Sprintf("%s/%s@%d/%s", log, res.TypeName, res.Record.Revision, opType), def.Schema)
+		if err != nil {
+			return err
+		}
+		var v any
+		if err := json.Unmarshal(payload, &v); err != nil {
+			return fmt.Errorf("%w: payload is not JSON: %v", ErrSchemaViolation, err)
+		}
+		if err := sch.Validate(v); err != nil {
+			return fmt.Errorf("%w: %s %s: %v", ErrSchemaViolation, log, opType, err)
+		}
 	}
 	return nil
 }
 
-func (s *schemaCache) lookup(ctx context.Context, log, opType string) (*jsonschema.Schema, error) {
-	s.mu.Lock()
-	meta, ok := s.buckets[contract.MetaBucket]
-	s.mu.Unlock()
-	if !ok {
-		var err error
-		meta, err = s.js.KeyValue(ctx, contract.MetaBucket)
-		if err != nil {
-			return nil, fmt.Errorf("open META: %w", err)
+// preflightSnapshot refuses a birth or save under a prefix whose parent
+// type does not declare the created type (0022 § 3) and validates a typed
+// thing's state against its thing schema (0021 § 3).
+func (t *typeCache) preflightSnapshot(ctx context.Context, log, thing string, state json.RawMessage) error {
+	res, err := t.resolve(ctx, log, thing)
+	if err != nil {
+		return err
+	}
+	switch res.Kind {
+	case contract.ResolvedUndeclared:
+		return fmt.Errorf("%w: %s", ErrUndeclaredAspect, res.Detail)
+	case contract.ResolvedTyped:
+		if len(res.Record.Schema) == 0 {
+			return nil
 		}
-		s.mu.Lock()
-		s.buckets[contract.MetaBucket] = meta
-		s.mu.Unlock()
+		sch, err := t.compile(fmt.Sprintf("%s/%s@%d", log, res.TypeName, res.Record.Revision), res.Record.Schema)
+		if err != nil {
+			return err
+		}
+		var v any
+		if err := json.Unmarshal(state, &v); err != nil {
+			return fmt.Errorf("%w: state is not JSON: %v", ErrSchemaViolation, err)
+		}
+		if err := sch.Validate(v); err != nil {
+			return fmt.Errorf("%w: %s %s: state fails the thing schema: %v", ErrSchemaViolation, log, res.TypeName, err)
+		}
 	}
-	entry, err := meta.Get(ctx, contract.MetaLogType(log, opType))
-	if errors.Is(err, jetstream.ErrKeyNotFound) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("read schema: %w", err)
-	}
-	var ts contract.TypeSchema
-	if err := json.Unmarshal(entry.Value(), &ts); err != nil {
-		return nil, fmt.Errorf("decode schema record: %w", err)
-	}
-	key := fmt.Sprintf("%s/%s@%d", log, opType, ts.Revision)
-	s.mu.Lock()
-	cached, ok := s.compiled[key]
-	s.mu.Unlock()
-	if ok {
-		return cached, nil
-	}
-	compiled, err := CompileSchema(ts.Schema)
-	if err != nil {
-		return nil, fmt.Errorf("compile schema %s: %w", key, err)
-	}
-	s.mu.Lock()
-	s.compiled[key] = compiled
-	s.mu.Unlock()
-	return compiled, nil
+	return nil
 }
 
 // CompileSchema compiles one JSON Schema document — the same validator the

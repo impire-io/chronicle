@@ -150,25 +150,52 @@ func (f *fold) apply(msg jetstream.Msg) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
+	// The fold resolves the thing first (0021 § 4, 0022 § 2): the type
+	// shapes how every op on the subject folds, and an undeclared aspect
+	// is marked whole — no op on it, snapshots included, moves derived
+	// state. Latest declaration wins: the rebuild redeems or re-marks.
+	res, err := foldcore.ResolveThing(ctx, f.node.meta, f.log, thing)
+	if err != nil {
+		f.node.logger.Warn("fold: resolve failed; op takes no effect", "log", f.log, "thing", thing, "op", op.ID, "err", err)
+		return
+	}
+	if res.Kind == contract.ResolvedUndeclared {
+		f.node.logger.Warn("fold: marked undeclared aspect", "log", f.log, "thing", thing, "op", op.ID, "detail", res.Detail)
+		return
+	}
+
 	if op.Type == contract.OpTypeSnapshot {
 		snap, err := contract.ParseSnapshot(op.Payload)
 		if err != nil {
 			f.node.logger.Warn("fold: marked malformed snapshot", "log", f.log, "thing", thing, "op", op.ID, "err", err)
 			return
 		}
+		if res.Kind == contract.ResolvedTyped {
+			if detail := foldcore.JudgeSnapshot(res.Record, snap.State); detail != "" {
+				f.node.logger.Warn("fold: marked snapshot state", "log", f.log, "thing", thing, "op", op.ID, "detail", detail)
+				return
+			}
+		}
 		f.resetState(ctx, thing, op.Seq, snap.State)
 		return
 	}
-	f.applyEffect(ctx, op, thing)
+	f.applyEffect(ctx, res, op, thing)
 }
 
 // applyEffect is the fold's rules for a non-snapshot op (decision 0011),
-// judged by the shared core: unknown types warn; a schema-invalid op of a
-// known type is marked and takes no effect; effect none and unknown effect
+// judged through the thing's resolved type: an untyped thing's ops judge
+// unknown (the vocabulary-less floor); a schema-invalid op of a defined
+// operation is marked and takes no effect; effect none and unknown effect
 // values move nothing; effect merge applies the payload as an RFC 7386
 // merge patch.
-func (f *fold) applyEffect(ctx context.Context, op contract.Op, thing string) {
-	decision, detail := foldcore.Judge(ctx, f.node.meta, f.log, op)
+func (f *fold) applyEffect(ctx context.Context, res contract.Resolution, op contract.Op, thing string) {
+	var decision foldcore.Decision
+	var detail string
+	if res.Kind == contract.ResolvedTyped {
+		decision, detail = foldcore.JudgeRecord(res.Record, op)
+	} else {
+		decision, detail = foldcore.UnknownType, fmt.Sprintf("thing is untyped: %s", res.Detail)
+	}
 	switch decision {
 	case foldcore.Merge:
 		f.mergeState(ctx, thing, op)

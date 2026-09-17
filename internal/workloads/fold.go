@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -76,7 +77,11 @@ func (s *service) apply(msg jetstream.Msg) {
 		return
 	}
 
-	decision, detail := foldcore.Judge(ctx, s.meta, contract.FleetLog, op)
+	// The fleet resolves the type by thing family, not pair addressing:
+	// its vocabulary is chronicle's own code (contract.FleetTypeRecords),
+	// and its custody tails carry two id tokens.
+	family, _, _ := strings.Cut(thing, ".")
+	decision, detail := foldcore.JudgeAs(ctx, s.meta, contract.FleetLog, family, op)
 	switch decision {
 	case foldcore.Merge:
 		s.foldInto(thing, op.Seq, func(cur json.RawMessage) (json.RawMessage, bool) {

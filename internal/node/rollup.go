@@ -60,6 +60,24 @@ func (n *node) rollupThing(ctx context.Context, log, thing string) (rollupResult
 		}
 	}
 
+	// The thing's type gates second (0022 § 4): on a compactable log a
+	// typed thing compacts or is skipped by its type's history facet —
+	// node-honored, the soft tier; there is no per-subject AllowRollup.
+	// The per-op effect veto (0011 § 4) survives only where no type
+	// resolves; a marked undeclared aspect is declined outright.
+	res, err := foldcore.ResolveThing(ctx, n.meta, log, thing)
+	if err != nil {
+		return rollupResult{}, fmt.Errorf("resolve thing: %w", err)
+	}
+	switch res.Kind {
+	case contract.ResolvedUndeclared:
+		return rollupResult{reason: fmt.Sprintf("the subject is a marked undeclared aspect: %s", res.Detail)}, nil
+	case contract.ResolvedTyped:
+		if contract.NormalizeHistory(res.Record.History) == contract.HistoryPreserved {
+			return rollupResult{reason: fmt.Sprintf("the thing's type %q declares history preserved (0022)", res.TypeName)}, nil
+		}
+	}
+
 	subject := contract.OpsSubject(log, thing)
 	stream, err := n.js.Stream(ctx, contract.StreamName(log))
 	if err != nil {
@@ -100,7 +118,9 @@ func (n *node) rollupThing(ctx context.Context, log, thing string) (rollupResult
 		if op.ID != "" {
 			frontier = []string{op.ID}
 		}
-		if reason := n.captureOp(ctx, log, op, &state, &sawSnapshot); reason != "" {
+		if res.Kind == contract.ResolvedTyped {
+			captureTyped(res.Record, op, &state, &sawSnapshot)
+		} else if reason := captureUntyped(op, &state, &sawSnapshot); reason != "" {
 			return rollupResult{reason: reason}, nil
 		}
 	}
@@ -108,6 +128,12 @@ func (n *node) rollupThing(ctx context.Context, log, thing string) (rollupResult
 		// The history is one snapshot already: at birth shape, nothing
 		// for a rollup to destroy.
 		return rollupResult{reason: "nothing to compact"}, nil
+	}
+	if !sawSnapshot {
+		// Even absorption needs a floor: with no valid snapshot the fold
+		// derived nothing, and a rollup would replace history with a
+		// state that never existed.
+		return rollupResult{reason: "no valid snapshot on the subject to fold from"}, nil
 	}
 
 	payload, err := json.Marshal(contract.Snapshot{State: state, Frontier: frontier})
@@ -138,12 +164,37 @@ func (n *node) rollupThing(ctx context.Context, log, thing string) (rollupResult
 	return rollupResult{rolled: true, seq: ack.Sequence}, nil
 }
 
-// captureOp folds one replayed op into the in-memory state, judged by the
-// shared core (0011): a snapshot resets, a schema-valid merge op applies.
-// Everything the fold would warn about and skip is returned as a veto
-// reason instead — what the fold could not capture, the node must not
-// destroy.
-func (n *node) captureOp(ctx context.Context, log string, op contract.Op, state *json.RawMessage, sawSnapshot *bool) string {
+// captureTyped folds one replayed op of a typed, compactable thing. No
+// per-op veto (0022 § 5): the type's declaration made this history
+// absorbable, so anything the fold would mark or skip is absorbed — the
+// rollup snapshot keeps exactly what folded state keeps. Ops whose
+// meaning must survive belong on a preserved aspect instead.
+func captureTyped(rec *contract.TypeRecord, op contract.Op, state *json.RawMessage, sawSnapshot *bool) {
+	if op.Type == contract.OpTypeSnapshot {
+		snap, err := contract.ParseSnapshot(op.Payload)
+		if err != nil {
+			return // marked; absorbed
+		}
+		if foldcore.JudgeSnapshot(rec, snap.State) != "" {
+			return // marked; absorbed
+		}
+		*state = snap.State
+		*sawSnapshot = true
+		return
+	}
+	if decision, _ := foldcore.JudgeRecord(rec, op); decision != foldcore.Merge || !*sawSnapshot {
+		return // none, unknown, marked, or pre-snapshot; absorbed
+	}
+	if merged, err := contract.MergePatch(*state, op.Payload); err == nil {
+		*state = merged
+	}
+}
+
+// captureUntyped keeps the per-op veto for untyped things (0011 § 4,
+// unchanged): what the fold could not capture, the node must not destroy.
+// An untyped thing's non-snapshot ops all judge unknown — the
+// vocabulary-less floor — so only snapshot-shaped histories compact.
+func captureUntyped(op contract.Op, state *json.RawMessage, sawSnapshot *bool) string {
 	if op.Type == contract.OpTypeSnapshot {
 		snap, err := contract.ParseSnapshot(op.Payload)
 		if err != nil {
@@ -153,29 +204,7 @@ func (n *node) captureOp(ctx context.Context, log string, op contract.Op, state 
 		*sawSnapshot = true
 		return ""
 	}
-	switch decision, detail := foldcore.Judge(ctx, n.meta, log, op); decision {
-	case foldcore.Merge:
-		// Captured below.
-	case foldcore.None:
-		return fmt.Sprintf("op %s (type %s) declares effect none — its meaning lives only in history", op.ID, op.Type)
-	case foldcore.UnknownType:
-		return fmt.Sprintf("op %s has unknown type %s", op.ID, op.Type)
-	case foldcore.UnknownEffect:
-		return fmt.Sprintf("op %s (type %s) declares unknown effect: %s", op.ID, op.Type, detail)
-	case foldcore.BadTypeRecord:
-		return fmt.Sprintf("type record %s is unreadable: %s", op.Type, detail)
-	case foldcore.Invalid:
-		return fmt.Sprintf("op %s (type %s) is marked: %s", op.ID, op.Type, detail)
-	}
-	if !*sawSnapshot {
-		return fmt.Sprintf("op %s lands before any snapshot (§ 5.1)", op.ID)
-	}
-	merged, err := contract.MergePatch(*state, op.Payload)
-	if err != nil {
-		return fmt.Sprintf("op %s (type %s) is marked: merge failed", op.ID, op.Type)
-	}
-	*state = merged
-	return ""
+	return fmt.Sprintf("op %s (type %s) has no declaration — the thing is untyped, its meaning lives in history", op.ID, op.Type)
 }
 
 // rollupTimer is the timer trigger: every rollupEvery it sweeps the

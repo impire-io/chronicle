@@ -207,13 +207,13 @@ func provision(ctx context.Context, js jetstream.JetStream) (meta, states jetstr
 	if _, err := meta.Create(ctx, contract.MetaLogConfig(contract.FleetLog), cfg); err != nil && !errors.Is(err, jetstream.ErrKeyExists) {
 		return nil, nil, fmt.Errorf("record fleet log config: %w", err)
 	}
-	for opType, ts := range contract.FleetTypeSchemas() {
-		value, err := json.Marshal(ts)
+	for name, rec := range contract.FleetTypeRecords() {
+		value, err := json.Marshal(rec)
 		if err != nil {
 			return nil, nil, err
 		}
-		if _, err := meta.Create(ctx, contract.MetaLogType(contract.FleetLog, opType), value); err != nil && !errors.Is(err, jetstream.ErrKeyExists) {
-			return nil, nil, fmt.Errorf("record fleet type %s: %w", opType, err)
+		if _, err := meta.Create(ctx, contract.MetaLogType(contract.FleetLog, name), value); err != nil && !errors.Is(err, jetstream.ErrKeyExists) {
+			return nil, nil, fmt.Errorf("record fleet type %s: %w", name, err)
 		}
 	}
 

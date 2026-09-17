@@ -286,17 +286,28 @@ type FleetCredsResponse struct {
 	Creds []byte `json:"creds"`
 }
 
-// FleetTypeSchemas is the fleet log's vocabulary, provisioned into the
-// control account's META so the standard fold judges custody ops like any
-// tenant's (0011). All three are merge effects; birth needs no entry — the
-// snapshot type is the pattern's own.
-func FleetTypeSchemas() map[string]TypeSchema {
+// FleetWorkloadType is the fleet log's one declared type: the workload
+// custody family. The fleet's vocabulary is chronicle's own code, not
+// customer declarations, so its fold resolves the type by thing family
+// (the tail's first token) rather than by pair addressing — its custody
+// tails (workload.<tenant>.<workload>) predate 0021's pair grammar and
+// carry two id tokens.
+const FleetWorkloadType = "workload"
+
+// FleetTypeRecords is the fleet log's vocabulary, provisioned into the
+// control account's META so the standard fold judges custody ops by the
+// same declarations as any tenant's (0011, 0021). All three custody ops
+// are merge effects; birth needs no entry — the snapshot type is the
+// pattern's own.
+func FleetTypeRecords() map[string]TypeRecord {
 	open := json.RawMessage(`{"type":"object"}`)
-	m := map[string]TypeSchema{}
+	ops := map[string]OpDef{}
 	for _, t := range []string{FleetOpAssign, FleetOpRelease, FleetOpStop} {
-		m[t] = TypeSchema{Revision: 1, Schema: open, Effect: EffectMerge}
+		ops[t] = OpDef{Schema: open, Effect: EffectMerge}
 	}
-	return m
+	return map[string]TypeRecord{
+		FleetWorkloadType: {Revision: 1, Schema: open, Operations: ops},
+	}
 }
 
 // ValidateWorkloadName checks a workload name is one subject token in the

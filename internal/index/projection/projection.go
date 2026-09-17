@@ -349,11 +349,30 @@ func (ps *pass) apply(msg jetstream.Msg) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
+	// Resolve the thing first (0021 § 4, 0022 § 2): an undeclared aspect
+	// is marked whole — invisible under source state, while the ops
+	// source (above) reads its history as it is.
+	res, err := foldcore.ResolveThing(ctx, p.meta, p.cfg.Log, thing)
+	if err != nil {
+		p.logger.Warn(kind+": resolve failed; op takes no effect", "log", p.cfg.Log, "thing", thing, "op", op.ID, "err", err)
+		return
+	}
+	if res.Kind == contract.ResolvedUndeclared {
+		p.logger.Warn(kind+": marked undeclared aspect", "log", p.cfg.Log, "thing", thing, "op", op.ID, "detail", res.Detail)
+		return
+	}
+
 	if op.Type == contract.OpTypeSnapshot {
 		snap, err := contract.ParseSnapshot(op.Payload)
 		if err != nil {
 			p.logger.Warn(kind+": marked malformed snapshot", "log", p.cfg.Log, "thing", thing, "op", op.ID, "err", err)
 			return
+		}
+		if res.Kind == contract.ResolvedTyped {
+			if detail := foldcore.JudgeSnapshot(res.Record, snap.State); detail != "" {
+				p.logger.Warn(kind+": marked snapshot state", "log", p.cfg.Log, "thing", thing, "op", op.ID, "detail", detail)
+				return
+			}
 		}
 		st.state = snap.State
 		st.sawSnapshot = true
@@ -361,7 +380,13 @@ func (ps *pass) apply(msg jetstream.Msg) {
 		return
 	}
 
-	decision, detail := foldcore.Judge(ctx, p.meta, p.cfg.Log, op)
+	var decision foldcore.Decision
+	var detail string
+	if res.Kind == contract.ResolvedTyped {
+		decision, detail = foldcore.JudgeRecord(res.Record, op)
+	} else {
+		decision, detail = foldcore.UnknownType, fmt.Sprintf("thing is untyped: %s", res.Detail)
+	}
 	switch decision {
 	case foldcore.Merge:
 		if !st.sawSnapshot {
@@ -401,11 +426,12 @@ func (ps *pass) countdown() {
 	}
 }
 
-// watchTypes watches the log's type declarations and signals a rebuild
-// when a type's effect changes: latest declaration wins (0011 § 3), so
-// the index's derivation is suspect exactly as the state bucket's is —
-// and suspect derived state is rebuilt by replay. Schema-only revisions
-// change no effect and trigger nothing.
+// watchTypes watches the log's type records and signals a rebuild when a
+// record's fold fingerprint changes — history, aspects, or an operation's
+// effect (0021 § 5): latest declaration wins (0011 § 3), so the index's
+// derivation is suspect exactly as the state bucket's is — and suspect
+// derived state is rebuilt by replay. Schema-only revisions change no
+// fingerprint and trigger nothing.
 func (p *Projection) watchTypes() error {
 	prefix := contract.MetaLogType(p.cfg.Log, "") + ">"
 	w, err := p.meta.Watch(p.runCtx, prefix)
@@ -416,7 +442,8 @@ func (p *Projection) watchTypes() error {
 	go func() {
 		defer p.wg.Done()
 		defer func() { _ = w.Stop() }()
-		effects := map[string]string{}
+		baseline := foldcore.FoldFingerprint(nil)
+		prints := map[string]string{}
 		inited := false
 		for {
 			select {
@@ -432,18 +459,21 @@ func (p *Projection) watchTypes() error {
 					inited = true
 					continue
 				}
-				opType := strings.TrimPrefix(entry.Key(), contract.MetaLogType(p.cfg.Log, ""))
-				effect := contract.EffectNone
+				typeName := strings.TrimPrefix(entry.Key(), contract.MetaLogType(p.cfg.Log, ""))
+				fp := baseline
 				if entry.Operation() == jetstream.KeyValuePut {
-					var ts contract.TypeSchema
-					if err := json.Unmarshal(entry.Value(), &ts); err == nil {
-						effect = contract.NormalizeEffect(ts.Effect)
+					var rec contract.TypeRecord
+					if err := json.Unmarshal(entry.Value(), &rec); err == nil {
+						fp = foldcore.FoldFingerprint(&rec)
 					}
 				}
-				prev := contract.NormalizeEffect(effects[opType])
-				effects[opType] = effect
-				if inited && prev != effect {
-					p.logger.Info(p.cfg.Kind+": effect changed; re-folding", "log", p.cfg.Log, "index", p.cfg.Index, "type", opType, "effect", effect)
+				prev, ok := prints[typeName]
+				if !ok {
+					prev = baseline
+				}
+				prints[typeName] = fp
+				if inited && prev != fp {
+					p.logger.Info(p.cfg.Kind+": declaration changed; re-folding", "log", p.cfg.Log, "index", p.cfg.Index, "type", typeName)
 					select {
 					case p.rebuildCh <- struct{}{}:
 					default:

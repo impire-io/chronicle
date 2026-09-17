@@ -11,6 +11,7 @@ import (
 
 	"github.com/impire-io/chronicle/client"
 	"github.com/impire-io/chronicle/contract"
+	"github.com/impire-io/chronicle/internal/foldcore"
 	"github.com/impire-io/chronicle/internal/registry"
 )
 
@@ -45,18 +46,32 @@ func (n *node) requireRole(ctx context.Context, principal string, roles ...strin
 	return registry.RequireRole(ctx, n.meta, principal, roles...)
 }
 
-// recordSchema appends a revision: read the current one, write revision+1
-// with the KV revision CAS, retrying the race. Old revisions stay readable
-// in the bucket's history — recorded, never rewritten in place. The second
-// return says whether the type's effect changed — a first declaration with
-// an effect other than none counts, since history was folded without it.
-func (n *node) recordSchema(ctx context.Context, r client.SchemaSetRequest) (uint64, bool, error) {
-	key := contract.MetaLogType(r.Log, r.OpType)
-	effect := contract.NormalizeEffect(r.Effect)
+// recordType appends a type revision: read the current record, write
+// revision+1 with the KV revision CAS, retrying the race. Old revisions
+// stay readable in the bucket's history — recorded, never rewritten in
+// place. The second return says whether the record's fold fingerprint
+// changed — history, aspects, or an operation's effect — making the log's
+// derived state suspect.
+func (n *node) recordType(ctx context.Context, r client.TypeDefineRequest) (uint64, bool, error) {
+	key := contract.MetaLogType(r.Log, r.Type)
+	next := contract.TypeRecord{
+		Schema:     r.Schema,
+		History:    r.History,
+		Aspects:    r.Aspects,
+		Operations: make(map[string]contract.OpDef, len(r.Operations)),
+	}
+	for op, def := range r.Operations {
+		def.Effect = contract.NormalizeEffect(def.Effect)
+		next.Operations[op] = def
+	}
+	if len(next.Operations) == 0 {
+		next.Operations = nil
+	}
 	for attempt := 0; attempt < 5; attempt++ {
 		entry, err := n.meta.Get(ctx, key)
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			value, merr := json.Marshal(contract.TypeSchema{Revision: 1, Schema: r.Schema, Effect: effect})
+			next.Revision = 1
+			value, merr := json.Marshal(next)
 			if merr != nil {
 				return 0, false, merr
 			}
@@ -66,17 +81,17 @@ func (n *node) recordSchema(ctx context.Context, r client.SchemaSetRequest) (uin
 				}
 				return 0, false, cerr
 			}
-			return 1, effect != contract.EffectNone, nil
+			return 1, foldcore.FoldFingerprint(&next) != foldcore.FoldFingerprint(nil), nil
 		}
 		if err != nil {
-			return 0, false, fmt.Errorf("read schema: %w", err)
+			return 0, false, fmt.Errorf("read type record: %w", err)
 		}
-		var cur contract.TypeSchema
+		var cur contract.TypeRecord
 		if err := json.Unmarshal(entry.Value(), &cur); err != nil {
-			return 0, false, fmt.Errorf("decode schema record: %w", err)
+			return 0, false, fmt.Errorf("decode type record: %w", err)
 		}
-		next := cur.Revision + 1
-		value, err := json.Marshal(contract.TypeSchema{Revision: next, Schema: r.Schema, Effect: effect})
+		next.Revision = cur.Revision + 1
+		value, err := json.Marshal(next)
 		if err != nil {
 			return 0, false, err
 		}
@@ -86,7 +101,7 @@ func (n *node) recordSchema(ctx context.Context, r client.SchemaSetRequest) (uin
 			}
 			return 0, false, err
 		}
-		return next, contract.NormalizeEffect(cur.Effect) != effect, nil
+		return next.Revision, foldcore.FoldFingerprint(&cur) != foldcore.FoldFingerprint(&next), nil
 	}
-	return 0, false, errors.New("schema revision race did not settle")
+	return 0, false, errors.New("type revision race did not settle")
 }

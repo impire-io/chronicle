@@ -108,32 +108,32 @@ func TestThingRollupVerb(t *testing.T) {
 		t.Fatalf("create log: %v", err)
 	}
 	obj := json.RawMessage(`{"type":"object"}`)
-	if _, err := alice.SetSchema(ctx, "orders", "status.set", obj, contract.EffectMerge); err != nil {
-		t.Fatalf("declare status.set: %v", err)
-	}
-	if _, err := alice.SetSchema(ctx, "orders", "comment.add", obj, ""); err != nil {
-		t.Fatalf("declare comment.add: %v", err)
-	}
+	defineType(ctx, t, alice, "orders", "invoice", client.TypeDefinition{
+		Operations: map[string]contract.OpDef{
+			"status.set":  {Schema: obj, Effect: contract.EffectMerge},
+			"comment.add": {Schema: obj},
+		},
+	})
 
 	// A fully captured history compacts to one snapshot.
-	if _, err := alice.CreateThing(ctx, "orders", "inv-1", json.RawMessage(`{"a":1}`)); err != nil {
+	if _, err := alice.CreateThing(ctx, "orders", "invoice.inv-1", json.RawMessage(`{"a":1}`)); err != nil {
 		t.Fatalf("birth: %v", err)
 	}
-	if _, err := alice.Append(ctx, "orders", "inv-1", "status.set", []byte(`{"b":2}`)); err != nil {
+	if _, err := alice.Append(ctx, "orders", "invoice.inv-1", "status.set", []byte(`{"b":2}`)); err != nil {
 		t.Fatalf("append: %v", err)
 	}
-	last, err := alice.Append(ctx, "orders", "inv-1", "status.set", []byte(`{"a":3}`))
+	last, err := alice.Append(ctx, "orders", "invoice.inv-1", "status.set", []byte(`{"a":3}`))
 	if err != nil {
 		t.Fatalf("append: %v", err)
 	}
-	res, err := alice.RollupThing(ctx, "orders", "inv-1")
+	res, err := alice.RollupThing(ctx, "orders", "invoice.inv-1")
 	if err != nil {
 		t.Fatalf("rollup: %v", err)
 	}
 	if !res.Rolled || res.Seq <= last.Seq {
 		t.Fatalf("rollup declined: %+v", res)
 	}
-	ops := replayOf(ctx, t, alice, "orders", "inv-1")
+	ops := replayOf(ctx, t, alice, "orders", "invoice.inv-1")
 	if len(ops) != 1 || ops[0].Type != contract.OpTypeSnapshot {
 		t.Fatalf("history must be the rollup snapshot: %+v", ops)
 	}
@@ -151,7 +151,7 @@ func TestThingRollupVerb(t *testing.T) {
 	if len(snap.Frontier) != 1 || snap.Frontier[0] != last.OpID {
 		t.Fatalf("rolled frontier: %v", snap.Frontier)
 	}
-	sv := waitStateAt(ctx, t, alice, "orders", "inv-1", res.Seq)
+	sv := waitStateAt(ctx, t, alice, "orders", "invoice.inv-1", res.Seq)
 	state = nil
 	if err := json.Unmarshal(sv.State, &state); err != nil {
 		t.Fatal(err)
@@ -160,70 +160,80 @@ func TestThingRollupVerb(t *testing.T) {
 		t.Fatalf("bucket state after rollup: %s", sv.State)
 	}
 	// The subject looks like it did at birth: snapshot first, ops after.
-	after, err := alice.Append(ctx, "orders", "inv-1", "status.set", []byte(`{"c":4}`))
+	after, err := alice.Append(ctx, "orders", "invoice.inv-1", "status.set", []byte(`{"c":4}`))
 	if err != nil {
 		t.Fatalf("append after rollup: %v", err)
 	}
-	waitStateAt(ctx, t, alice, "orders", "inv-1", after.Seq)
+	waitStateAt(ctx, t, alice, "orders", "invoice.inv-1", after.Seq)
 
-	// An effect-none op's meaning lives only in history: veto.
-	if _, err := alice.CreateThing(ctx, "orders", "inv-2", json.RawMessage(`{"n":1}`)); err != nil {
+	// On a typed, compactable thing the per-op veto is retired (0022 § 5):
+	// an effect-none op is absorbed by declaration — the type author said
+	// this history is absorbable, and ops that must survive belong on a
+	// preserved aspect.
+	if _, err := alice.CreateThing(ctx, "orders", "invoice.inv-2", json.RawMessage(`{"n":1}`)); err != nil {
 		t.Fatalf("birth: %v", err)
 	}
-	if _, err := alice.Append(ctx, "orders", "inv-2", "comment.add", []byte(`{"body":"hi"}`)); err != nil {
+	if _, err := alice.Append(ctx, "orders", "invoice.inv-2", "comment.add", []byte(`{"body":"hi"}`)); err != nil {
 		t.Fatalf("append: %v", err)
 	}
-	res, err = alice.RollupThing(ctx, "orders", "inv-2")
+	res, err = alice.RollupThing(ctx, "orders", "invoice.inv-2")
 	if err != nil {
 		t.Fatalf("rollup: %v", err)
 	}
-	if res.Rolled || !strings.Contains(res.Reason, "effect none") {
-		t.Fatalf("a none op must veto: %+v", res)
+	if !res.Rolled {
+		t.Fatalf("a typed compactable thing must compact past a none op: %+v", res)
 	}
-	if ops := replayOf(ctx, t, alice, "orders", "inv-2"); len(ops) != 2 {
-		t.Fatalf("a veto must not touch the log: %d ops", len(ops))
+	ops = replayOf(ctx, t, alice, "orders", "invoice.inv-2")
+	if len(ops) != 1 || ops[0].Type != contract.OpTypeSnapshot {
+		t.Fatalf("the none op must be absorbed: %+v", ops)
 	}
-
-	// An unknown type: the fold could not capture it, so the node must
-	// not destroy it.
-	if _, err := alice.CreateThing(ctx, "orders", "inv-3", nil); err != nil {
-		t.Fatalf("birth: %v", err)
-	}
-	if _, err := alice.Append(ctx, "orders", "inv-3", "mystery.op", []byte(`{}`)); err != nil {
-		t.Fatalf("append: %v", err)
-	}
-	res, err = alice.RollupThing(ctx, "orders", "inv-3")
-	if err != nil {
-		t.Fatalf("rollup: %v", err)
-	}
-	if res.Rolled || !strings.Contains(res.Reason, "unknown type") {
-		t.Fatalf("an unknown type must veto: %+v", res)
+	if snap, err := contract.ParseSnapshot(ops[0].Payload); err != nil || string(snap.State) != `{"n":1}` {
+		t.Fatalf("absorbed state: %v %s", err, snap.State)
 	}
 
-	// A marked (schema-invalid) op stays in the log; destroying it would
-	// unsay the mark.
-	if _, err := alice.CreateThing(ctx, "orders", "inv-4", nil); err != nil {
+	// Marked junk on a typed thing is absorbed the same way: the rollup
+	// snapshot keeps exactly what folded state keeps.
+	if _, err := alice.CreateThing(ctx, "orders", "invoice.inv-4", json.RawMessage(`{"k":1}`)); err != nil {
 		t.Fatalf("birth: %v", err)
 	}
-	raw := nats.NewMsg(contract.OpsSubject("orders", "inv-4"))
+	raw := nats.NewMsg(contract.OpsSubject("orders", "invoice.inv-4"))
 	raw.Header = contract.Op{ID: "bad-1", Type: "status.set", Author: "mallory"}.Header()
 	raw.Data = []byte(`not json`)
 	if _, err := jsFor(t, alice).PublishMsg(ctx, raw); err != nil {
 		t.Fatalf("raw publish: %v", err)
 	}
-	res, err = alice.RollupThing(ctx, "orders", "inv-4")
+	res, err = alice.RollupThing(ctx, "orders", "invoice.inv-4")
 	if err != nil {
 		t.Fatalf("rollup: %v", err)
 	}
-	if res.Rolled || !strings.Contains(res.Reason, "marked") {
-		t.Fatalf("a marked op must veto: %+v", res)
+	if !res.Rolled {
+		t.Fatalf("a typed compactable thing must compact past marked junk: %+v", res)
+	}
+
+	// Where no type resolves, 0011 § 4 stands whole: what the fold could
+	// not capture, the node must not destroy.
+	if _, err := alice.CreateThing(ctx, "orders", "freeform-1", json.RawMessage(`{"n":1}`)); err != nil {
+		t.Fatalf("birth: %v", err)
+	}
+	if _, err := alice.Append(ctx, "orders", "freeform-1", "mystery.op", []byte(`{}`)); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	res, err = alice.RollupThing(ctx, "orders", "freeform-1")
+	if err != nil {
+		t.Fatalf("rollup: %v", err)
+	}
+	if res.Rolled || !strings.Contains(res.Reason, "untyped") {
+		t.Fatalf("an untyped thing's op must veto: %+v", res)
+	}
+	if ops := replayOf(ctx, t, alice, "orders", "freeform-1"); len(ops) != 2 {
+		t.Fatalf("a veto must not touch the log: %d ops", len(ops))
 	}
 
 	// A bare birth has nothing for a rollup to destroy.
-	if _, err := alice.CreateThing(ctx, "orders", "inv-5", nil); err != nil {
+	if _, err := alice.CreateThing(ctx, "orders", "invoice.inv-5", nil); err != nil {
 		t.Fatalf("birth: %v", err)
 	}
-	res, err = alice.RollupThing(ctx, "orders", "inv-5")
+	res, err = alice.RollupThing(ctx, "orders", "invoice.inv-5")
 	if err != nil {
 		t.Fatalf("rollup: %v", err)
 	}
@@ -236,14 +246,14 @@ func TestThingRollupVerb(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := wally.RollupThing(ctx, "orders", "inv-5"); err != nil {
+	if _, err := wally.RollupThing(ctx, "orders", "invoice.inv-5"); err != nil {
 		t.Fatalf("a writer must be allowed to trigger: %v", err)
 	}
 	rita, err := client.Wrap(alice.Conn(), "rita")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := rita.RollupThing(ctx, "orders", "inv-5"); err == nil {
+	if _, err := rita.RollupThing(ctx, "orders", "invoice.inv-5"); err == nil {
 		t.Fatal("a reader triggered a rollup")
 	} else {
 		var serr *client.ServiceError
@@ -280,24 +290,24 @@ func TestRollupTimer(t *testing.T) {
 		t.Fatalf("create log: %v", err)
 	}
 	obj := json.RawMessage(`{"type":"object"}`)
-	if _, err := alice.SetSchema(ctx, "orders", "status.set", obj, contract.EffectMerge); err != nil {
-		t.Fatalf("declare status.set: %v", err)
-	}
-	if _, err := alice.SetSchema(ctx, "orders", "comment.add", obj, ""); err != nil {
-		t.Fatalf("declare comment.add: %v", err)
-	}
+	defineType(ctx, t, alice, "orders", "invoice", client.TypeDefinition{
+		Operations: map[string]contract.OpDef{
+			"status.set":  {Schema: obj, Effect: contract.EffectMerge},
+			"comment.add": {Schema: obj},
+		},
+	})
 
-	if _, err := alice.CreateThing(ctx, "orders", "inv-1", json.RawMessage(`{"a":1}`)); err != nil {
+	if _, err := alice.CreateThing(ctx, "orders", "invoice.inv-1", json.RawMessage(`{"a":1}`)); err != nil {
 		t.Fatalf("birth: %v", err)
 	}
-	if _, err := alice.Append(ctx, "orders", "inv-1", "status.set", []byte(`{"b":2}`)); err != nil {
+	if _, err := alice.Append(ctx, "orders", "invoice.inv-1", "status.set", []byte(`{"b":2}`)); err != nil {
 		t.Fatalf("append: %v", err)
 	}
 
 	// The timer sweeps the active subject and compacts it — no verb call.
 	deadline := time.Now().Add(15 * time.Second)
 	for {
-		ops := replayOf(ctx, t, alice, "orders", "inv-1")
+		ops := replayOf(ctx, t, alice, "orders", "invoice.inv-1")
 		if len(ops) == 1 && ops[0].Type == contract.OpTypeSnapshot {
 			snap, err := contract.ParseSnapshot(ops[0].Payload)
 			if err != nil {
@@ -318,15 +328,16 @@ func TestRollupTimer(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 
-	// A vetoed subject stays whole across sweeps.
-	if _, err := alice.CreateThing(ctx, "orders", "inv-2", nil); err != nil {
+	// A vetoed subject stays whole across sweeps — untyped, so 0011 § 4's
+	// veto still governs it.
+	if _, err := alice.CreateThing(ctx, "orders", "freeform-2", nil); err != nil {
 		t.Fatalf("birth: %v", err)
 	}
-	if _, err := alice.Append(ctx, "orders", "inv-2", "comment.add", []byte(`{"body":"x"}`)); err != nil {
+	if _, err := alice.Append(ctx, "orders", "freeform-2", "note.add", []byte(`{"body":"x"}`)); err != nil {
 		t.Fatalf("append: %v", err)
 	}
 	time.Sleep(600 * time.Millisecond) // several sweeps
-	if ops := replayOf(ctx, t, alice, "orders", "inv-2"); len(ops) != 2 {
+	if ops := replayOf(ctx, t, alice, "orders", "freeform-2"); len(ops) != 2 {
 		t.Fatalf("the timer compacted a vetoed subject: %d ops", len(ops))
 	}
 }

@@ -19,7 +19,7 @@ import (
 // wire contract — served by chronicle-control in its own account.
 const (
 	LogCreateSubject    = "CHRON.API.LOG.CREATE"
-	SchemaSetSubject    = "CHRON.API.SCHEMA.SET"
+	TypeDefineSubject   = "CHRON.API.TYPE.DEFINE"
 	ThingRollupSubject  = "CHRON.API.THING.ROLLUP"
 	IndexDeclareSubject = "CHRON.API.INDEX.DECLARE"
 	IndexDeleteSubject  = "CHRON.API.INDEX.DELETE"
@@ -56,20 +56,23 @@ type LogCreateResponse struct {
 	Stream string `json:"stream"`
 }
 
-// SchemaSetRequest records an op-type schema revision. Evolution is
-// additive: revisions are recorded, never rewritten in place. Effect
-// declares how the op moves state (decision 0011): "none" (the default)
-// or "merge"; it rides the same revision as the schema.
-type SchemaSetRequest struct {
-	Principal string          `json:"principal"`
-	Log       string          `json:"log"`
-	OpType    string          `json:"op_type"`
-	Schema    json.RawMessage `json:"schema"`
-	Effect    string          `json:"effect,omitempty"`
+// TypeDefineRequest defines a type — the unit of definition (decision
+// 0021): one act sets all facets, and re-defining bumps the revision.
+// Evolution is additive: revisions are recorded, never rewritten in
+// place. Operations carry each op's payload schema and its effect on
+// state (decision 0011, unchanged in substance).
+type TypeDefineRequest struct {
+	Principal  string                    `json:"principal"`
+	Log        string                    `json:"log"`
+	Type       string                    `json:"type"`
+	Schema     json.RawMessage           `json:"schema"`
+	History    string                    `json:"history,omitempty"`
+	Aspects    map[string]string         `json:"aspects,omitempty"`
+	Operations map[string]contract.OpDef `json:"operations,omitempty"`
 }
 
-// SchemaSetResponse carries the recorded revision.
-type SchemaSetResponse struct {
+// TypeDefineResponse carries the recorded revision.
+type TypeDefineResponse struct {
 	Revision uint64 `json:"revision"`
 }
 
@@ -230,15 +233,33 @@ func (c *Client) CreateLog(ctx context.Context, log, description string, opts ..
 	return request[LogCreateRequest, LogCreateResponse](ctx, c.nc, LogCreateSubject, r)
 }
 
-// SetSchema records a new revision of an op-type's payload schema and its
-// effect on state ("" means none — the op lives in history only).
-func (c *Client) SetSchema(ctx context.Context, log, opType string, schema json.RawMessage, effect string) (SchemaSetResponse, error) {
-	return request[SchemaSetRequest, SchemaSetResponse](ctx, c.nc, SchemaSetSubject, SchemaSetRequest{
-		Principal: c.author,
-		Log:       log,
-		OpType:    opType,
-		Schema:    schema,
-		Effect:    effect,
+// TypeDefinition is the caller's side of a type record: every facet but
+// the revision, which the node computes.
+type TypeDefinition struct {
+	// Schema is the thing's shape — required: type and schema are born
+	// together (0021).
+	Schema json.RawMessage
+	// History is the type's compaction declaration: "compactable" (the
+	// default when unset) or "preserved" — the soft tier (0022 § 4).
+	History string
+	// Aspects maps segment names to the types valid under a thing of
+	// this type. Targets may be defined later — latest declaration wins.
+	Aspects map[string]string
+	// Operations is the op vocabulary: payload schema + effect per op.
+	Operations map[string]contract.OpDef
+}
+
+// DefineType records a type definition — one act, all facets; a repeat
+// bumps the revision (0021).
+func (c *Client) DefineType(ctx context.Context, log, name string, def TypeDefinition) (TypeDefineResponse, error) {
+	return request[TypeDefineRequest, TypeDefineResponse](ctx, c.nc, TypeDefineSubject, TypeDefineRequest{
+		Principal:  c.author,
+		Log:        log,
+		Type:       name,
+		Schema:     def.Schema,
+		History:    def.History,
+		Aspects:    def.Aspects,
+		Operations: def.Operations,
 	})
 }
 
