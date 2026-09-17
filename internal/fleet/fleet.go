@@ -265,6 +265,29 @@ func (f *Fleet) Stop() {
 	}
 }
 
+// RotateSigningKey is `chronicle operator rotate-signing-key`: the offline
+// trust-root ceremony, dispatched from cmd/chronicle like `up`. It is a
+// custody operation on the fleet dir, not a wire verb — the adapters hold
+// no minting material, so it lives with the composition root.
+func RotateSigningKey(args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("chronicle operator rotate-signing-key", flag.ContinueOnError)
+	fs.SetOutput(out)
+	dir := fs.String("dir", devdir.Default(), "data dir for the local fleet")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return fmt.Errorf("operator rotate-signing-key takes no positionals")
+	}
+	newPub, err := mint.RotateOperatorSigningKey(*dir)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "operator signing key rotated: %s\n", newPub)
+	fmt.Fprintln(out, "every account re-signed and verified; start the fleet to serve under the new key")
+	return nil
+}
+
 // Run is the `chronicle up` subcommand: parse flags, boot, print, block
 // until ctx ends.
 func Run(ctx context.Context, args []string, out io.Writer) error {

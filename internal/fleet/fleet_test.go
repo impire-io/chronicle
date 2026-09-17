@@ -1,6 +1,7 @@
 package fleet_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -457,5 +458,238 @@ func TestSemanticWithoutProviderIsUnschedulable(t *testing.T) {
 	time.Sleep(2 * time.Second)
 	if _, err := dana.QuerySemantic(ctx, "orders", "meaning", "widget", 0, 0); err == nil {
 		t.Fatal("an unprovisioned fleet answered a semantic query")
+	}
+}
+
+// waitEvicted polls until the server closes the connection: revocation and
+// rekey both evict actively, and the client parks in reconnect.
+func waitEvicted(t *testing.T, c *client.Client, who string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for c.Conn().IsConnected() {
+		if time.Now().After(deadline) {
+			t.Fatalf("%s still connected: eviction did not land", who)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// TestMemberLifecycle is chronicle-15's incident run as a test: a second
+// principal joins a running tenant, their credential leaks, the revoke
+// kills it mid-flight — and when everything must be assumed burned, the
+// rekey replaces the member-issuing key while the tenant's node rides
+// through on the service user.
+func TestMemberLifecycle(t *testing.T) {
+	dir := t.TempDir()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	f, err := fleet.Up(ctx, fleet.Config{Dir: dir, Port: -1})
+	if err != nil {
+		t.Fatalf("up: %v", err)
+	}
+	defer f.Stop()
+
+	ctrlCreds, err := os.ReadFile(devdir.ControlCredsPath(dir))
+	if err != nil {
+		t.Fatalf("control creds: %v", err)
+	}
+	ctrl, err := client.ConnectControlCreds(f.URL, ctrlCreds)
+	if err != nil {
+		t.Fatalf("connect control: %v", err)
+	}
+	defer ctrl.Close()
+	minted, err := ctrl.MintTenant(ctx, "acme", "dana")
+	if err != nil {
+		t.Fatalf("mint tenant: %v", err)
+	}
+	dana, err := client.Connect(f.URL, minted.AdminCreds)
+	if err != nil {
+		t.Fatalf("connect admin: %v", err)
+	}
+	defer dana.Close()
+	if _, err := dana.CreateLog(ctx, "orders", ""); err != nil {
+		t.Fatalf("create log: %v", err)
+	}
+
+	// A second principal joins the running tenant — the verb that did not
+	// exist when the only options were re-mint or destroy.
+	added, err := ctrl.AddMember(ctx, "acme", "erin", "")
+	if err != nil {
+		t.Fatalf("add member: %v", err)
+	}
+	if added.Role != contract.RoleWriter {
+		t.Fatalf("default role = %q, want writer", added.Role)
+	}
+	erin, err := client.Connect(f.URL, added.Creds)
+	if err != nil {
+		t.Fatalf("connect erin: %v", err)
+	}
+	defer erin.Close()
+	if erin.Author() != "erin" {
+		t.Fatalf("author from creds = %q", erin.Author())
+	}
+	// The data plane is open to a writer; the admin line holds.
+	if _, err := erin.CreateThing(ctx, "orders", "ticket-1", json.RawMessage(`{}`)); err != nil {
+		t.Fatalf("writer create thing: %v", err)
+	}
+	if _, err := erin.CreateLog(ctx, "rogue", ""); err == nil {
+		t.Fatal("a writer created a log: the role gate is broken")
+	}
+
+	// The add refuses what it must: a duplicate, a made-up role, a tenant
+	// that does not exist.
+	var serr *client.ServiceError
+	if _, err := ctrl.AddMember(ctx, "acme", "erin", ""); !errors.As(err, &serr) || serr.Code != "member-exists" {
+		t.Fatalf("duplicate add: %v", err)
+	}
+	if _, err := ctrl.AddMember(ctx, "acme", "frank", "sudo"); !errors.As(err, &serr) || serr.Code != "bad-role" {
+		t.Fatalf("bad role: %v", err)
+	}
+	if _, err := ctrl.AddMember(ctx, "nosuch", "erin", ""); !errors.As(err, &serr) || serr.Code != "no-such-tenant" {
+		t.Fatalf("no such tenant: %v", err)
+	}
+
+	// The leak: revoke erin. The live connection dies, a fresh dial is
+	// refused, and the neighbor never blinks.
+	revoked, err := ctrl.RevokeMember(ctx, "acme", "erin")
+	if err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	if revoked.PublicKey == "" {
+		t.Fatalf("revoke response incomplete: %+v", revoked)
+	}
+	waitEvicted(t, erin, "erin")
+	if c, err := client.Connect(f.URL, added.Creds); err == nil {
+		c.Close()
+		t.Fatal("revoked creds reconnected")
+	}
+	if _, err := ctrl.RevokeMember(ctx, "acme", "erin"); !errors.As(err, &serr) || serr.Code != "not-a-member" {
+		t.Fatalf("second revoke: %v", err)
+	}
+	if !dana.Conn().IsConnected() {
+		t.Fatal("revoking erin evicted dana")
+	}
+
+	// Re-adding the same principal works — the registry entry is gone, the
+	// durable identity remains, the new user key is fresh.
+	readded, err := ctrl.AddMember(ctx, "acme", "erin", contract.RoleReader)
+	if err != nil {
+		t.Fatalf("re-add after revoke: %v", err)
+	}
+	erin2, err := client.Connect(f.URL, readded.Creds)
+	if err != nil {
+		t.Fatalf("connect re-added erin: %v", err)
+	}
+	defer erin2.Close()
+
+	// The kill switch: everything member-held is burned at once. The node
+	// rides through on the service user — the log create after proves the
+	// tenant never stopped serving.
+	rekeyed, err := ctrl.RekeyMembers(ctx, "acme")
+	if err != nil {
+		t.Fatalf("rekey: %v", err)
+	}
+	if len(rekeyed.Members) != 2 {
+		t.Fatalf("rekey re-issued %d members, want 2", len(rekeyed.Members))
+	}
+	waitEvicted(t, dana, "dana")
+	waitEvicted(t, erin2, "erin")
+	if c, err := client.Connect(f.URL, minted.AdminCreds); err == nil {
+		c.Close()
+		t.Fatal("pre-rekey admin creds survived the rekey")
+	}
+	byID := map[string]client.MemberAddResponse{}
+	for _, m := range rekeyed.Members {
+		byID[m.Principal] = m
+	}
+	if byID["dana"].Role != contract.RoleAdmin || byID["erin"].Role != contract.RoleReader {
+		t.Fatalf("roles did not survive the rekey: %+v", rekeyed.Members)
+	}
+	dana2, err := client.Connect(f.URL, byID["dana"].Creds)
+	if err != nil {
+		t.Fatalf("connect re-issued admin: %v", err)
+	}
+	defer dana2.Close()
+	if _, err := dana2.CreateLog(ctx, "after-rekey", ""); err != nil {
+		t.Fatalf("create log after rekey: %v", err)
+	}
+}
+
+// TestOperatorRotationRoundTrip: the trust root rotates offline, and the
+// fleet that boots after it serves every credential minted before — the
+// operator identity persists exactly so this ceremony can exist.
+func TestOperatorRotationRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	f, err := fleet.Up(ctx, fleet.Config{Dir: dir, Port: -1})
+	if err != nil {
+		t.Fatalf("up: %v", err)
+	}
+	stopped := false
+	defer func() {
+		if !stopped {
+			f.Stop()
+		}
+	}()
+
+	ctrlCreds, err := os.ReadFile(devdir.ControlCredsPath(dir))
+	if err != nil {
+		t.Fatalf("control creds: %v", err)
+	}
+	ctrl, err := client.ConnectControlCreds(f.URL, ctrlCreds)
+	if err != nil {
+		t.Fatalf("connect control: %v", err)
+	}
+	minted, err := ctrl.MintTenant(ctx, "acme", "dana")
+	ctrl.Close()
+	if err != nil {
+		t.Fatalf("mint tenant: %v", err)
+	}
+	dana, err := client.Connect(f.URL, minted.AdminCreds)
+	if err != nil {
+		t.Fatalf("connect admin: %v", err)
+	}
+	if _, err := dana.CreateLog(ctx, "orders", ""); err != nil {
+		dana.Close()
+		t.Fatalf("create log: %v", err)
+	}
+	dana.Close()
+	f.Stop()
+	stopped = true
+
+	var out bytes.Buffer
+	if err := fleet.RotateSigningKey([]string{"--dir", dir}, &out); err != nil {
+		t.Fatalf("rotate: %v\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "operator signing key rotated") {
+		t.Fatalf("rotate output: %s", out.String())
+	}
+
+	// The fleet boots trusting only the new key; the tenant node comes
+	// back, pre-rotation creds still work, and a fresh mint lands.
+	f2, err := fleet.Up(ctx, fleet.Config{Dir: dir, Port: -1})
+	if err != nil {
+		t.Fatalf("up after rotation: %v", err)
+	}
+	defer f2.Stop()
+
+	dana2, err := client.Connect(f2.URL, minted.AdminCreds)
+	if err != nil {
+		t.Fatalf("pre-rotation admin creds refused: %v", err)
+	}
+	defer dana2.Close()
+	if _, err := dana2.CreateLog(ctx, "after-rotation", ""); err != nil {
+		t.Fatalf("create log after rotation: %v", err)
+	}
+	ctrl2, err := client.ConnectControlCreds(f2.URL, ctrlCreds)
+	if err != nil {
+		t.Fatalf("connect control after rotation: %v", err)
+	}
+	defer ctrl2.Close()
+	if _, err := ctrl2.MintTenant(ctx, "beta", ""); err != nil {
+		t.Fatalf("mint under the rotated key: %v", err)
 	}
 }

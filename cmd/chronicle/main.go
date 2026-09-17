@@ -19,9 +19,14 @@ func main() {
 	defer stop()
 
 	var err error
-	if len(os.Args) > 1 && os.Args[1] == "up" {
+	switch {
+	case len(os.Args) > 1 && os.Args[1] == "up":
 		err = fleet.Run(ctx, os.Args[2:], os.Stdout)
-	} else {
+	case len(os.Args) > 2 && os.Args[1] == "operator" && os.Args[2] == "rotate-signing-key":
+		// The trust-root ceremony is the composition root's, like `up`:
+		// it works the fleet dir's custody, not the product surface.
+		err = fleet.RotateSigningKey(os.Args[3:], os.Stdout)
+	default:
 		err = cli.Run(ctx, os.Args[1:], os.Stdout)
 	}
 	if err != nil && !errors.Is(err, context.Canceled) {
