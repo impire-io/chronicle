@@ -185,7 +185,7 @@ func Start(ctx context.Context, nc *nats.Conn, cfg Config) (*Node, error) {
 	}{
 		{"ping", client.PingSubject, n.handlePing},
 		{"log-create", client.LogCreateSubject, n.handleLogCreate},
-		{"schema-set", client.SchemaSetSubject, n.handleSchemaSet},
+		{"type-define", client.TypeDefineSubject, n.handleTypeDefine},
 		{"thing-rollup", client.ThingRollupSubject, n.handleThingRollup},
 		{"index-declare", client.IndexDeclareSubject, n.handleIndexDeclare},
 		{"index-delete", client.IndexDeleteSubject, n.handleIndexDelete},
@@ -269,6 +269,17 @@ func (n *node) handleLogCreate(req micro.Request) {
 		_ = req.Error("500", fmt.Sprintf("create state bucket: %v", err), nil)
 		return
 	}
+	// State joins the index framework (0023): the declaration is born
+	// with the log — kind state, node-materialized, refused deletion.
+	decl, err := json.Marshal(contract.IndexDeclaration{Kind: contract.IndexKindState})
+	if err != nil {
+		_ = req.Error("500", err.Error(), nil)
+		return
+	}
+	if _, err := n.meta.Create(ctx, contract.MetaIndex(r.Log, contract.StateIndexName), decl); err != nil && !errors.Is(err, jetstream.ErrKeyExists) {
+		_ = req.Error("500", fmt.Sprintf("declare state index: %v", err), nil)
+		return
+	}
 	if err := n.startFold(ctx, r.Log); err != nil {
 		_ = req.Error("500", fmt.Sprintf("start fold: %v", err), nil)
 		return
@@ -282,11 +293,11 @@ func (n *node) handleLogCreate(req micro.Request) {
 	_ = req.Respond(reply)
 }
 
-func (n *node) handleSchemaSet(req micro.Request) {
+func (n *node) handleTypeDefine(req micro.Request) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	var r client.SchemaSetRequest
+	var r client.TypeDefineRequest
 	if err := json.Unmarshal(req.Data(), &r); err != nil {
 		_ = req.Error("bad-request", err.Error(), nil)
 		return
@@ -299,42 +310,69 @@ func (n *node) handleSchemaSet(req micro.Request) {
 		_ = req.Error("bad-log-name", err.Error(), nil)
 		return
 	}
-	if r.OpType == "" || r.OpType == contract.OpTypeSnapshot {
-		_ = req.Error("bad-op-type", "op type must be non-empty and not the reserved snapshot type", nil)
+	if err := contract.ValidateTypeName(r.Type); err != nil {
+		_ = req.Error("bad-type-name", err.Error(), nil)
 		return
 	}
-	// Write-side strictness: this node declares only effects it can fold.
-	// (The fold itself stays tolerant of values a newer node recorded.)
-	r.Effect = contract.NormalizeEffect(r.Effect)
-	if !contract.KnownEffect(r.Effect) {
-		_ = req.Error("bad-effect", fmt.Sprintf("effect %q is not in this node's vocabulary (none, merge)", r.Effect), nil)
+	// Write-side strict on every facet's vocabulary; the fold stays
+	// tolerant of values a newer node recorded.
+	if h := contract.NormalizeHistory(r.History); h != contract.HistoryCompactable && h != contract.HistoryPreserved {
+		_ = req.Error("bad-history", fmt.Sprintf("history %q: %q or %q", r.History, contract.HistoryCompactable, contract.HistoryPreserved), nil)
 		return
+	}
+	for seg, target := range r.Aspects {
+		if err := contract.ValidateTypeName(seg); err != nil {
+			_ = req.Error("bad-aspect-segment", err.Error(), nil)
+			return
+		}
+		// The target may be defined later — latest declaration wins; only
+		// its grammar is checked here.
+		if err := contract.ValidateTypeName(target); err != nil {
+			_ = req.Error("bad-aspect-type", err.Error(), nil)
+			return
+		}
+	}
+	for opType, def := range r.Operations {
+		if opType == "" || opType == contract.OpTypeSnapshot {
+			_ = req.Error("bad-op-type", "operation name must be non-empty and not the reserved snapshot type", nil)
+			return
+		}
+		if e := contract.NormalizeEffect(def.Effect); !contract.KnownEffect(e) {
+			_ = req.Error("bad-effect", fmt.Sprintf("operation %s: effect %q is not in this node's vocabulary (none, merge)", opType, def.Effect), nil)
+			return
+		}
+		if _, err := client.CompileSchema(def.Schema); err != nil {
+			_ = req.Error("bad-schema", fmt.Sprintf("operation %s: %v", opType, err), nil)
+			return
+		}
 	}
 	if _, err := n.meta.Get(ctx, contract.MetaLogConfig(r.Log)); err != nil {
 		_ = req.Error("no-such-log", fmt.Sprintf("log %q is not created", r.Log), nil)
 		return
 	}
-	// The schema must compile before it is declared: a vocabulary entry
-	// nobody can validate against is noise.
+	// The thing schema must compile before it is declared: type and schema
+	// are born together (0021), and a shape nobody can validate against is
+	// noise.
 	if _, err := client.CompileSchema(r.Schema); err != nil {
 		_ = req.Error("bad-schema", err.Error(), nil)
 		return
 	}
 
-	rev, effectChanged, err := n.recordSchema(ctx, r)
+	rev, changed, err := n.recordType(ctx, r)
 	if err != nil {
 		_ = req.Error("500", err.Error(), nil)
 		return
 	}
-	// Latest declaration wins: a changed effect makes the log's derived
-	// state suspect, and suspect state is rebuilt by replay (0011).
-	if effectChanged {
+	// Latest declaration wins: a changed effect, aspect, or history makes
+	// the log's derived state suspect, and suspect state is rebuilt by
+	// replay (0011 § 3, 0021 § 5).
+	if changed {
 		if err := n.rebuildLog(ctx, r.Log); err != nil {
 			_ = req.Error("500", fmt.Sprintf("rebuild state: %v", err), nil)
 			return
 		}
 	}
-	reply, err := json.Marshal(client.SchemaSetResponse{Revision: rev})
+	reply, err := json.Marshal(client.TypeDefineResponse{Revision: rev})
 	if err != nil {
 		_ = req.Error("500", err.Error(), nil)
 		return

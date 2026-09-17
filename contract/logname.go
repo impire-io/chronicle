@@ -36,6 +36,18 @@ func ValidateIndexName(index string) error {
 	return nil
 }
 
+// ValidateTypeName refuses anything but a single lowercase [a-z0-9-]+
+// token — the log-name grammar without the reserved list (decision 0021).
+// A type name is a subject token in the pair addressing and a META key
+// segment; dots would collide with the retired op-type keys. Aspect
+// segment names follow the same grammar.
+func ValidateTypeName(name string) error {
+	if !logName.MatchString(name) {
+		return fmt.Errorf("type name %q: must match [a-z0-9-]+", name)
+	}
+	return nil
+}
+
 // ValidateThing refuses a thing that is not one or more subject-token-safe
 // segments joined with ".". Identifiers are the customer's domain: chronicle
 // validates subject-token safety and mints nothing (wire contract § subject

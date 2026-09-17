@@ -42,6 +42,12 @@ func (n *node) handleIndexDeclare(req micro.Request) {
 		_ = req.Error("bad-index-name", err.Error(), nil)
 		return
 	}
+	// The state kind is the one exception (0023): its declaration is
+	// written by the node at log creation and only there.
+	if r.Kind == contract.IndexKindState || r.Index == contract.StateIndexName {
+		_ = req.Error("reserved-state-index", "the state index is declared at log creation and only there (0023)", nil)
+		return
+	}
 	if !contract.KnownIndexKind(r.Kind) {
 		_ = req.Error("bad-kind", fmt.Sprintf("kind %q is not in this node's vocabulary (search, graph, semantic)", r.Kind), nil)
 		return
@@ -130,6 +136,12 @@ func (n *node) handleIndexDelete(req micro.Request) {
 		_ = req.Error("bad-index-name", err.Error(), nil)
 		return
 	}
+	// The exactness recipe and roll-up consume the state index: it is
+	// the one derived view whose loss would break a contract (0023).
+	if r.Index == contract.StateIndexName {
+		_ = req.Error("reserved-state-index", "the state index cannot be deleted while the log exists (0023)", nil)
+		return
+	}
 	// Get first: deleting an absent key succeeds silently in KV, and the
 	// caller deserves the honest answer.
 	if _, err := n.meta.Get(ctx, contract.MetaIndex(r.Log, r.Index)); err != nil {
@@ -179,6 +191,11 @@ func (n *node) rederiveIndexes(ctx context.Context) {
 		var decl contract.IndexDeclaration
 		if err := json.Unmarshal(entry.Value(), &decl); err != nil {
 			n.logger.Warn("index declaration unreadable; ignored", "key", key, "err", err)
+			continue
+		}
+		if decl.Kind == contract.IndexKindState {
+			// The state index places no workload — it rides the node
+			// (0023), so there is nothing to report.
 			continue
 		}
 		if err := n.indexes.IndexDeclared(ctx, parts[0], parts[1], decl.Kind); err != nil {

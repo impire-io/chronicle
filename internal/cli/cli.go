@@ -34,9 +34,15 @@ func Run(ctx context.Context, args []string, out io.Writer) error {
 			return logCreate(ctx, args[2:], out)
 		}
 		return usage(out)
-	case "schema":
-		if len(args) >= 2 && args[1] == "set" {
-			return schemaSet(ctx, args[2:], out)
+	case "type":
+		if len(args) >= 2 && args[1] == "define" {
+			return typeDefine(ctx, args[2:], out)
+		}
+		if len(args) >= 2 && args[1] == "inspect" {
+			return typeInspect(ctx, args[2:], out)
+		}
+		if len(args) >= 2 && args[1] == "list" {
+			return typeList(ctx, args[2:], out)
 		}
 		return usage(out)
 	case "thing":
@@ -91,7 +97,9 @@ func usage(out io.Writer) error {
   chronicle up [--dir D] [--port N]                     run the local fleet
   chronicle tenant create <name> [--dir D] [--admin P] [--out F]
   chronicle log create <log> --creds F [--url U] [--desc S] [--history H]
-  chronicle schema set <log> <op.type> --creds F --schema JSON | --file F [--effect E]
+  chronicle type define <log> <type> --creds F --def JSON | --file F
+  chronicle type inspect <log> <type> --creds F
+  chronicle type list <log> --creds F
   chronicle thing create <log> <thing> --creds F [--state JSON]
   chronicle thing rollup <log> <thing> --creds F
   chronicle index declare <log> <index> --creds F [--kind K] [--config JSON]
@@ -231,45 +239,116 @@ func logCreate(ctx context.Context, args []string, out io.Writer) error {
 	return nil
 }
 
-func schemaSet(ctx context.Context, args []string, out io.Writer) error {
-	fs := flag.NewFlagSet("chronicle schema set", flag.ContinueOnError)
+// typeDefinition is the --def / --file JSON: every facet of a type in one
+// act (0021). Operations carry each op's payload schema and effect.
+type typeDefinition struct {
+	Schema     json.RawMessage           `json:"schema"`
+	History    string                    `json:"history,omitempty"`
+	Aspects    map[string]string         `json:"aspects,omitempty"`
+	Operations map[string]contract.OpDef `json:"operations,omitempty"`
+}
+
+func typeDefine(ctx context.Context, args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("chronicle type define", flag.ContinueOnError)
 	fs.SetOutput(out)
 	cf := addConnectFlags(fs)
-	inline := fs.String("schema", "", "JSON Schema, inline")
-	file := fs.String("file", "", "JSON Schema file")
-	effect := fs.String("effect", "", "how the op moves state: none (default) or merge")
+	inline := fs.String("def", "", `the type definition, inline: {"schema":…,"history":…,"aspects":…,"operations":…}`)
+	file := fs.String("file", "", "the type definition, from a file")
 	pos, err := parseArgs(fs, args)
 	if err != nil {
 		return err
 	}
 	if len(pos) != 2 {
-		return fmt.Errorf("schema set: <log> <op.type>")
+		return fmt.Errorf("type define: <log> <type>")
 	}
-	var schema []byte
+	var raw []byte
 	switch {
 	case *inline != "" && *file != "":
-		return fmt.Errorf("--schema and --file are exclusive")
+		return fmt.Errorf("--def and --file are exclusive")
 	case *inline != "":
-		schema = []byte(*inline)
+		raw = []byte(*inline)
 	case *file != "":
 		var err error
-		schema, err = os.ReadFile(*file)
+		raw, err = os.ReadFile(*file)
 		if err != nil {
 			return err
 		}
 	default:
-		return fmt.Errorf("one of --schema or --file is required")
+		return fmt.Errorf("one of --def or --file is required")
+	}
+	var def typeDefinition
+	if err := json.Unmarshal(raw, &def); err != nil {
+		return fmt.Errorf("decode type definition: %w", err)
 	}
 	c, err := cf.dial()
 	if err != nil {
 		return err
 	}
 	defer c.Close()
-	resp, err := c.SetSchema(ctx, pos[0], pos[1], schema, *effect)
+	resp, err := c.DefineType(ctx, pos[0], pos[1], client.TypeDefinition{
+		Schema:     def.Schema,
+		History:    def.History,
+		Aspects:    def.Aspects,
+		Operations: def.Operations,
+	})
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "schema %s %s: revision %d\n", pos[0], pos[1], resp.Revision)
+	fmt.Fprintf(out, "type %s %s: revision %d\n", pos[0], pos[1], resp.Revision)
+	return nil
+}
+
+func typeInspect(ctx context.Context, args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("chronicle type inspect", flag.ContinueOnError)
+	fs.SetOutput(out)
+	cf := addConnectFlags(fs)
+	pos, err := parseArgs(fs, args)
+	if err != nil {
+		return err
+	}
+	if len(pos) != 2 {
+		return fmt.Errorf("type inspect: <log> <type>")
+	}
+	c, err := cf.dial()
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	rec, err := c.GetType(ctx, pos[0], pos[1])
+	if err != nil {
+		return err
+	}
+	pretty, err := json.MarshalIndent(rec, "", "  ")
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "%s\n", pretty)
+	return nil
+}
+
+func typeList(ctx context.Context, args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("chronicle type list", flag.ContinueOnError)
+	fs.SetOutput(out)
+	cf := addConnectFlags(fs)
+	pos, err := parseArgs(fs, args)
+	if err != nil {
+		return err
+	}
+	if len(pos) != 1 {
+		return fmt.Errorf("type list: <log>")
+	}
+	c, err := cf.dial()
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	names, err := c.ListTypes(ctx, pos[0])
+	if err != nil {
+		return err
+	}
+	for _, name := range names {
+		fmt.Fprintln(out, name)
+	}
 	return nil
 }
 

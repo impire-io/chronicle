@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/impire-io/chronicle/client"
+	"github.com/impire-io/chronicle/contract"
 	"github.com/impire-io/chronicle/internal/devdir"
 	"github.com/impire-io/chronicle/internal/fleet"
 	"github.com/impire-io/chronicle/internal/index/semantic"
@@ -75,18 +76,18 @@ func TestWalkingSkeleton(t *testing.T) {
 	if _, err := dana.CreateLog(ctx, "orders", "orders log"); err != nil {
 		t.Fatalf("create log: %v", err)
 	}
-	birth, err := dana.CreateThing(ctx, "orders", "invoice-1", json.RawMessage(`{"total":1}`))
+	birth, err := dana.CreateThing(ctx, "orders", "invoice.invoice-1", json.RawMessage(`{"total":1}`))
 	if err != nil {
 		t.Fatalf("create thing: %v", err)
 	}
-	if _, err := dana.Append(ctx, "orders", "invoice-1", "comment.add", []byte(`{"body":"hello"}`)); err != nil {
+	if _, err := dana.Append(ctx, "orders", "invoice.invoice-1", "comment.add", []byte(`{"body":"hello"}`)); err != nil {
 		t.Fatalf("append: %v", err)
 	}
 	waitState := func(c *client.Client, wantSeq uint64) {
 		t.Helper()
 		deadline := time.Now().Add(10 * time.Second)
 		for {
-			sv, err := c.State(ctx, "orders", "invoice-1")
+			sv, err := c.State(ctx, "orders", "invoice.invoice-1")
 			if err == nil && sv.Seq >= wantSeq {
 				return
 			}
@@ -97,7 +98,7 @@ func TestWalkingSkeleton(t *testing.T) {
 		}
 	}
 	waitState(dana, birth.Seq)
-	ops, err := dana.Replay(ctx, "orders", "invoice-1")
+	ops, err := dana.Replay(ctx, "orders", "invoice.invoice-1")
 	if err != nil {
 		t.Fatalf("replay: %v", err)
 	}
@@ -128,7 +129,7 @@ func TestWalkingSkeleton(t *testing.T) {
 		t.Fatalf("create log after restart: %v", err)
 	}
 	// And the log's history survived the restart, warts and all.
-	ops, err = dana2.Replay(ctx, "orders", "invoice-1")
+	ops, err = dana2.Replay(ctx, "orders", "invoice.invoice-1")
 	if err != nil {
 		t.Fatalf("replay after restart: %v", err)
 	}
@@ -178,7 +179,7 @@ func TestDeclaredIndexServes(t *testing.T) {
 	if _, err := dana.CreateLog(ctx, "orders", ""); err != nil {
 		t.Fatalf("create log: %v", err)
 	}
-	if _, err := dana.CreateThing(ctx, "orders", "invoice-1", json.RawMessage(`{"title":"quantum widgets"}`)); err != nil {
+	if _, err := dana.CreateThing(ctx, "orders", "invoice.invoice-1", json.RawMessage(`{"title":"quantum widgets"}`)); err != nil {
 		t.Fatalf("create thing: %v", err)
 	}
 	resp, err := dana.DeclareIndex(ctx, "orders", "text", "search", nil)
@@ -194,7 +195,7 @@ func TestDeclaredIndexServes(t *testing.T) {
 	deadline := time.Now().Add(15 * time.Second)
 	for {
 		qr, err := dana.QueryIndex(ctx, "orders", "text", "widgets", 0, 0)
-		if err == nil && len(qr.Hits) == 1 && qr.Hits[0].Thing == "invoice-1" {
+		if err == nil && len(qr.Hits) == 1 && qr.Hits[0].Thing == "invoice.invoice-1" {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -256,14 +257,17 @@ func TestDeclaredGraphServes(t *testing.T) {
 	if _, err := dana.CreateLog(ctx, "orders", ""); err != nil {
 		t.Fatalf("create log: %v", err)
 	}
-	// A merge-effect type so a later append can move the reference.
-	if _, err := dana.SetSchema(ctx, "orders", "order.update", json.RawMessage(`{"type":"object"}`), "merge"); err != nil {
-		t.Fatalf("set schema: %v", err)
+	// A merge-effect operation so a later append can move the reference.
+	if _, err := dana.DefineType(ctx, "orders", "invoice", client.TypeDefinition{
+		Schema:     json.RawMessage(`{"type":"object"}`),
+		Operations: map[string]contract.OpDef{"order.update": {Schema: json.RawMessage(`{"type":"object"}`), Effect: contract.EffectMerge}},
+	}); err != nil {
+		t.Fatalf("define type: %v", err)
 	}
-	if _, err := dana.CreateThing(ctx, "orders", "invoice-1", json.RawMessage(`{"customer":"cust-1"}`)); err != nil {
+	if _, err := dana.CreateThing(ctx, "orders", "invoice.invoice-1", json.RawMessage(`{"customer":"cust-1"}`)); err != nil {
 		t.Fatalf("create invoice-1: %v", err)
 	}
-	if _, err := dana.CreateThing(ctx, "orders", "invoice-2", json.RawMessage(`{"customer":"cust-1"}`)); err != nil {
+	if _, err := dana.CreateThing(ctx, "orders", "invoice.invoice-2", json.RawMessage(`{"customer":"cust-1"}`)); err != nil {
 		t.Fatalf("create invoice-2: %v", err)
 	}
 
@@ -289,13 +293,13 @@ func TestDeclaredGraphServes(t *testing.T) {
 	}
 
 	// A merge op moves the reference; the live tail rewires the edges.
-	if _, err := dana.Append(ctx, "orders", "invoice-1", "order.update", []byte(`{"customer":"cust-2"}`)); err != nil {
+	if _, err := dana.Append(ctx, "orders", "invoice.invoice-1", "order.update", []byte(`{"customer":"cust-2"}`)); err != nil {
 		t.Fatalf("append: %v", err)
 	}
 	deadline = time.Now().Add(15 * time.Second)
 	for {
 		in, err := dana.GraphNeighbors(ctx, "orders", "refs", client.GraphQueryRequest{Thing: "cust-2", Direction: "in"})
-		if err == nil && in.Total == 1 && in.Edges[0].From == "invoice-1" {
+		if err == nil && in.Total == 1 && in.Edges[0].From == "invoice.invoice-1" {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -303,7 +307,7 @@ func TestDeclaredGraphServes(t *testing.T) {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	walk, err := dana.GraphWalk(ctx, "orders", "refs", client.GraphQueryRequest{Thing: "invoice-1", Depth: 1})
+	walk, err := dana.GraphWalk(ctx, "orders", "refs", client.GraphQueryRequest{Thing: "invoice.invoice-1", Depth: 1})
 	if err != nil || len(walk.Things) != 1 || walk.Things[0].Thing != "cust-2" {
 		t.Fatalf("walk = %+v, %v", walk, err)
 	}
@@ -386,10 +390,10 @@ func TestDeclaredSemanticServes(t *testing.T) {
 	if _, err := dana.CreateLog(ctx, "orders", ""); err != nil {
 		t.Fatalf("create log: %v", err)
 	}
-	if _, err := dana.CreateThing(ctx, "orders", "invoice-1", json.RawMessage(`{"title":"quantum widget order"}`)); err != nil {
+	if _, err := dana.CreateThing(ctx, "orders", "invoice.invoice-1", json.RawMessage(`{"title":"quantum widget order"}`)); err != nil {
 		t.Fatalf("create invoice-1: %v", err)
 	}
-	if _, err := dana.CreateThing(ctx, "orders", "invoice-2", json.RawMessage(`{"title":"gadget shipment"}`)); err != nil {
+	if _, err := dana.CreateThing(ctx, "orders", "invoice.invoice-2", json.RawMessage(`{"title":"gadget shipment"}`)); err != nil {
 		t.Fatalf("create invoice-2: %v", err)
 	}
 	if _, err := dana.DeclareIndex(ctx, "orders", "meaning", "semantic", nil); err != nil {
@@ -399,7 +403,7 @@ func TestDeclaredSemanticServes(t *testing.T) {
 	deadline := time.Now().Add(20 * time.Second)
 	for {
 		resp, err := dana.QuerySemantic(ctx, "orders", "meaning", "widget", 0, 0)
-		if err == nil && len(resp.Hits) > 0 && resp.Hits[0].Thing == "invoice-1" && resp.Unembedded == 0 {
+		if err == nil && len(resp.Hits) > 0 && resp.Hits[0].Thing == "invoice.invoice-1" && resp.Unembedded == 0 {
 			break
 		}
 		if time.Now().After(deadline) {

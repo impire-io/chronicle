@@ -21,9 +21,9 @@ type foldRun struct {
 	stop func()
 }
 
-// startFold runs one log's fold: an ordered consumer over the ops family,
-// one fold state per subject, never letting one subject's op touch
-// another's. Idempotent per log.
+// startFold runs one log's fold: an ordered consumer over the ops family
+// driving the shared pass (0023 § 3 — the fold rules exist once), its
+// sink the KV-CAS write into STATE_<LOG>. Idempotent per log.
 func (n *node) startFold(ctx context.Context, log string) error {
 	n.mu.Lock()
 	if _, ok := n.folds[log]; ok {
@@ -40,14 +40,32 @@ func (n *node) startFold(ctx context.Context, log string) error {
 	if err != nil {
 		return fmt.Errorf("open state bucket: %w", err)
 	}
+
+	f := &fold{node: n, log: log, states: states, active: map[string]struct{}{}}
+	f.pass = &foldcore.Pass{
+		Resolve: func(ctx context.Context, thing string) (contract.Resolution, error) {
+			return foldcore.ResolveThing(ctx, n.meta, log, thing)
+		},
+		Sink:  f.writeState,
+		Track: f.track,
+		Warn: func(msg string, args ...any) {
+			n.logger.Warn("fold: "+msg, append([]any{"log", log}, args...)...)
+		},
+	}
+
+	// The fold watermark names the declarations this bucket is derived
+	// under (0023 § 4) — the checkpoint indexers may bootstrap from. A
+	// failed write only disables the shortcut; the fold serves anyway.
+	if err := f.writeWatermark(ctx); err != nil {
+		n.logger.Warn("fold: watermark not written; checkpoints disabled until the next fold start", "log", log, "err", err)
+	}
+
 	cons, err := stream.OrderedConsumer(ctx, jetstream.OrderedConsumerConfig{
 		FilterSubjects: []string{contract.OpsFilter(log)},
 	})
 	if err != nil {
 		return fmt.Errorf("ordered consumer: %w", err)
 	}
-
-	f := &fold{node: n, log: log, states: states, active: map[string]struct{}{}}
 	cc, err := cons.Consume(f.apply)
 	if err != nil {
 		return fmt.Errorf("consume: %w", err)
@@ -70,10 +88,11 @@ func (n *node) startFold(ctx context.Context, log string) error {
 }
 
 // rebuildLog is the §6.2 rebuild, mechanized: the log's derived state is
-// suspect (an effect changed), so stop the fold, purge the bucket, and
-// re-fold the whole stream under the current declarations — latest
-// declaration wins (decision 0011). It holds the log's derived-state
-// mutex so no rollup publishes a snapshot computed mid-change.
+// suspect (a declaration changed), so stop the fold, purge the bucket —
+// watermark included — and re-fold the whole stream under the current
+// declarations with a fresh pass: latest declaration wins (0011 § 3). It
+// holds the log's derived-state mutex so no rollup publishes a snapshot
+// computed mid-change.
 func (n *node) rebuildLog(ctx context.Context, log string) error {
 	mu := n.logMutex(log)
 	mu.Lock()
@@ -106,6 +125,7 @@ type fold struct {
 	node   *node
 	log    string
 	states jetstream.KeyValue
+	pass   *foldcore.Pass
 
 	mu sync.Mutex
 	// active is the timer trigger's feed: every subject this fold saw an
@@ -113,6 +133,13 @@ type fold struct {
 	// restart or rebuild re-folds the stream, so everything re-enters —
 	// the next sweep is a full one, by design.
 	active map[string]struct{}
+}
+
+// track feeds the sweep's active set.
+func (f *fold) track(thing string) {
+	f.mu.Lock()
+	f.active[thing] = struct{}{}
+	f.mu.Unlock()
 }
 
 // swapActive hands the sweep the active set and starts a fresh one.
@@ -127,9 +154,7 @@ func (f *fold) swapActive() []string {
 	return things
 }
 
-// apply folds one message. Ordered consumers redeliver on gaps, so apply
-// stays idempotent: the state CAS skips anything at or below the stored
-// seq.
+// apply folds one message through the shared pass.
 func (f *fold) apply(msg jetstream.Msg) {
 	md, err := msg.Metadata()
 	if err != nil {
@@ -143,90 +168,38 @@ func (f *fold) apply(msg jetstream.Msg) {
 		// stream and the same replay, untouched by the fold.
 		return
 	}
-	f.mu.Lock()
-	f.active[thing] = struct{}{}
-	f.mu.Unlock()
-
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
+	f.pass.Fold(ctx, thing, op)
+}
 
-	if op.Type == contract.OpTypeSnapshot {
-		snap, err := contract.ParseSnapshot(op.Payload)
-		if err != nil {
-			f.node.logger.Warn("fold: marked malformed snapshot", "log", f.log, "thing", thing, "op", op.ID, "err", err)
-			return
-		}
-		f.resetState(ctx, thing, op.Seq, snap.State)
+// writeWatermark records the declarations the bucket derives under.
+func (f *fold) writeWatermark(ctx context.Context) error {
+	fp, err := foldcore.LogFingerprint(ctx, f.node.meta, f.log)
+	if err != nil {
+		return err
+	}
+	value, err := json.Marshal(contract.FoldWatermark{Declarations: fp})
+	if err != nil {
+		return err
+	}
+	_, err = f.states.Put(ctx, contract.StateFoldKey, value)
+	return err
+}
+
+// writeState is the pass's sink: the state bucket's optimistic-
+// concurrency write — whoever folds writes, stale writers lose, replays
+// skip, nothing to clean up. Values are deterministic under one set of
+// declarations, so a racing writer is harmless by construction.
+func (f *fold) writeState(ctx context.Context, thing string, seq uint64, state json.RawMessage) {
+	value, err := json.Marshal(contract.StateValue{Seq: seq, State: state})
+	if err != nil {
+		f.node.logger.Warn("fold: encode state", "log", f.log, "thing", thing, "err", err)
 		return
 	}
-	f.applyEffect(ctx, op, thing)
-}
-
-// applyEffect is the fold's rules for a non-snapshot op (decision 0011),
-// judged by the shared core: unknown types warn; a schema-invalid op of a
-// known type is marked and takes no effect; effect none and unknown effect
-// values move nothing; effect merge applies the payload as an RFC 7386
-// merge patch.
-func (f *fold) applyEffect(ctx context.Context, op contract.Op, thing string) {
-	decision, detail := foldcore.Judge(ctx, f.node.meta, f.log, op)
-	switch decision {
-	case foldcore.Merge:
-		f.mergeState(ctx, thing, op)
-	case foldcore.None:
-		// The op lives in history; state is not its home.
-	case foldcore.UnknownType:
-		f.node.logger.Warn("fold: unknown op type ignored", "log", f.log, "thing", thing, "op", op.ID, "type", op.Type)
-	case foldcore.UnknownEffect:
-		f.node.logger.Warn("fold: unknown effect treated as none", "log", f.log, "type", op.Type, "detail", detail)
-	case foldcore.BadTypeRecord:
-		f.node.logger.Warn("fold: type record unusable", "log", f.log, "type", op.Type, "detail", detail)
-	case foldcore.Invalid:
-		f.node.logger.Warn("fold: marked invalid payload", "log", f.log, "thing", thing, "op", op.ID, "type", op.Type, "detail", detail)
-	}
-}
-
-// resetState writes a snapshot's state: create-if-absent, else CAS forward.
-func (f *fold) resetState(ctx context.Context, thing string, seq uint64, state json.RawMessage) {
-	f.casState(ctx, thing, seq, func(*contract.StateValue) (json.RawMessage, bool) {
-		return state, true
-	})
-}
-
-// mergeState applies a merge-effect op onto the thing's current state. An
-// op on a subject with no snapshot yet takes no effect: the log is
-// malformed for state until one appears (pattern § 5.1).
-func (f *fold) mergeState(ctx context.Context, thing string, op contract.Op) {
-	f.casState(ctx, thing, op.Seq, func(cur *contract.StateValue) (json.RawMessage, bool) {
-		if cur == nil {
-			f.node.logger.Warn("fold: op before any snapshot takes no effect", "log", f.log, "thing", thing, "op", op.ID)
-			return nil, false
-		}
-		merged, err := contract.MergePatch(cur.State, op.Payload)
-		if err != nil {
-			f.node.logger.Warn("fold: merge failed; marked", "log", f.log, "thing", thing, "op", op.ID, "err", err)
-			return nil, false
-		}
-		return merged, true
-	})
-}
-
-// casState runs the state bucket's optimistic-concurrency loop: whoever
-// folds writes, stale writers lose, replays skip, nothing to clean up.
-// compute receives the current value (nil when the key is absent) and
-// returns the next state and whether to write it.
-func (f *fold) casState(ctx context.Context, thing string, seq uint64, compute func(*contract.StateValue) (json.RawMessage, bool)) {
 	for attempt := 0; attempt < 5; attempt++ {
 		entry, err := f.states.Get(ctx, thing)
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			next, write := compute(nil)
-			if !write {
-				return
-			}
-			value, merr := json.Marshal(contract.StateValue{Seq: seq, State: next})
-			if merr != nil {
-				f.node.logger.Warn("fold: encode state", "log", f.log, "thing", thing, "err", merr)
-				return
-			}
 			if _, cerr := f.states.Create(ctx, thing, value); cerr != nil {
 				if errors.Is(cerr, jetstream.ErrKeyExists) {
 					continue // lost the first-write race; re-read
@@ -243,18 +216,9 @@ func (f *fold) casState(ctx context.Context, thing string, seq uint64, compute f
 		if err := json.Unmarshal(entry.Value(), &cur); err == nil && cur.Seq >= seq {
 			return // the stored state is already at or beyond this op
 		}
-		next, write := compute(&cur)
-		if !write {
-			return
-		}
-		value, merr := json.Marshal(contract.StateValue{Seq: seq, State: next})
-		if merr != nil {
-			f.node.logger.Warn("fold: encode state", "log", f.log, "thing", thing, "err", merr)
-			return
-		}
 		if _, err := f.states.Update(ctx, thing, value, entry.Revision()); err != nil {
 			if errors.Is(err, jetstream.ErrKeyExists) {
-				continue // revision conflict; re-read and re-judge
+				continue // revision conflict; re-read
 			}
 			f.node.logger.Warn("fold: update state", "log", f.log, "thing", thing, "err", err)
 		}

@@ -26,9 +26,10 @@ func MetaLogConfig(log string) string { return "log." + log + ".config" }
 // boots from.
 const MetaLogConfigPrefix = "log."
 
-// MetaLogType is log.<log>.type.<op.type> — the JSON Schema for the payload
-// plus its revision. Op types keep their natural dots (comment.add).
-func MetaLogType(log, opType string) string { return "log." + log + ".type." + opType }
+// MetaLogType is log.<log>.type.<type> — the type record, the unit of
+// definition (decision 0021). Type names follow the log-name grammar, so
+// they can never collide with the dotted op-type keys this shape replaced.
+func MetaLogType(log, typeName string) string { return "log." + log + ".type." + typeName }
 
 // MetaIndex is index.<log>.<index> — an index declaration. The index
 // exists because this key does: declared through INDEX.DECLARE, realized
@@ -50,6 +51,33 @@ type IndexDeclaration struct {
 // IndexKindSearch is the first index kind (decision 0012): full-text over
 // thing state through an embedded engine.
 const IndexKindSearch = "search"
+
+// IndexKindState is the log's own current-state view (decision 0023):
+// current value per key, last write wins, materialized by the node into
+// STATE_<LOG>. Its declaration is written at log creation and refused to
+// DECLARE and DELETE — the exactness recipe and roll-up are its
+// consumers, so this is the one derived view whose loss would break a
+// contract. It places no workload: the state index rides the node.
+const IndexKindState = "state"
+
+// StateIndexName is the reserved index name the state declaration lives
+// under: index.<log>.state.
+const StateIndexName = "state"
+
+// StateFoldKey is the reserved state-bucket key carrying the fold
+// watermark (0023 § 4): the declarations the bucket's values derive
+// under, written at every fold start. "=" is legal in a KV key and
+// refused in a thing token, so no thing tail can ever collide with it.
+const StateFoldKey = "=fold"
+
+// FoldWatermark is the value at StateFoldKey. A state-sourced indexer
+// whose computed declaration fingerprint equals the watermark may
+// bootstrap from the bucket's {seq, state} values and consume from past
+// them; anything else replays from sequence 1 — the same suspicion rule
+// as everywhere.
+type FoldWatermark struct {
+	Declarations string `json:"declarations"`
+}
 
 // KnownIndexKind reports whether the kind is in this build's vocabulary.
 // INDEX.DECLARE refuses kinds outside it (write-side strictness), while a
@@ -109,14 +137,35 @@ func NormalizeHistory(history string) string {
 	return history
 }
 
-// TypeSchema is the value at log.<log>.type.<op.type>. Revisions are
-// recorded, never rewritten in place: each revision is a new KV put, and the
-// bucket's history keeps the old ones readable. The effect declares how the
-// op moves state (decision 0011); it rides the same revision as the schema.
-type TypeSchema struct {
-	Revision uint64          `json:"revision"`
-	Schema   json.RawMessage `json:"schema"`
-	Effect   string          `json:"effect,omitempty"`
+// TypeRecord is the value at log.<log>.type.<type> — one record, all
+// facets, set in one act and revisioned whole (decision 0021). Revisions
+// are recorded, never rewritten in place: each revision is a new KV put,
+// and the bucket's history keeps the old ones readable.
+type TypeRecord struct {
+	Revision uint64 `json:"revision"`
+	// Schema is the thing's shape: pre-flight validates snapshot state
+	// against it, projections mark state that fails it. Read-side only.
+	Schema json.RawMessage `json:"schema"`
+	// History is the type's compaction declaration — the 0019 shape at
+	// type level (decision 0022 § 4): the soft tier, honored by the
+	// node's roll-up gate, never server-enforced.
+	History string `json:"history,omitempty"`
+	// Aspects maps segment names to the types that may live under a
+	// thing of this type (decision 0022): {segment → type}. Declared
+	// means possible, not present; the latest declaration wins.
+	Aspects map[string]string `json:"aspects,omitempty"`
+	// Operations is the op vocabulary, keyed by op-type string (natural
+	// dots kept). An operation is defined inside exactly one type and
+	// writes to exactly one subject when invoked (0021 § 2).
+	Operations map[string]OpDef `json:"operations,omitempty"`
+}
+
+// OpDef is one operation's definition inside its one type: the payload's
+// JSON Schema and the effect a write of this operation has on the
+// subject's state (decision 0011, unchanged in substance).
+type OpDef struct {
+	Schema json.RawMessage `json:"schema"`
+	Effect string          `json:"effect,omitempty"`
 }
 
 // The effect vocabulary (decision 0011). It grows additively; the fold

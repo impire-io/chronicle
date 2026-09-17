@@ -24,7 +24,7 @@ type Client struct {
 
 	mu       sync.Mutex
 	inFlight map[string]*sync.Mutex // one in-flight publish per subject
-	schemas  *schemaCache
+	types    *typeCache
 }
 
 // Connect dials with decorated .creds content. The principal ID is read
@@ -105,7 +105,7 @@ func wrap(nc *nats.Conn, author string) (*Client, error) {
 		js:       js,
 		author:   author,
 		inFlight: map[string]*sync.Mutex{},
-		schemas:  newSchemaCache(js),
+		types:    newTypeCache(js),
 	}, nil
 }
 

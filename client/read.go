@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
@@ -108,4 +110,62 @@ func (c *Client) fold(ctx context.Context, log, subject string, after uint64, ap
 		}
 	}
 	return nil
+}
+
+// ErrNoType is a type read for a name the log's vocabulary does not hold.
+var ErrNoType = errors.New("type is not defined")
+
+// GetType reads one type record from the log's vocabulary — a KV read:
+// definitions are discoverable data at rest (0003, 0021), never served
+// through a verb.
+func (c *Client) GetType(ctx context.Context, log, name string) (contract.TypeRecord, error) {
+	if err := contract.ValidateLogName(log); err != nil {
+		return contract.TypeRecord{}, err
+	}
+	if err := contract.ValidateTypeName(name); err != nil {
+		return contract.TypeRecord{}, err
+	}
+	kv, err := c.js.KeyValue(ctx, contract.MetaBucket)
+	if err != nil {
+		return contract.TypeRecord{}, fmt.Errorf("open META: %w", err)
+	}
+	entry, err := kv.Get(ctx, contract.MetaLogType(log, name))
+	if errors.Is(err, jetstream.ErrKeyNotFound) {
+		return contract.TypeRecord{}, fmt.Errorf("%w: %s in %s", ErrNoType, name, log)
+	}
+	if err != nil {
+		return contract.TypeRecord{}, fmt.Errorf("read type record: %w", err)
+	}
+	var rec contract.TypeRecord
+	if err := json.Unmarshal(entry.Value(), &rec); err != nil {
+		return contract.TypeRecord{}, fmt.Errorf("decode type record: %w", err)
+	}
+	return rec, nil
+}
+
+// ListTypes names the log's defined types, sorted.
+func (c *Client) ListTypes(ctx context.Context, log string) ([]string, error) {
+	if err := contract.ValidateLogName(log); err != nil {
+		return nil, err
+	}
+	kv, err := c.js.KeyValue(ctx, contract.MetaBucket)
+	if err != nil {
+		return nil, fmt.Errorf("open META: %w", err)
+	}
+	keys, err := kv.Keys(ctx)
+	if errors.Is(err, jetstream.ErrNoKeysFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("list META keys: %w", err)
+	}
+	prefix := contract.MetaLogType(log, "")
+	var names []string
+	for _, k := range keys {
+		if name, ok := strings.CutPrefix(k, prefix); ok {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names, nil
 }

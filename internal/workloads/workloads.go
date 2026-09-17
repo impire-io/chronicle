@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -22,6 +23,7 @@ import (
 	"github.com/nats-io/nuid"
 
 	"github.com/impire-io/chronicle/contract"
+	"github.com/impire-io/chronicle/internal/foldcore"
 	"github.com/impire-io/chronicle/internal/version"
 )
 
@@ -78,19 +80,16 @@ type service struct {
 
 	foldStop func()
 
+	// pass is the instance's own fold of the fleet log, on the shared
+	// state machine (0023 § 3): thing tail → the folded state and the
+	// sequence it is folded to — the knowledge horizon every custody
+	// write stamps as its guard.
+	pass *foldcore.Pass
+
 	mu sync.Mutex
-	// mem is the instance's own fold of the fleet log: thing tail → the
-	// folded state and the sequence it is folded to — the knowledge horizon
-	// every custody write stamps as its guard.
-	mem map[string]*memEntry
 	// auctioning marks slots with a delegation in flight, so the scan does
 	// not re-auction what the last tick already placed.
 	auctioning map[string]struct{}
-}
-
-type memEntry struct {
-	seq   uint64
-	state json.RawMessage
 }
 
 // Start provisions the fleet log (idempotent — the service owns the log,
@@ -131,8 +130,31 @@ func Start(ctx context.Context, nc *nats.Conn, cfg Config) (*Service, error) {
 		auctionWindow: window,
 		ctx:           runCtx,
 		kick:          make(chan struct{}, 1),
-		mem:           map[string]*memEntry{},
 		auctioning:    map[string]struct{}{},
+	}
+	s.pass = &foldcore.Pass{
+		// The fleet resolves the type by thing family, not pair
+		// addressing: its vocabulary is chronicle's own code
+		// (contract.FleetTypeRecords), and its custody tails carry two
+		// id tokens.
+		Resolve: func(ctx context.Context, thing string) (contract.Resolution, error) {
+			family, _, _ := strings.Cut(thing, ".")
+			rec, ok, err := foldcore.Lookup(ctx, s.meta, contract.FleetLog)(family)
+			if err != nil {
+				return contract.Resolution{}, err
+			}
+			if !ok {
+				return contract.Resolution{Kind: contract.ResolvedUntyped, Detail: fmt.Sprintf("no fleet type %q", family)}, nil
+			}
+			return contract.Resolution{Kind: contract.ResolvedTyped, TypeName: family, Record: rec}, nil
+		},
+		Sink: func(ctx context.Context, thing string, seq uint64, state json.RawMessage) {
+			s.writeState(ctx, thing, seq, state)
+			s.kickScan()
+		},
+		Warn: func(msg string, args ...any) {
+			s.logger.Warn("fleet fold: "+msg, args...)
+		},
 	}
 	if err := s.startFold(ctx); err != nil {
 		cancel()
@@ -207,14 +229,24 @@ func provision(ctx context.Context, js jetstream.JetStream) (meta, states jetstr
 	if _, err := meta.Create(ctx, contract.MetaLogConfig(contract.FleetLog), cfg); err != nil && !errors.Is(err, jetstream.ErrKeyExists) {
 		return nil, nil, fmt.Errorf("record fleet log config: %w", err)
 	}
-	for opType, ts := range contract.FleetTypeSchemas() {
-		value, err := json.Marshal(ts)
+	for name, rec := range contract.FleetTypeRecords() {
+		value, err := json.Marshal(rec)
 		if err != nil {
 			return nil, nil, err
 		}
-		if _, err := meta.Create(ctx, contract.MetaLogType(contract.FleetLog, opType), value); err != nil && !errors.Is(err, jetstream.ErrKeyExists) {
-			return nil, nil, fmt.Errorf("record fleet type %s: %w", opType, err)
+		if _, err := meta.Create(ctx, contract.MetaLogType(contract.FleetLog, name), value); err != nil && !errors.Is(err, jetstream.ErrKeyExists) {
+			return nil, nil, fmt.Errorf("record fleet type %s: %w", name, err)
 		}
+	}
+
+	// The fleet log's state index is declared like any log's (0023):
+	// born with the log, materialized by this service into STATE_FLEET.
+	stateDecl, err := json.Marshal(contract.IndexDeclaration{Kind: contract.IndexKindState})
+	if err != nil {
+		return nil, nil, err
+	}
+	if _, err := meta.Create(ctx, contract.MetaIndex(contract.FleetLog, contract.StateIndexName), stateDecl); err != nil && !errors.Is(err, jetstream.ErrKeyExists) {
+		return nil, nil, fmt.Errorf("declare fleet state index: %w", err)
 	}
 
 	if _, err := js.CreateStream(ctx, contract.LogStreamConfig(contract.FleetLog, 0, "")); err != nil && !errors.Is(err, jetstream.ErrStreamNameAlreadyInUse) {
@@ -266,13 +298,11 @@ func (s *service) append(ctx context.Context, thing, opType string, payload []by
 // horizon reads the instance's fold: the thing's state and the sequence it
 // is folded to. Absent things return a zero horizon — birth's guard.
 func (s *service) horizon(thing string) (json.RawMessage, uint64) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.mem[thing]
+	state, seq, ok := s.pass.Snapshot(thing)
 	if !ok {
 		return nil, 0
 	}
-	return e.state, e.seq
+	return state, seq
 }
 
 // workloadState decodes one workload thing from the fold's memory.
