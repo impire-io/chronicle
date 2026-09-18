@@ -36,6 +36,16 @@ type Bootstrap struct {
 	ControlAccountPub string
 	ControlAccountJWT string
 	ControlCreds      []byte
+
+	// The AUTH account of decision 0026 — the callout bridge's trigger
+	// account (authbootstrap.go). SentinelCreds are public by design;
+	// the seeds are custody like every other.
+	AuthAccountPub  string
+	AuthAccountJWT  string
+	AuthAccountSeed []byte
+	AuthXKeySeed    []byte
+	BridgeCreds     []byte
+	SentinelCreds   []byte
 }
 
 // bootstrap file names inside the data dir. The two the CLI reads are
@@ -103,6 +113,9 @@ func loadBootstrap(dir string) (*Bootstrap, error) {
 	b.ControlAccountPub = string(ctrlPub)
 	b.ControlCreds = ctrlCreds
 	if err := b.ensureControlJetStream(); err != nil {
+		return nil, err
+	}
+	if err := b.ensureAuthAccount(); err != nil {
 		return nil, err
 	}
 	return b, nil
@@ -215,11 +228,11 @@ func initBootstrap(dir string) (*Bootstrap, error) {
 		return nil, fmt.Errorf("encode control account jwt: %w", err)
 	}
 
-	sysCreds, err := issueDirect(sakp, sapub, "sys")
+	sysCreds, _, err := issueDirect(sakp, sapub, "sys")
 	if err != nil {
 		return nil, fmt.Errorf("system user: %w", err)
 	}
-	ctrlCreds, err := issueDirect(cakp, capub, "control")
+	ctrlCreds, _, err := issueDirect(cakp, capub, "control")
 	if err != nil {
 		return nil, fmt.Errorf("control user: %w", err)
 	}
@@ -254,7 +267,7 @@ func initBootstrap(dir string) (*Bootstrap, error) {
 		}
 	}
 
-	return &Bootstrap{
+	b := &Bootstrap{
 		Dir:                 dir,
 		OperatorJWT:         operatorJWT,
 		OperatorSeed:        oSeed,
@@ -265,28 +278,34 @@ func initBootstrap(dir string) (*Bootstrap, error) {
 		ControlAccountPub:   capub,
 		ControlAccountJWT:   controlJWT,
 		ControlCreds:        ctrlCreds,
-	}, nil
+	}
+	if err := b.ensureAuthAccount(); err != nil {
+		return nil, err
+	}
+	return b, nil
 }
 
-// issueDirect mints a user signed by the account key itself — the two
-// bootstrap accounts need no signing-key ceremony.
-func issueDirect(akp nkeys.KeyPair, apub, name string) ([]byte, error) {
+// issueDirect mints a user signed by the account key itself — the
+// bootstrap accounts need no signing-key ceremony. The public key comes
+// back beside the creds: the AUTH account lists its bridge user by it.
+func issueDirect(akp nkeys.KeyPair, apub, name string) ([]byte, string, error) {
 	ukp, upub, err := newKey(nkeys.CreateUser)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	uc := jwt.NewUserClaims(upub)
 	uc.Name = name
 	token, err := uc.Encode(akp)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	seed, err := ukp.Seed()
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	_ = apub
-	return jwt.FormatUserConfig(token, seed)
+	creds, err := jwt.FormatUserConfig(token, seed)
+	return creds, upub, err
 }
 
 func newKey(create func() (nkeys.KeyPair, error)) (nkeys.KeyPair, string, error) {
@@ -318,6 +337,9 @@ func (b *Bootstrap) ServerOptions(port int) (*server.Options, error) {
 	}
 	if err := res.Store(b.ControlAccountPub, b.ControlAccountJWT); err != nil {
 		return nil, fmt.Errorf("preload control account: %w", err)
+	}
+	if err := res.Store(b.AuthAccountPub, b.AuthAccountJWT); err != nil {
+		return nil, fmt.Errorf("preload auth account: %w", err)
 	}
 	return &server.Options{
 		Host:             "127.0.0.1",

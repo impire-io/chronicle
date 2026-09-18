@@ -213,6 +213,10 @@ type Principal struct {
 type Membership struct {
 	PublicKey string `json:"public_key"`
 	Role      string `json:"role"`
+	// GithubID binds the membership to a GitHub identity for the browser
+	// bridge (decision 0026) — the numeric user ID, because handles are
+	// mutable. Zero means unbound; the bridge refuses unbound principals.
+	GithubID int64 `json:"github_id,omitempty"`
 }
 
 // The roles to start (onboarding design § identity).

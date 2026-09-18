@@ -69,6 +69,7 @@ func (b *Bootstrap) preloadAccounts() []preloadEntry {
 	return []preloadEntry{
 		{pub: b.SystemAccountPub, jwt: b.SystemAccountJWT},
 		{pub: b.ControlAccountPub, jwt: b.ControlAccountJWT},
+		{pub: b.AuthAccountPub, jwt: b.AuthAccountJWT},
 	}
 }
 

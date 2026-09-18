@@ -234,6 +234,10 @@ func MemberBaseline() jwt.UserPermissionLimits {
 		Permissions: jwt.Permissions{
 			Pub: jwt.Permission{Allow: jwt.StringList{
 				contract.Root + ".>",
+				// Whoami: a member may ask the server who it is — the
+				// bridge dial reads its principal from the answer, and
+				// the reply names only the caller's own identity.
+				"$SYS.REQ.USER.INFO",
 				// The read side of the JetStream API: consumers for replay
 				// and watch, stream and bucket handles, message gets.
 				"$JS.API.CONSUMER.>",

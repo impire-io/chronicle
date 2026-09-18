@@ -188,6 +188,9 @@ type MemberAddRequest struct {
 	Principal string `json:"principal"`
 	// Role is one of admin, writer, reader; "writer" when empty.
 	Role string `json:"role,omitempty"`
+	// GithubID optionally binds the membership to a GitHub identity for
+	// the browser bridge (decision 0026) — the numeric user ID.
+	GithubID int64 `json:"github_id,omitempty"`
 }
 
 // MemberAddResponse hands back the new member's .creds — the only copy;
@@ -388,11 +391,12 @@ func (c *Control) MintTenant(ctx context.Context, name, admin string) (TenantMin
 
 // AddMember mints a principal into an existing tenant and returns the only
 // copy of their credentials.
-func (c *Control) AddMember(ctx context.Context, tenant, principal, role string) (MemberAddResponse, error) {
+func (c *Control) AddMember(ctx context.Context, tenant, principal, role string, githubID int64) (MemberAddResponse, error) {
 	return request[MemberAddRequest, MemberAddResponse](ctx, c.nc, MemberAddSubject, MemberAddRequest{
 		Tenant:    tenant,
 		Principal: principal,
 		Role:      role,
+		GithubID:  githubID,
 	})
 }
 

@@ -95,6 +95,8 @@ func Run(ctx context.Context, args []string, out io.Writer) error {
 		return state(ctx, args[1:], out)
 	case "replay":
 		return replay(ctx, args[1:], out)
+	case "login":
+		return login(ctx, args[1:], out)
 	case "version":
 		fmt.Fprintln(out, version.Version)
 		return nil
@@ -114,6 +116,8 @@ func usage(out io.Writer) error {
   chronicle operator rotate-signing-key [--dir D]       rotate the trust root (fleet stopped)
   chronicle operator emit-cluster-config --node <name>=<host>[:cp[:kp]] ... [--dir D] [--out P]
                                                         render the cluster's server configs
+  chronicle login [--bridge F]                          log in with GitHub (device flow)
+      every client verb below also takes --bridge F --tenant T instead of --creds
   chronicle log create <log> --creds F [--url U] [--desc S] [--history H]
   chronicle type define <log> <type> --creds F --def JSON | --file F
   chronicle type inspect <log> <type> --creds F
@@ -152,24 +156,39 @@ func parseArgs(fs *flag.FlagSet, args []string) ([]string, error) {
 	}
 }
 
-// connectFlags are the flags every tenant-side verb shares.
+// connectFlags are the flags every tenant-side verb shares. A verb dials
+// with --creds (possession is authentication) or through the browser
+// bridge with --bridge + --tenant (decision 0026) — never both.
 type connectFlags struct {
-	url   *string
-	creds *string
-	dir   *string
+	url    *string
+	creds  *string
+	dir    *string
+	bridge *string
+	tenant *string
 }
 
 func addConnectFlags(fs *flag.FlagSet) connectFlags {
 	return connectFlags{
-		url:   fs.String("url", "", "NATS url (default: the --dir fleet's recorded url)"),
-		creds: fs.String("creds", "", "credentials file (required)"),
-		dir:   fs.String("dir", devdir.Default(), "local fleet data dir, used when --url is not given"),
+		url:    fs.String("url", "", "NATS url (default: the --dir fleet's recorded url)"),
+		creds:  fs.String("creds", "", "credentials file"),
+		dir:    fs.String("dir", devdir.Default(), "local fleet data dir, used when --url is not given"),
+		bridge: fs.String("bridge", "", "bridge profile from the install; dial via GitHub login (see: chronicle login)"),
+		tenant: fs.String("tenant", "", "target tenant for a --bridge dial"),
 	}
 }
 
 func (cf connectFlags) dial() (*client.Client, error) {
+	if *cf.bridge != "" {
+		if *cf.creds != "" {
+			return nil, fmt.Errorf("--creds and --bridge are two ways to be someone; pick one")
+		}
+		if *cf.tenant == "" {
+			return nil, fmt.Errorf("--bridge needs --tenant")
+		}
+		return bridgeDial(*cf.bridge, *cf.tenant)
+	}
 	if *cf.creds == "" {
-		return nil, fmt.Errorf("--creds is required")
+		return nil, fmt.Errorf("--creds is required (or --bridge with --tenant)")
 	}
 	url := *cf.url
 	if url == "" {
@@ -238,6 +257,7 @@ func memberAdd(ctx context.Context, args []string, out io.Writer) error {
 	fs.SetOutput(out)
 	dir := fs.String("dir", devdir.Default(), "local fleet data dir")
 	role := fs.String("role", contract.RoleWriter, "membership role: admin, writer, or reader")
+	githubID := fs.Int64("github-id", 0, "bind the membership to a GitHub identity (numeric user id) for the browser bridge")
 	outFile := fs.String("out", "", "where to write the member .creds (default <tenant>-<principal>.creds)")
 	pos, err := parseArgs(fs, args)
 	if err != nil {
@@ -253,7 +273,7 @@ func memberAdd(ctx context.Context, args []string, out io.Writer) error {
 	}
 	defer nc.Close()
 
-	resp, err := nc.AddMember(ctx, pos[0], pos[1], *role)
+	resp, err := nc.AddMember(ctx, pos[0], pos[1], *role, *githubID)
 	if err != nil {
 		return err
 	}

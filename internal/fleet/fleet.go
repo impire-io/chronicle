@@ -8,6 +8,7 @@ package fleet
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -26,6 +27,7 @@ import (
 	"github.com/impire-io/chronicle/internal/control"
 	"github.com/impire-io/chronicle/internal/devdir"
 	"github.com/impire-io/chronicle/internal/executor"
+	"github.com/impire-io/chronicle/internal/identity/github"
 	"github.com/impire-io/chronicle/internal/index/semantic"
 	"github.com/impire-io/chronicle/internal/mint"
 	"github.com/impire-io/chronicle/internal/version"
@@ -55,6 +57,9 @@ type Config struct {
 	// Embedding is the install's provider (0016) — nil means no provider
 	// and semantic declarations stay honestly unschedulable.
 	Embedding *semantic.ProviderConfig
+	// GithubClientID configures the browser identity bridge (decision
+	// 0026) — the install's GitHub App. Empty means no bridge.
+	GithubClientID string
 	// Logger; nil means slog.Default.
 	Logger *slog.Logger
 }
@@ -183,6 +188,29 @@ func Up(ctx context.Context, cfg Config) (*Fleet, error) {
 	}
 	f.ex = ex
 
+	var bridgeCfg *control.BridgeConfig
+	if cfg.GithubClientID != "" {
+		authConn, err := connect(b.BridgeCreds, "chronicle-bridge")
+		if err != nil {
+			f.Stop()
+			return nil, err
+		}
+		bridgeCfg = &control.BridgeConfig{
+			Conn:               authConn,
+			ResponseSignerSeed: b.AuthAccountSeed,
+			XKeySeed:           b.AuthXKeySeed,
+			Validator:          &github.Client{ClientID: cfg.GithubClientID},
+			Logger:             logger,
+		}
+		// The bridge profile is the hand-out that makes `chronicle login`
+		// possible — public material only (0026: the sentinel is public
+		// by design).
+		if err := writeBridgeProfile(cfg.Dir, f.URL, cfg.GithubClientID, b.SentinelCreds); err != nil {
+			f.Stop()
+			return nil, err
+		}
+	}
+
 	driver := &mint.JWTDriver{
 		OperatorSigningSeed: b.OperatorSigningSeed,
 		SysConn:             sysConn,
@@ -193,6 +221,7 @@ func Up(ctx context.Context, cfg Config) (*Fleet, error) {
 		Driver:      driver,
 		URL:         f.URL,
 		AccountsDir: b.AccountsDir(),
+		Bridge:      bridgeCfg,
 		OnTenant: func(name string, serviceCreds []byte) error {
 			// The tenant's node exists because the record says so; the
 			// executor pulls the creds itself — the record-verified pull.
@@ -300,6 +329,7 @@ func Run(ctx context.Context, args []string, out io.Writer) error {
 	port := fs.Int("port", 4222, "port for the bootstrap NATS server (-1 picks a free one)")
 	backend := fs.String("backend", BackendInProcess, "the embedded executor's backend: inprocess or microsandbox")
 	workloadBinary := fs.String("workload-binary", "", "linux chronicle-workload (host arch) for the microsandbox backend")
+	githubClientID := fs.String("github-client-id", "", "GitHub App client id — enables the browser identity bridge (0026)")
 	embedURL := fs.String("embedding-url", "", "OpenAI-compatible embedding endpoint for the semantic kind (key via CHRONICLE_EMBEDDING_API_KEY)")
 	embedModel := fs.String("embedding-model", "", "default embedding model for the semantic kind")
 	if err := fs.Parse(args); err != nil {
@@ -310,7 +340,7 @@ func Run(ctx context.Context, args []string, out io.Writer) error {
 		embedding = &semantic.ProviderConfig{BaseURL: *embedURL, Model: *embedModel, APIKey: os.Getenv("CHRONICLE_EMBEDDING_API_KEY")}
 	}
 
-	f, err := Up(ctx, Config{Dir: *dir, Port: *port, Backend: *backend, WorkloadBinary: *workloadBinary, Embedding: embedding})
+	f, err := Up(ctx, Config{Dir: *dir, Port: *port, Backend: *backend, WorkloadBinary: *workloadBinary, Embedding: embedding, GithubClientID: *githubClientID})
 	if err != nil {
 		return err
 	}
@@ -412,5 +442,21 @@ func EmitClusterConfig(args []string, out io.Writer) error {
 	}
 	fmt.Fprintln(out, "copy each config to its host and run: nats-server -c <name>.conf")
 	fmt.Fprintln(out, "the configs carry no seeds; the bootstrap dir stays the custody")
+	return nil
+}
+
+func writeBridgeProfile(dir, url, clientID string, sentinel []byte) error {
+	if dir == "" {
+		dir = devdir.Default()
+	}
+	p := contract.BridgeProfile{URL: url, GithubClientID: clientID, Sentinel: string(sentinel)}
+	data, err := json.MarshalIndent(p, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode bridge profile: %w", err)
+	}
+	path := filepath.Join(dir, "bridge.json")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return fmt.Errorf("write bridge profile: %w", err)
+	}
 	return nil
 }

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/nats-io/nats.go/jetstream"
 
@@ -40,4 +41,36 @@ func RequireRole(ctx context.Context, meta jetstream.KeyValue, principal string,
 		return fmt.Errorf("principal %q holds role %q; one of %v required", principal, m.Role, roles)
 	}
 	return nil
+}
+
+// LookupByGithubID finds the one membership bound to a GitHub identity —
+// the browser bridge's question (decision 0026). The registry is small by
+// construction (one entry per member), so a scan is the honest index.
+func LookupByGithubID(ctx context.Context, meta jetstream.KeyValue, githubID int64) (string, contract.Membership, error) {
+	if githubID == 0 {
+		return "", contract.Membership{}, errors.New("github id: must not be zero")
+	}
+	lister, err := meta.ListKeys(ctx)
+	if err != nil {
+		return "", contract.Membership{}, fmt.Errorf("list registry keys: %w", err)
+	}
+	defer func() { _ = lister.Stop() }()
+	const prefix = "identity.member."
+	for key := range lister.Keys() {
+		if !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		entry, err := meta.Get(ctx, key)
+		if err != nil {
+			return "", contract.Membership{}, fmt.Errorf("read %s: %w", key, err)
+		}
+		var m contract.Membership
+		if err := json.Unmarshal(entry.Value(), &m); err != nil {
+			return "", contract.Membership{}, fmt.Errorf("decode %s: %w", key, err)
+		}
+		if m.GithubID == githubID {
+			return strings.TrimPrefix(key, prefix), m, nil
+		}
+	}
+	return "", contract.Membership{}, fmt.Errorf("no membership bound to github id %d", githubID)
 }
