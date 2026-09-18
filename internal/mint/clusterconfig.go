@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// The hosted environment's server half (02-DESIGN/07-hosted-environment.md
+// The hosted environment's server half (02-DESIGN/09-hosted-environment.md
 // § the substrate): the bootstrap material rendered as self-contained
 // nats-server configs for an external cluster. The emit is pure rendering —
 // no network, no writes outside the caller's hands, no seeds in the output;

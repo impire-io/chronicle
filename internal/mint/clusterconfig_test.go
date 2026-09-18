@@ -120,7 +120,7 @@ func freePorts(t *testing.T, n int) []int {
 // The spec's could-not-succeed-if-broken read: boot three real servers from
 // the emitted files, mint an account through the driver against one node,
 // and prove the driver's own verify-by-connecting plus a service user land
-// on the *other* nodes. This is design 07's verified mechanism as a
+// on the *other* nodes. This is design 09's verified mechanism as a
 // regression test.
 func TestEmittedConfigsFormAClusterThatMintsEverywhere(t *testing.T) {
 	b := testBootstrap(t)
