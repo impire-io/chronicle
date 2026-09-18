@@ -38,9 +38,8 @@ type passState struct {
 	seq uint64
 	// stateSeq is the last op that moved state — what Snapshot reports,
 	// the fleet's knowledge horizon.
-	stateSeq    uint64
-	state       json.RawMessage
-	sawSnapshot bool
+	stateSeq uint64
+	state    json.RawMessage
 }
 
 // Fold applies one op. Ordered consumers redeliver on gaps, so Fold is
@@ -89,7 +88,7 @@ func (p *Pass) Fold(ctx context.Context, thing string, op contract.Op) {
 				return
 			}
 		}
-		p.commit(ctx, thing, st, op.Seq, snap.State, true)
+		p.commit(ctx, thing, st, op.Seq, snap.State)
 		return
 	}
 
@@ -103,18 +102,17 @@ func (p *Pass) Fold(ctx context.Context, thing string, op contract.Op) {
 	switch decision {
 	case Merge:
 		p.mu.Lock()
-		saw, cur := st.sawSnapshot, st.state
+		cur := st.state
 		p.mu.Unlock()
-		if !saw {
-			p.Warn("op before any snapshot takes no effect", "thing", thing, "op", op.ID)
-			return
-		}
+		// A declared merge applies onto current state — empty when the
+		// subject has none: create is an operation, and merge onto
+		// nothing is birth (0025 § 3).
 		merged, err := contract.MergePatch(cur, op.Payload)
 		if err != nil {
 			p.Warn("merge failed; marked", "thing", thing, "op", op.ID, "err", err)
 			return
 		}
-		p.commit(ctx, thing, st, op.Seq, merged, true)
+		p.commit(ctx, thing, st, op.Seq, merged)
 	case None:
 		// The op lives in history; state is not its home.
 	case UnknownType:
@@ -129,13 +127,10 @@ func (p *Pass) Fold(ctx context.Context, thing string, op contract.Op) {
 }
 
 // commit stores the moved state and hands it to the sink.
-func (p *Pass) commit(ctx context.Context, thing string, st *passState, seq uint64, state json.RawMessage, snap bool) {
+func (p *Pass) commit(ctx context.Context, thing string, st *passState, seq uint64, state json.RawMessage) {
 	p.mu.Lock()
 	st.state = state
 	st.stateSeq = seq
-	if snap {
-		st.sawSnapshot = true
-	}
 	p.mu.Unlock()
 	if p.Sink != nil {
 		p.Sink(ctx, thing, seq, state)
@@ -151,7 +146,7 @@ func (p *Pass) Seed(thing string, seq uint64, state json.RawMessage) {
 	if p.states == nil {
 		p.states = map[string]*passState{}
 	}
-	p.states[thing] = &passState{seq: seq, stateSeq: seq, state: state, sawSnapshot: true}
+	p.states[thing] = &passState{seq: seq, stateSeq: seq, state: state}
 }
 
 // Snapshot reads one thing's folded state and the seq of the last op

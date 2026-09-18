@@ -148,14 +148,15 @@ func TestMergeEffect(t *testing.T) {
 	catcher.wait(t, "marked invalid payload")
 	stateStaysAt(ctx, t, alice, "orders", "invoice.invoice-1", lastSeq)
 
-	// A merge op on a subject with no snapshot yet takes no effect: the
-	// log is malformed for state until one appears.
-	if _, err := alice.Append(ctx, "orders", "invoice.unborn-1", "status.set", []byte(`{"status":"x"}`)); err != nil {
+	// A declared merge on a subject with no snapshot is a birth: create
+	// is an operation, and merge onto nothing births the thing (0025 § 3).
+	born, err := alice.Append(ctx, "orders", "invoice.unborn-1", "status.set", []byte(`{"status":"x"}`))
+	if err != nil {
 		t.Fatalf("append to unborn: %v", err)
 	}
-	catcher.wait(t, "op before any snapshot takes no effect")
-	if _, err := alice.State(ctx, "orders", "invoice.unborn-1"); !errors.Is(err, client.ErrNoState) {
-		t.Fatalf("unborn thing grew state: %v", err)
+	sv = waitStateAt(ctx, t, alice, "orders", "invoice.unborn-1", born.Seq)
+	if err := json.Unmarshal(sv.State, &state); err != nil || state["status"] != "x" {
+		t.Fatalf("constructor birth state: %s", sv.State)
 	}
 }
 
