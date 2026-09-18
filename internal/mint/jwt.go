@@ -16,6 +16,12 @@ import (
 // claimsUpdateSubject is the full resolver's runtime account-creation door.
 const claimsUpdateSubject = "$SYS.REQ.CLAIMS.UPDATE"
 
+// accountLookupSubject is the read half of the same door: the resolver
+// answers with the account's current JWT. Mutations must start from it —
+// chronicle keeps no copy of the account JWT, and rebuilding claims from
+// the mint template would silently drop everything added since.
+const accountLookupSubject = "$SYS.REQ.ACCOUNT.%s.CLAIMS.LOOKUP"
+
 // JWTDriver mints accounts on a self-hosted operator-mode NATS install:
 // chronicle's signing key trusted in the operator JWT, full resolver,
 // system-account credentials (onboarding design § setup).
@@ -78,12 +84,7 @@ func (d *JWTDriver) MintAccount(ctx context.Context, name string) (*Account, err
 	}
 	ac.Limits.JetStreamLimits = limits
 	ac.SigningKeys.Add(signingPub)
-	scope := jwt.NewUserScope()
-	scope.Key = scopedPub
-	scope.Role = "member"
-	scope.Description = "the member baseline: granted once, at account creation"
-	scope.Template = MemberBaseline()
-	ac.SigningKeys.AddScopedSigner(scope)
+	ac.SigningKeys.AddScopedSigner(memberScope(scopedPub))
 	if d.ControlAccountPub != "" {
 		// The bridge import: the tenant publishes the local subject, the
 		// server maps it to the stamped form — unforgeable, because this
@@ -97,17 +98,8 @@ func (d *JWTDriver) MintAccount(ctx context.Context, name string) (*Account, err
 		})
 	}
 
-	oskp, err := nkeys.FromSeed(d.OperatorSigningSeed)
-	if err != nil {
-		return nil, fmt.Errorf("operator signing seed: %w", err)
-	}
-	token, err := ac.Encode(oskp)
-	if err != nil {
-		return nil, fmt.Errorf("encode account jwt: %w", err)
-	}
-
-	if err := d.push(ctx, token); err != nil {
-		return nil, fmt.Errorf("push account %s: %w", name, err)
+	if err := d.resign(ctx, ac); err != nil {
+		return nil, err
 	}
 
 	signingSeed, err := signingKP.Seed()
@@ -137,6 +129,80 @@ func (d *JWTDriver) MintAccount(ctx context.Context, name string) (*Account, err
 	}
 	nc.Close()
 	return acct, nil
+}
+
+// memberScope is the scoped signer both mint and rotation install: one
+// construction, so the member baseline cannot drift between the two.
+func memberScope(scopedPub string) *jwt.UserScope {
+	scope := jwt.NewUserScope()
+	scope.Key = scopedPub
+	scope.Role = "member"
+	scope.Description = "the member baseline: granted once, at account creation"
+	scope.Template = MemberBaseline()
+	return scope
+}
+
+// RevokeUser adds the user to the account's revocation list and re-pushes:
+// new connections are refused and live ones are actively closed. The
+// registry entry is the caller's to retire — the wire dies here.
+func (d *JWTDriver) RevokeUser(ctx context.Context, accountPub, userPub string) error {
+	ac, err := d.lookupAccountClaims(ctx, accountPub)
+	if err != nil {
+		return err
+	}
+	ac.Revoke(userPub)
+	return d.resign(ctx, ac)
+}
+
+// RotateScopedSigner swaps the member-issuing scoped key: every scoped
+// signer is dropped and newScopedPub takes their place in one push, so
+// eviction of the old key's users and acceptance of the new key's flip
+// together. The plain signing key — the service user's issuer — survives.
+func (d *JWTDriver) RotateScopedSigner(ctx context.Context, accountPub, newScopedPub string) error {
+	ac, err := d.lookupAccountClaims(ctx, accountPub)
+	if err != nil {
+		return err
+	}
+	for pub, scope := range ac.SigningKeys {
+		if scope != nil {
+			ac.SigningKeys.Remove(pub)
+		}
+	}
+	ac.SigningKeys.AddScopedSigner(memberScope(newScopedPub))
+	return d.resign(ctx, ac)
+}
+
+// lookupAccountClaims reads the account's current JWT from the resolver.
+// The reply is the raw JWT — an empty payload means the resolver does not
+// know the account (a different shape than the update door's JSON).
+func (d *JWTDriver) lookupAccountClaims(ctx context.Context, accountPub string) (*jwt.AccountClaims, error) {
+	msg, err := d.SysConn.RequestWithContext(ctx, fmt.Sprintf(accountLookupSubject, accountPub), nil)
+	if err != nil {
+		return nil, fmt.Errorf("claims lookup: %w", err)
+	}
+	if len(msg.Data) == 0 {
+		return nil, fmt.Errorf("claims lookup: account %s not known to the resolver", accountPub)
+	}
+	ac, err := jwt.DecodeAccountClaims(string(msg.Data))
+	if err != nil {
+		return nil, fmt.Errorf("decode account claims: %w", err)
+	}
+	return ac, nil
+}
+
+func (d *JWTDriver) resign(ctx context.Context, ac *jwt.AccountClaims) error {
+	oskp, err := nkeys.FromSeed(d.OperatorSigningSeed)
+	if err != nil {
+		return fmt.Errorf("operator signing seed: %w", err)
+	}
+	token, err := ac.Encode(oskp)
+	if err != nil {
+		return fmt.Errorf("re-encode account jwt: %w", err)
+	}
+	if err := d.push(ctx, token); err != nil {
+		return fmt.Errorf("push account %s: %w", ac.Name, err)
+	}
+	return nil
 }
 
 func (d *JWTDriver) push(ctx context.Context, accountJWT string) error {

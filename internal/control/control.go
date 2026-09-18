@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sync"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -30,6 +31,12 @@ import (
 // tenantName rules match log names: lowercase tokens; the name becomes the
 // account name and a directory.
 var tenantName = regexp.MustCompile(`^[a-z0-9-]+$`)
+
+// principalName holds the same line for principal IDs: the ID becomes a
+// registry key segment (identity.member.<id> must stay one KV token) and a
+// default .creds filename — KV itself would accept dots and slashes, and
+// both would leak structure into places that trust the shape.
+var principalName = regexp.MustCompile(`^[a-z0-9-]+$`)
 
 // Config wires one control service.
 type Config struct {
@@ -83,6 +90,21 @@ func Start(nc *nats.Conn, cfg Config) (micro.Service, error) {
 		_ = svc.Stop()
 		return nil, fmt.Errorf("add fleet-creds endpoint: %w", err)
 	}
+	memberEndpoints := []struct {
+		name    string
+		subject string
+		handler micro.HandlerFunc
+	}{
+		{"member-add", client.MemberAddSubject, c.handleMemberAdd},
+		{"member-revoke", client.MemberRevokeSubject, c.handleMemberRevoke},
+		{"member-rekey", client.MemberRekeySubject, c.handleMemberRekey},
+	}
+	for _, e := range memberEndpoints {
+		if err := svc.AddEndpoint(e.name, e.handler, micro.WithEndpointSubject(e.subject)); err != nil {
+			_ = svc.Stop()
+			return nil, fmt.Errorf("add %s endpoint: %w", e.name, err)
+		}
+	}
 	if err := nc.FlushTimeout(5 * time.Second); err != nil {
 		_ = svc.Stop()
 		return nil, fmt.Errorf("flush endpoint subscriptions: %w", err)
@@ -121,6 +143,11 @@ type control struct {
 	// js is the control account's JetStream view — the fleet log and
 	// STATE_FLEET live there, and the creds pull verifies against them.
 	js jetstream.JetStream
+	// claimsMu serializes account-claims mutations: revoke and rekey each
+	// read-modify-write the account JWT through the driver, and the micro
+	// endpoints run concurrently — an unguarded interleave loses one
+	// side's edit.
+	claimsMu sync.Mutex
 }
 
 func (c *control) handleMint(req micro.Request) {
@@ -139,6 +166,10 @@ func (c *control) handleMint(req micro.Request) {
 	admin := r.Admin
 	if admin == "" {
 		admin = "admin"
+	}
+	if !principalName.MatchString(admin) {
+		_ = req.Error("bad-principal-name", fmt.Sprintf("principal %q: must match [a-z0-9-]+", admin), nil)
+		return
 	}
 
 	dir := filepath.Join(c.cfg.AccountsDir, r.Name)
