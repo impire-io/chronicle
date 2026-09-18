@@ -125,7 +125,7 @@ func (c *control) handleMemberAdd(req micro.Request) {
 		return
 	}
 
-	resp, err := c.addMember(ctx, tm, r.Tenant, r.Principal, role)
+	resp, err := c.addMember(ctx, tm, r.Tenant, r.Principal, role, r.GithubID)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrKeyExists) {
 			_ = req.Error("member-exists", fmt.Sprintf("principal %q is already a member of %q", r.Principal, r.Tenant), nil)
@@ -138,7 +138,7 @@ func (c *control) handleMemberAdd(req micro.Request) {
 	respond(req, resp)
 }
 
-func (c *control) addMember(ctx context.Context, tm tenantMaterial, tenant, principal, role string) (client.MemberAddResponse, error) {
+func (c *control) addMember(ctx context.Context, tm tenantMaterial, tenant, principal, role string, githubID int64) (client.MemberAddResponse, error) {
 	var zero client.MemberAddResponse
 	acct := &mint.Account{Name: tenant, PublicKey: tm.accountPub, ScopedSeed: tm.scopedSeed}
 	creds, err := mint.IssueMember(acct, principal)
@@ -171,7 +171,7 @@ func (c *control) addMember(ctx context.Context, tm tenantMaterial, tenant, prin
 	if _, err := meta.Create(ctx, contract.MetaPrincipal(principal), principalRec); err != nil && !errors.Is(err, jetstream.ErrKeyExists) {
 		return zero, fmt.Errorf("record principal: %w", err)
 	}
-	membership, err := json.Marshal(contract.Membership{PublicKey: creds.PublicKey, Role: role})
+	membership, err := json.Marshal(contract.Membership{PublicKey: creds.PublicKey, Role: role, GithubID: githubID})
 	if err != nil {
 		return zero, err
 	}

@@ -7,8 +7,8 @@ per decision
 [`0026`](../../../chronicle-hq/03-DECISIONS/0026-browser-identity-is-a-callout-bridge-github-first.md)
 (extends 0007; the verified callout facts are research 001 § 4, the
 wildcard check research 006).
-**Status:** spec drafted; implementation follows on this branch
-([plan.md](plan.md)).
+**Status:** implemented on this branch ([plan.md](plan.md)) — awaiting
+review and merge.
 
 ## What this delivers
 
@@ -59,9 +59,12 @@ bridge.
   that does not exist is a refusal, and no registry write ever happens
   on the callout path.
 - **The bridge is additive.** No change to `Op-Author` semantics, to
-  the member baseline, to `.creds` issuance, or to any existing verb's
-  wire shape. `MEMBER.ADD`'s new field is optional and absent means
-  today's behavior.
+  `.creds` issuance, or to any existing verb's wire shape. `MEMBER.ADD`'s
+  new field is optional and absent means today's behavior. One deliberate
+  baseline extension, stated: members gain pub-allow on
+  `$SYS.REQ.USER.INFO` (whoami — the reply names only the caller's own
+  identity; the bridge dial reads its principal from it). New mints carry
+  it; existing tenants gain it at their next rekey.
 - **Custody does not move.** The bridge issuer and xkey seeds live in
   the bootstrap dir with everything else; signing stays in control.
 - **Failure prices as designed**: GitHub down or control down blocks

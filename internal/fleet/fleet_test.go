@@ -514,7 +514,7 @@ func TestMemberLifecycle(t *testing.T) {
 
 	// A second principal joins the running tenant — the verb that did not
 	// exist when the only options were re-mint or destroy.
-	added, err := ctrl.AddMember(ctx, "acme", "erin", "")
+	added, err := ctrl.AddMember(ctx, "acme", "erin", "", 0)
 	if err != nil {
 		t.Fatalf("add member: %v", err)
 	}
@@ -540,13 +540,13 @@ func TestMemberLifecycle(t *testing.T) {
 	// The add refuses what it must: a duplicate, a made-up role, a tenant
 	// that does not exist.
 	var serr *client.ServiceError
-	if _, err := ctrl.AddMember(ctx, "acme", "erin", ""); !errors.As(err, &serr) || serr.Code != "member-exists" {
+	if _, err := ctrl.AddMember(ctx, "acme", "erin", "", 0); !errors.As(err, &serr) || serr.Code != "member-exists" {
 		t.Fatalf("duplicate add: %v", err)
 	}
-	if _, err := ctrl.AddMember(ctx, "acme", "frank", "sudo"); !errors.As(err, &serr) || serr.Code != "bad-role" {
+	if _, err := ctrl.AddMember(ctx, "acme", "frank", "sudo", 0); !errors.As(err, &serr) || serr.Code != "bad-role" {
 		t.Fatalf("bad role: %v", err)
 	}
-	if _, err := ctrl.AddMember(ctx, "nosuch", "erin", ""); !errors.As(err, &serr) || serr.Code != "no-such-tenant" {
+	if _, err := ctrl.AddMember(ctx, "nosuch", "erin", "", 0); !errors.As(err, &serr) || serr.Code != "no-such-tenant" {
 		t.Fatalf("no such tenant: %v", err)
 	}
 
@@ -573,7 +573,7 @@ func TestMemberLifecycle(t *testing.T) {
 
 	// Re-adding the same principal works — the registry entry is gone, the
 	// durable identity remains, the new user key is fresh.
-	readded, err := ctrl.AddMember(ctx, "acme", "erin", contract.RoleReader)
+	readded, err := ctrl.AddMember(ctx, "acme", "erin", contract.RoleReader, 0)
 	if err != nil {
 		t.Fatalf("re-add after revoke: %v", err)
 	}

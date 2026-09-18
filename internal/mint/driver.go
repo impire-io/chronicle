@@ -8,6 +8,7 @@ package mint
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nkeys"
@@ -106,4 +107,29 @@ func issueUser(accountPub string, issuerSeed []byte, name string, scoped bool) (
 		return Creds{}, fmt.Errorf("format creds: %w", err)
 	}
 	return Creds{PublicKey: upub, File: file}, nil
+}
+
+// IssueBridgeUser signs a callout placement (decision 0026): the
+// server-generated user nkey placed into the tenant under the
+// member-baseline scoped key, the principal ID as its name so every
+// connection says who it is, expiring — the bridge's users expire instead
+// of being revoked, and the TTL is the revocation bound. Only the JWT
+// travels; the server holds the key.
+func IssueBridgeUser(accountPub string, scopedSeed []byte, principalID, userNkey string, ttl time.Duration) (string, error) {
+	uc := jwt.NewUserClaims(userNkey)
+	uc.Name = principalID
+	uc.IssuerAccount = accountPub
+	// Scoped-key users must be permission-empty; the scope's template
+	// replaces, never merges.
+	uc.UserPermissionLimits = jwt.UserPermissionLimits{}
+	uc.Expires = time.Now().Add(ttl).Unix()
+	ikp, err := nkeys.FromSeed(scopedSeed)
+	if err != nil {
+		return "", fmt.Errorf("scoped seed: %w", err)
+	}
+	token, err := uc.Encode(ikp)
+	if err != nil {
+		return "", fmt.Errorf("encode bridge user jwt: %w", err)
+	}
+	return token, nil
 }

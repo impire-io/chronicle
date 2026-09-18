@@ -55,6 +55,10 @@ type Config struct {
 	// run a node for it. The error fails the mint: a tenant without a node
 	// would answer no verbs.
 	OnTenant func(name string, serviceCreds []byte) error
+	// Bridge, when set, serves the browser identity bridge (decision
+	// 0026) beside the control endpoints. Nil means no bridge — an
+	// install without a GitHub App simply has none.
+	Bridge *BridgeConfig
 	// Logger; nil means slog.Default.
 	Logger *slog.Logger
 }
@@ -108,6 +112,16 @@ func Start(nc *nats.Conn, cfg Config) (micro.Service, error) {
 	if err := nc.FlushTimeout(5 * time.Second); err != nil {
 		_ = svc.Stop()
 		return nil, fmt.Errorf("flush endpoint subscriptions: %w", err)
+	}
+	if cfg.Bridge != nil {
+		bcfg := *cfg.Bridge
+		if bcfg.Logger == nil {
+			bcfg.Logger = cfg.Logger
+		}
+		if err := c.startBridge(bcfg); err != nil {
+			_ = svc.Stop()
+			return nil, err
+		}
 	}
 
 	// The restart replay runs with the endpoints already serving: placing a

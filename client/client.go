@@ -6,6 +6,7 @@
 package client
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"sync"
@@ -131,4 +132,89 @@ func (c *Client) subjectLock(subject string) *sync.Mutex {
 		c.inFlight[subject] = l
 	}
 	return l
+}
+
+// ConnectBridge dials through the browser identity bridge (decision 0026):
+// the sentinel triggers the callout, the GitHub token rides the CONNECT,
+// and the server places the connection in the tenant. The principal comes
+// back from the server's own answer to who-am-I — the placed user JWT
+// names it, and Op-Author stamps from an identity the bridge actually
+// resolved.
+func ConnectBridge(url string, sentinel []byte, tenant, githubToken string) (*Client, error) {
+	if tenant == "" || githubToken == "" {
+		return nil, fmt.Errorf("bridge connect: tenant and token are required")
+	}
+	token, err := jwt.ParseDecoratedJWT(sentinel)
+	if err != nil {
+		return nil, fmt.Errorf("parse sentinel jwt: %w", err)
+	}
+	kp, err := jwt.ParseDecoratedUserNKey(sentinel)
+	if err != nil {
+		return nil, fmt.Errorf("parse sentinel nkey: %w", err)
+	}
+	nc, err := nats.Connect(url,
+		nats.Name("chronicle-bridge-client"),
+		nats.UserJWT(
+			func() (string, error) { return token, nil },
+			func(nonce []byte) ([]byte, error) { return kp.Sign(nonce) },
+		),
+		nats.Token(tenant+":"+githubToken),
+		nats.Timeout(5*time.Second),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("bridge connect: %w", err)
+	}
+	author, err := whoami(nc, tenant)
+	if err != nil {
+		nc.Close()
+		return nil, err
+	}
+	c, err := wrap(nc, author)
+	if err != nil {
+		nc.Close()
+		return nil, err
+	}
+	return c, nil
+}
+
+// whoami asks the server for the placed identity. For a callout-placed
+// client the server (2.14.x, pinned by the vendored dependency) reports
+// the placed principal in the info's `user` field — `user_name` keeps the
+// sentinel's tag from the original CONNECT — and the account name is the
+// tenant, which doubles as the placement cross-check.
+func whoami(nc *nats.Conn, tenant string) (string, error) {
+	msg, err := nc.Request("$SYS.REQ.USER.INFO", nil, 5*time.Second)
+	if err != nil {
+		return "", fmt.Errorf("whoami: %w", err)
+	}
+	var resp struct {
+		Data struct {
+			User        string `json:"user"`
+			AccountName string `json:"account_name"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(msg.Data, &resp); err != nil {
+		return "", fmt.Errorf("whoami: decode: %w", err)
+	}
+	if resp.Data.AccountName != tenant {
+		return "", fmt.Errorf("whoami: placed in account %q, expected tenant %q", resp.Data.AccountName, tenant)
+	}
+	if resp.Data.User == "" || looksLikeNkey(resp.Data.User) {
+		return "", fmt.Errorf("whoami: server reported no principal name (got %q) — server behavior changed?", resp.Data.User)
+	}
+	return resp.Data.User, nil
+}
+
+// looksLikeNkey spots a raw user public key where a principal name should
+// be — 56 base32 chars starting with U.
+func looksLikeNkey(s string) bool {
+	if len(s) != 56 || s[0] != 'U' {
+		return false
+	}
+	for _, r := range s {
+		if (r < 'A' || r > 'Z') && (r < '2' || r > '7') {
+			return false
+		}
+	}
+	return true
 }
