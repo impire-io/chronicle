@@ -52,49 +52,61 @@ foreground until interrupted.
 **3. Mint a tenant and work with it** — in another terminal:
 
 ```sh
-chronicle tenant create acme          # mints the account, writes acme-admin.creds
+chronicle tenant create acme          # mints the account, writes acme-admin.creds,
+                                      # saves and selects the acme-admin context
 ```
 
-The creds file is the tenant: every client verb authenticates with
-`--creds` and finds the fleet through the data dir (or an explicit
-`--url`). Then:
+The mint leaves you connected: a *context* (the connection and your
+working log) is saved and selected, so nothing after it needs flags.
+Explicit `--creds`/`--url`/`--log` always win when you want them. Then:
 
 ```sh
-chronicle log create orders --creds acme-admin.creds
-chronicle thing create orders invoice-1 --creds acme-admin.creds --state '{"total":3}'
-chronicle append orders invoice-1 comment.add --creds acme-admin.creds --payload '{"body":"hi"}'
-chronicle state orders invoice-1 --creds acme-admin.creds
-chronicle replay orders invoice-1 --creds acme-admin.creds
+chronicle log create orders           # creates and selects the working log
+chronicle type define invoice --def '{
+  "schema": {"type":"object"},
+  "operations": {
+    "create":      {"schema": {"type":"object"}, "effect": "merge"},
+    "comment.add": {"schema": {"type":"object","required":["body"]}},
+    "status.set":  {"schema": {"type":"object"}, "effect": "merge"}
+  }}'
+chronicle create invoice.invoice-1 --payload '{"total":3}'
+chronicle do invoice.invoice-1 comment.add --payload '{"body":"hi"}'
+chronicle get invoice.invoice-1
+chronicle history invoice.invoice-1
 ```
 
-A *log* is an append-only event stream; a *thing* is one entity in it.
-`append` writes an op, the node folds ops into state, `state` reads the
-fold, `replay` walks the history. Op types can carry a schema and a
-declared effect — appends failing the schema are refused before the wire,
-and fully merge-covered things compact:
+A *log* is an append-only event stream; a *type* is the vocabulary you
+define on it — the thing's shape, its operations (each with a schema and
+an effect), its aspects; a *thing* is one entity, its tail naming its
+type (`invoice.invoice-1`). Creating is invoking the type's `create`
+operation with the birth guard; `do` invokes any operation (payloads
+failing the schema are refused before the wire); the node folds ops into
+state; `get` reads the fold; `history` walks the ops. `chronicle type
+init` prints a definition skeleton to start from, `chronicle op
+define|list|inspect|rm` manage a type's operations one at a time, and
+fully merge-covered things compact:
 
 ```sh
-chronicle schema set orders comment.add --creds acme-admin.creds \
-  --schema '{"type":"object","required":["body"]}'
-chronicle schema set orders status.set --creds acme-admin.creds \
-  --schema '{"type":"object"}' --effect merge
-chronicle thing rollup orders invoice-1 --creds acme-admin.creds
+chronicle rollup invoice.invoice-1
 ```
 
 **4. Declare indexes.** An index is declared on a log and built by the
-fleet; search is the default kind:
+fleet; search is the default kind, and one `query` verb serves every
+kind — the index's declaration shapes the arguments:
 
 ```sh
-chronicle index declare orders text --creds acme-admin.creds
-chronicle index query orders text widgets --creds acme-admin.creds
+chronicle index declare text
+chronicle query text widgets
 ```
 
 The graph and semantic kinds are declared the same way with `--kind graph`
 or `--kind semantic` (each takes its `--config`; the designs in
 [`chronicle-hq/02-DESIGN/05-indexes.md`](../chronicle-hq/02-DESIGN/05-indexes.md)
-carry the shapes), and are queried with `chronicle graph
-neighbors|walk` and `chronicle semantic query`. Run `chronicle` with no
-arguments for the full verb list.
+carry the shapes) and queried through the same verb — text for semantic,
+`--from` (and `--depth` to walk) for graph. `chronicle log list`,
+`chronicle index list`, `chronicle type list`, and `chronicle things`
+say what exists. Run `chronicle` with no arguments for the full verb
+list, sectioned by plane.
 
 **Optional: the semantic kind.** Semantic indexes need an
 OpenAI-API-compatible `/embeddings` provider and stay unscheduled unless

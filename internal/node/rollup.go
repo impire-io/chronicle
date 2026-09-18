@@ -99,10 +99,10 @@ func (n *node) rollupThing(ctx context.Context, log, thing string) (rollupResult
 	}
 
 	var (
-		state       json.RawMessage
-		sawSnapshot bool
-		frontier    = []string{}
-		lastSeq     uint64
+		state    json.RawMessage
+		hasFloor bool
+		frontier = []string{}
+		lastSeq  uint64
 	)
 	for range pending {
 		msg, err := cons.Next(jetstream.FetchMaxWait(10 * time.Second))
@@ -119,20 +119,20 @@ func (n *node) rollupThing(ctx context.Context, log, thing string) (rollupResult
 			frontier = []string{op.ID}
 		}
 		if res.Kind == contract.ResolvedTyped {
-			captureTyped(res.Record, op, &state, &sawSnapshot)
-		} else if reason := captureUntyped(op, &state, &sawSnapshot); reason != "" {
+			captureTyped(res.Record, op, &state, &hasFloor)
+		} else if reason := captureUntyped(op, &state, &hasFloor); reason != "" {
 			return rollupResult{reason: reason}, nil
 		}
 	}
 	if pending == 1 {
-		// The history is one snapshot already: at birth shape, nothing
-		// for a rollup to destroy.
+		// The history is one op already — a snapshot or a constructor at
+		// birth shape: nothing for a rollup to destroy.
 		return rollupResult{reason: "nothing to compact"}, nil
 	}
-	if !sawSnapshot {
-		// Even absorption needs a floor: with no valid snapshot the fold
-		// derived nothing, and a rollup would replace history with a
-		// state that never existed.
+	if !hasFloor {
+		// Even absorption needs a floor: a valid snapshot, or (typed) a
+		// declared merge — without one the fold derived nothing, and a
+		// rollup would replace history with a state that never existed.
 		return rollupResult{reason: "no valid snapshot on the subject to fold from"}, nil
 	}
 
@@ -168,8 +168,10 @@ func (n *node) rollupThing(ctx context.Context, log, thing string) (rollupResult
 // per-op veto (0022 § 5): the type's declaration made this history
 // absorbable, so anything the fold would mark or skip is absorbed — the
 // rollup snapshot keeps exactly what folded state keeps. Ops whose
-// meaning must survive belong on a preserved aspect instead.
-func captureTyped(rec *contract.TypeRecord, op contract.Op, state *json.RawMessage, sawSnapshot *bool) {
+// meaning must survive belong on a preserved aspect instead. A declared
+// merge is a floor of its own — merge onto nothing is birth (0025 § 3) —
+// so a constructor-born thing compacts like any other.
+func captureTyped(rec *contract.TypeRecord, op contract.Op, state *json.RawMessage, hasFloor *bool) {
 	if op.Type == contract.OpTypeSnapshot {
 		snap, err := contract.ParseSnapshot(op.Payload)
 		if err != nil {
@@ -179,14 +181,15 @@ func captureTyped(rec *contract.TypeRecord, op contract.Op, state *json.RawMessa
 			return // marked; absorbed
 		}
 		*state = snap.State
-		*sawSnapshot = true
+		*hasFloor = true
 		return
 	}
-	if decision, _ := foldcore.JudgeRecord(rec, op); decision != foldcore.Merge || !*sawSnapshot {
-		return // none, unknown, marked, or pre-snapshot; absorbed
+	if decision, _ := foldcore.JudgeRecord(rec, op); decision != foldcore.Merge {
+		return // none, unknown, or marked; absorbed
 	}
 	if merged, err := contract.MergePatch(*state, op.Payload); err == nil {
 		*state = merged
+		*hasFloor = true
 	}
 }
 

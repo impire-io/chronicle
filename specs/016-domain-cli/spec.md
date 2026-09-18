@@ -4,7 +4,8 @@
 **Design:** `chronicle-hq` @ `3f461bb` (hq PR #11 — re-cite on merge) —
 [`03-DECISIONS/0025-the-cli-speaks-the-domain.md`](../../../chronicle-hq/03-DECISIONS/0025-the-cli-speaks-the-domain.md)
 and [`02-DESIGN/07-the-cli.md`](../../../chronicle-hq/02-DESIGN/07-the-cli.md).
-**Status:** in progress on this branch ([plan.md](plan.md)).
+**Status:** implemented on this branch ([plan.md](plan.md)) — awaiting
+review and merge.
 
 ## What this delivers
 

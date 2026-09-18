@@ -133,6 +133,69 @@ func (c *Client) CreateThing(ctx context.Context, log, thing string, state json.
 	return Ack{}, fmt.Errorf("birth %s: %w", subject, err)
 }
 
+// CreateWith births a thing through a declared operation (0025): the
+// constructor is an ordinary operation of the thing's type — the payload
+// judged by that operation's schema — published with the same
+// create-if-absent guard a snapshot birth carries. Birth is an invocation
+// mode, not a marker on the operation. A retried birth whose op already
+// landed reports success; a birth of a thing someone else created reports
+// ErrThingExists.
+func (c *Client) CreateWith(ctx context.Context, log, thing, opType string, payload []byte, opts ...AppendOpt) (Ack, error) {
+	if err := contract.ValidateLogName(log); err != nil {
+		return Ack{}, err
+	}
+	if err := contract.ValidateThing(thing); err != nil {
+		return Ack{}, err
+	}
+	if opType == "" {
+		return Ack{}, errors.New("op type: must not be empty")
+	}
+	if opType == contract.OpTypeSnapshot {
+		return Ack{}, errors.New("create with snapshot: CreateThing is the snapshot birth")
+	}
+	o := applyOpts(opts)
+	if o.expectedSeq != nil {
+		return Ack{}, errors.New("WithExpectedSeq: a birth guards at 0 by definition")
+	}
+	if payload == nil {
+		payload = []byte(`{}`)
+	}
+	if err := c.types.preflightAppend(ctx, log, thing, opType, payload); err != nil {
+		return Ack{}, err
+	}
+
+	subject := contract.OpsSubject(log, thing)
+	msg := nats.NewMsg(subject)
+	msg.Header = contract.Op{
+		ID:      o.opID,
+		Type:    opType,
+		Author:  c.author,
+		Parents: o.parents,
+		Ts:      time.Now(),
+	}.Header()
+	msg.Header.Set(contract.HdrExpectedLastSubjSeq, "0")
+	msg.Data = payload
+
+	lock := c.subjectLock(subject)
+	lock.Lock()
+	defer lock.Unlock()
+	ack, err := c.js.PublishMsg(ctx, msg)
+	if err == nil {
+		return Ack{OpID: o.opID, Seq: ack.Sequence}, nil
+	}
+	if guardRefused(err) {
+		landed, ok, lerr := c.ownOpLanded(ctx, log, subject, o.opID)
+		if lerr != nil {
+			return Ack{}, fmt.Errorf("birth refused and %w", errors.Join(lerr, err))
+		}
+		if ok {
+			return landed, nil
+		}
+		return Ack{}, fmt.Errorf("%w: %s in %s", ErrThingExists, thing, log)
+	}
+	return Ack{}, fmt.Errorf("birth %s: %w", subject, err)
+}
+
 // SaveVersion publishes an app-materialised snapshot that replaces the
 // thing's history in one write (pattern § 5.2) — the app-initiated rollup.
 // This is the application's call, so it may compact a history holding

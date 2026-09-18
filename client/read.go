@@ -169,3 +169,151 @@ func (c *Client) ListTypes(ctx context.Context, log string) ([]string, error) {
 	sort.Strings(names)
 	return names, nil
 }
+
+// ErrNoIndex is a declaration read for an index the log does not declare.
+var ErrNoIndex = errors.New("index is not declared")
+
+// ListLogs names the account's logs, sorted — a META read: the log
+// config records are the authoritative inventory (0019).
+func (c *Client) ListLogs(ctx context.Context) ([]string, error) {
+	kv, err := c.js.KeyValue(ctx, contract.MetaBucket)
+	if err != nil {
+		return nil, fmt.Errorf("open META: %w", err)
+	}
+	keys, err := kv.Keys(ctx)
+	if errors.Is(err, jetstream.ErrNoKeysFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("list META keys: %w", err)
+	}
+	var names []string
+	for _, k := range keys {
+		rest, ok := strings.CutPrefix(k, contract.MetaLogConfigPrefix)
+		if !ok {
+			continue
+		}
+		name, ok := strings.CutSuffix(rest, ".config")
+		// log names admit no dot, so log.<log>.type.<t> never matches.
+		if !ok || strings.Contains(name, ".") {
+			continue
+		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
+// IndexInfo is one declared index: its name beside its declaration.
+type IndexInfo struct {
+	Name   string
+	Kind   string
+	Config json.RawMessage
+}
+
+// ListIndexes reads the log's declared indexes from META, sorted — the
+// state index included (0023).
+func (c *Client) ListIndexes(ctx context.Context, log string) ([]IndexInfo, error) {
+	if err := contract.ValidateLogName(log); err != nil {
+		return nil, err
+	}
+	kv, err := c.js.KeyValue(ctx, contract.MetaBucket)
+	if err != nil {
+		return nil, fmt.Errorf("open META: %w", err)
+	}
+	keys, err := kv.Keys(ctx)
+	if errors.Is(err, jetstream.ErrNoKeysFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("list META keys: %w", err)
+	}
+	prefix := contract.MetaIndex(log, "")
+	var infos []IndexInfo
+	for _, k := range keys {
+		name, ok := strings.CutPrefix(k, prefix)
+		if !ok || strings.Contains(name, ".") {
+			continue
+		}
+		entry, err := kv.Get(ctx, k)
+		if err != nil {
+			return nil, fmt.Errorf("read index declaration %s: %w", name, err)
+		}
+		var decl contract.IndexDeclaration
+		if err := json.Unmarshal(entry.Value(), &decl); err != nil {
+			return nil, fmt.Errorf("decode index declaration %s: %w", name, err)
+		}
+		infos = append(infos, IndexInfo{Name: name, Kind: decl.Kind, Config: decl.Config})
+	}
+	sort.Slice(infos, func(i, j int) bool { return infos[i].Name < infos[j].Name })
+	return infos, nil
+}
+
+// GetIndexDeclaration reads one index's declaration — the kind is what
+// shapes a query (0025).
+func (c *Client) GetIndexDeclaration(ctx context.Context, log, index string) (contract.IndexDeclaration, error) {
+	if err := contract.ValidateLogName(log); err != nil {
+		return contract.IndexDeclaration{}, err
+	}
+	kv, err := c.js.KeyValue(ctx, contract.MetaBucket)
+	if err != nil {
+		return contract.IndexDeclaration{}, fmt.Errorf("open META: %w", err)
+	}
+	entry, err := kv.Get(ctx, contract.MetaIndex(log, index))
+	if errors.Is(err, jetstream.ErrKeyNotFound) {
+		return contract.IndexDeclaration{}, fmt.Errorf("%w: %s in %s", ErrNoIndex, index, log)
+	}
+	if err != nil {
+		return contract.IndexDeclaration{}, fmt.Errorf("read index declaration: %w", err)
+	}
+	var decl contract.IndexDeclaration
+	if err := json.Unmarshal(entry.Value(), &decl); err != nil {
+		return contract.IndexDeclaration{}, fmt.Errorf("decode index declaration: %w", err)
+	}
+	return decl, nil
+}
+
+// ListThings names the log's things from the state index's keys, sorted —
+// derived, so possibly trailing the log; the fold watermark is excluded.
+// A non-empty prefix filters to the subtree under it.
+func (c *Client) ListThings(ctx context.Context, log, prefix string) ([]string, error) {
+	if err := contract.ValidateLogName(log); err != nil {
+		return nil, err
+	}
+	kv, err := c.js.KeyValue(ctx, contract.StateBucket(log))
+	if err != nil {
+		return nil, fmt.Errorf("open state bucket: %w", err)
+	}
+	keys, err := kv.Keys(ctx)
+	if errors.Is(err, jetstream.ErrNoKeysFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("list state keys: %w", err)
+	}
+	var names []string
+	for _, k := range keys {
+		if k == contract.StateFoldKey {
+			continue
+		}
+		if prefix != "" && k != prefix && !strings.HasPrefix(k, prefix+".") {
+			continue
+		}
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
+// Resolve walks a thing's tail against the log's declared types (0021 § 4,
+// 0022 § 2) — the same pair walk pre-flight runs, exposed so a caller can
+// speak about the type before it writes.
+func (c *Client) Resolve(ctx context.Context, log, thing string) (contract.Resolution, error) {
+	if err := contract.ValidateLogName(log); err != nil {
+		return contract.Resolution{}, err
+	}
+	if err := contract.ValidateThing(thing); err != nil {
+		return contract.Resolution{}, err
+	}
+	return c.types.resolve(ctx, log, thing)
+}
