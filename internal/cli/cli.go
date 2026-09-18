@@ -112,6 +112,8 @@ func usage(out io.Writer) error {
   chronicle member revoke <tenant> <principal> [--dir D]
   chronicle member rekey <tenant> [--dir D] [--out-dir P]
   chronicle operator rotate-signing-key [--dir D]       rotate the trust root (fleet stopped)
+  chronicle operator emit-cluster-config --node <name>=<host>[:cp[:kp]] ... [--dir D] [--out P]
+                                                        render the cluster's server configs
   chronicle log create <log> --creds F [--url U] [--desc S] [--history H]
   chronicle type define <log> <type> --creds F --def JSON | --file F
   chronicle type inspect <log> <type> --creds F
