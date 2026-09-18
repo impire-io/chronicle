@@ -1,7 +1,7 @@
 # Spec 017 — the browser identity bridge
 
 **Work ID:** `08-browser-identity` (chronicle-hq design 08)
-**Design:** `chronicle-hq` @ `e2a359a` —
+**Design:** `chronicle-hq` @ `7306847` —
 [`02-DESIGN/08-browser-identity.md`](../../../chronicle-hq/02-DESIGN/08-browser-identity.md),
 per decision
 [`0026`](../../../chronicle-hq/03-DECISIONS/0026-browser-identity-is-a-callout-bridge-github-first.md)
@@ -24,7 +24,7 @@ bridge.
    re-pushes AUTH), xkey-encrypted requests. The bootstrap persists two
    new seeds (bridge issuer, xkey curve) and a **sentinel user** with no
    rights beyond triggering callout. Existing bootstrap dirs upgrade on
-   load, the `ensureControlJetStream` way. Spec 016's preload seam
+   load, the `ensureControlJetStream` way. Spec 018's preload seam
    carries AUTH into emitted cluster configs without a rendering change.
 2. **The callout responder in control** answers `$SYS.REQ.USER.AUTH`:
    decrypt, read `auth_token` as `<tenant>:<github-token>` (the target
@@ -76,7 +76,7 @@ bridge.
 - Invites (by GitHub handle or otherwise) — layered on the invite flow
   when it lands (0024).
 - A second identity provider; per-role wire enforcement; op signing.
-- The websocket listener (design 07 names its moment: the panel's
+- The websocket listener (design 09 names its moment: the panel's
   arrival) and the panel itself.
 - Keyring storage for the refresh token — file 0600 first, keyring by
   demand.

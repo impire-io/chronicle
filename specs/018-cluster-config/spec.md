@@ -1,10 +1,10 @@
-# Spec 016 — emit the cluster's server configs
+# Spec 018 — emit the cluster's server configs
 
-**Work ID:** `07-hosted-environment` (chronicle-hq design 07)
-**Design:** `chronicle-hq` @ `e2a359a` —
-[`02-DESIGN/07-hosted-environment.md`](../../../chronicle-hq/02-DESIGN/07-hosted-environment.md)
+**Work ID:** `07-hosted-environment` (chronicle-hq design 09)
+**Design:** `chronicle-hq` @ `7306847` —
+[`02-DESIGN/09-hosted-environment.md`](../../../chronicle-hq/02-DESIGN/09-hosted-environment.md)
 § the substrate, § the stand-up ceremony, per decision
-[`0025`](../../../chronicle-hq/03-DECISIONS/0025-the-hosted-environment-runs-on-our-own-cluster-at-scaleway.md).
+[`0027`](../../../chronicle-hq/03-DECISIONS/0027-the-hosted-environment-runs-on-our-own-cluster-at-scaleway.md).
 **Status:** in progress on this branch ([plan.md](plan.md)).
 
 ## What this delivers
@@ -54,7 +54,7 @@ it dispatches from `cmd/chronicle` beside them, wrapped in
   material.
 - **At least one node; names and hosts non-empty; names unique.**
   Duplicate names or a malformed `--node` refuse with the flag named.
-  One node is legal — the beta tier of design 07 is this ceremony with
+  One node is legal — the beta tier of design 09 is this ceremony with
   a single `--node`.
 - **Verified the way onboarding demands**: the test boots real servers
   from the emitted files (`server.ProcessConfigFile`, the embedded
@@ -65,7 +65,7 @@ it dispatches from `cmd/chronicle` beside them, wrapped in
 ## Out of scope
 
 - The websocket listener — it joins the config when the panel does
-  (design 07 names the moment).
+  (design 09 names the moment).
 - systemd units, host provisioning, DNS, cert issuance — runbook
   material, not rendering.
 - The AUTH account itself — spec 017 (design 08) mints it; this emit

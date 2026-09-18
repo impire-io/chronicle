@@ -386,7 +386,7 @@ func (n *nodeSpecs) Set(v string) error {
 }
 
 // EmitClusterConfig is `chronicle operator emit-cluster-config`: the
-// stand-up ceremony's rendering step (chronicle-hq/02-DESIGN/07-hosted-
+// stand-up ceremony's rendering step (chronicle-hq/02-DESIGN/09-hosted-
 // environment.md), dispatched from cmd/chronicle like the other custody
 // operations on the fleet dir. Pure rendering — the only writes are the
 // per-node .conf files under --out.
