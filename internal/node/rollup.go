@@ -104,10 +104,18 @@ func (n *node) rollupThing(ctx context.Context, log, thing string) (rollupResult
 		frontier = []string{}
 		lastSeq  uint64
 	)
-	for range pending {
+	for i := range pending {
 		msg, lost, err := replayNext(ctx, cons, stream, subject, lastSeq)
 		if err != nil {
 			return rollupResult{}, err
+		}
+		// A rollup destroys everything before it on the subject, so a
+		// rollup message can only be the first of a replay. One arriving
+		// later is a peer's, landed mid-replay — the messages before it
+		// are gone and the history this replay folded is not the
+		// subject's any more.
+		if !lost && i > 0 && msg.Headers().Get(contract.HdrRollup) != "" {
+			lost = true
 		}
 		if lost {
 			return rollupResult{reason: "lost the race: a peer's rollup replaced the history mid-replay"}, nil

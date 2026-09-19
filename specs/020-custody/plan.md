@@ -327,6 +327,12 @@ one. Calls made while building:
 - **The waits are one second each inside a ten-second budget**, so the
   stall a peer's rollup causes is one wait, and the test asserts every
   concurrent rollup answers well inside the old budget.
+- **A rollup message that is not the first of a replay is the race
+  lost.** CI found the case the timeout does not cover: a peer's rollup
+  landing when exactly one op remained, so the ordered consumer delivered
+  the peer's snapshot as the last replayed message and both replicas
+  rolled. A rollup destroys everything before it on the subject, so one
+  arriving mid-replay can only be a peer's; the replay declines on it.
 
 ## Increment 9 — landed on this branch
 
