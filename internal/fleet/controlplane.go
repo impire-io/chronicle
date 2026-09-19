@@ -51,6 +51,10 @@ type ControlPlaneConfig struct {
 	// is written when the bridge is on; empty means bridge.json beside
 	// the bundle.
 	BridgeProfile string
+	// NodeReplicas is how many replicas of every tenant's node control
+	// dispatches — a value the environment sets (design 04 § the node's
+	// row: two converge; 0031). Zero means one.
+	NodeReplicas int
 	// Logger; nil means slog.Default.
 	Logger *slog.Logger
 }
@@ -132,6 +136,7 @@ func StartControlPlane(ctx context.Context, cfg ControlPlaneConfig) (*ControlPla
 		driver:         driver,
 		githubClientID: cfg.GithubClientID,
 		bridgeProfile:  profile,
+		nodeReplicas:   cfg.NodeReplicas,
 		logger:         logger,
 	})
 	if err != nil {
@@ -155,6 +160,7 @@ type controlInputs struct {
 	driver         *mint.JWTDriver
 	githubClientID string
 	bridgeProfile  string
+	nodeReplicas   int
 	logger         *slog.Logger
 }
 
@@ -203,6 +209,7 @@ func startControl(ctx context.Context, in controlInputs) (micro.Service, error) 
 				Tenant:   name,
 				Workload: contract.WorkloadNodeName,
 				Kind:     contract.WorkloadKindNode,
+				Replicas: in.nodeReplicas,
 			}); err != nil {
 				return err
 			}
@@ -241,6 +248,7 @@ func RunControl(ctx context.Context, args []string, out io.Writer) error {
 	bundle := fs.String("bundle", "", "this instance's bundle directory: control.creds and sys.creds (required)")
 	githubClientID := fs.String("github-client-id", "", "GitHub App client id — enables the browser identity bridge (0026)")
 	profile := fs.String("bridge-profile", "", "where the bridge writes the hand-out for `chronicle login` (default: bridge.json beside the bundle)")
+	nodeReplicas := fs.Int("node-replicas", 1, "replicas of every tenant's node control dispatches")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -250,8 +258,11 @@ func RunControl(ctx context.Context, args []string, out io.Writer) error {
 	if *url == "" || *bundle == "" {
 		return fmt.Errorf("chronicle-control needs --url and --bundle")
 	}
+	if *nodeReplicas < 1 {
+		return fmt.Errorf("--node-replicas must be at least 1")
+	}
 
-	cp, err := StartControlPlane(ctx, ControlPlaneConfig{URL: *url, Bundle: *bundle, GithubClientID: *githubClientID, BridgeProfile: *profile})
+	cp, err := StartControlPlane(ctx, ControlPlaneConfig{URL: *url, Bundle: *bundle, GithubClientID: *githubClientID, BridgeProfile: *profile, NodeReplicas: *nodeReplicas})
 	if err != nil {
 		return err
 	}

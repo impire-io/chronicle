@@ -105,9 +105,12 @@ func (n *node) rollupThing(ctx context.Context, log, thing string) (rollupResult
 		lastSeq  uint64
 	)
 	for range pending {
-		msg, err := cons.Next(jetstream.FetchMaxWait(10 * time.Second))
+		msg, lost, err := replayNext(ctx, cons, stream, subject, lastSeq)
 		if err != nil {
-			return rollupResult{}, fmt.Errorf("replay next: %w", err)
+			return rollupResult{}, err
+		}
+		if lost {
+			return rollupResult{reason: "lost the race: a peer's rollup replaced the history mid-replay"}, nil
 		}
 		md, err := msg.Metadata()
 		if err != nil {
@@ -162,6 +165,43 @@ func (n *node) rollupThing(ctx context.Context, log, thing string) (rollupResult
 		return rollupResult{}, fmt.Errorf("publish rollup: %w", err)
 	}
 	return rollupResult{rolled: true, seq: ack.Sequence}, nil
+}
+
+// replayWait is one fetch's wait; replayBudget is the whole replay's. A
+// peer's rollup mid-replay destroys the messages this replay still
+// expects, so a fetch that would only time out is checked against the
+// subject after every wait: the stall is one wait, not the budget.
+const (
+	replayWait   = 1 * time.Second
+	replayBudget = 10 * time.Second
+)
+
+// replayNext fetches the next replayed message — or reports that the race
+// was lost: the subject's last message is a rollup past this replay's
+// cursor, so a peer compacted the history while it was being replayed,
+// and this attempt declines the way the publish guard's loser does (design
+// 04 § rollups; the finding of research 010's two-replica run).
+func replayNext(ctx context.Context, cons jetstream.Consumer, stream jetstream.Stream, subject string, cursor uint64) (jetstream.Msg, bool, error) {
+	deadline := time.Now().Add(replayBudget)
+	for {
+		msg, err := cons.Next(jetstream.FetchMaxWait(replayWait))
+		if err == nil {
+			return msg, false, nil
+		}
+		if !errors.Is(err, nats.ErrTimeout) && !errors.Is(err, jetstream.ErrNoMessages) {
+			return nil, false, fmt.Errorf("replay next: %w", err)
+		}
+		last, lerr := stream.GetLastMsgForSubject(ctx, subject)
+		if lerr == nil && last.Sequence > cursor && last.Header.Get(contract.HdrRollup) != "" {
+			return nil, true, nil
+		}
+		if time.Now().After(deadline) {
+			return nil, false, fmt.Errorf("replay next: %w", err)
+		}
+		if ctx.Err() != nil {
+			return nil, false, fmt.Errorf("replay next: %w", ctx.Err())
+		}
+	}
 }
 
 // captureTyped folds one replayed op of a typed, compactable thing. No

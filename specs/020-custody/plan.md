@@ -306,6 +306,28 @@ building:
 - **Tenant users are untouched by CONTROL's callout** — it gates one
   account — verified beside the gate on the sentinel.
 
+## Increment 8 — landed on this branch
+
+A rollup that loses to a peer declines cleanly. The replay fetches in
+short waits and, after each one that times out, asks the stream for the
+subject's last message: a rollup past the replay's cursor means a peer
+compacted the history mid-replay, and the attempt declines with the
+reason — the same clean decline the publish guard's loser returns —
+instead of waiting out its budget and erroring. PR #24's two-replica
+test lands here, its service user read from custody rather than a
+directory, and passes: two nodes fold one log to the same state, ten
+concurrent rollups over five things land at most once each, every answer
+arrives in seconds, and no attempt errors. `chronicle-control
+--node-replicas N` is the value the environment sets; `up` dispatches
+one. Calls made while building:
+
+- **The loser is detected by the subject's last message, not by the
+  timeout alone.** A slow server still gets the whole replay budget; only
+  a rollup header on a message past the cursor is the race lost.
+- **The waits are one second each inside a ten-second budget**, so the
+  stall a peer's rollup causes is one wait, and the test asserts every
+  concurrent rollup answers well inside the old budget.
+
 ## Reshaped by 0031 and 0032 — before increment 4
 
 The review of increment 3 asked whether a `fleet`-template credential was a
@@ -351,6 +373,6 @@ nothing else should land on the wrong side of it.
    material on an embedded trio; rotation on a live fleet with both keys
    trusted and a mint mid-roll; every credential connects after.
 7. ~~**The AUTH fold**~~ — landed; spec 017's callout tests re-targeted.
-8. **`rollup.go` decline**; `replicas_test.go` green; `--node-replicas`.
+8. ~~**`rollup.go` decline**; `replicas_test.go` green; `--node-replicas`~~ — landed.
 9. README and spec pointers; `make check`; mark ready. Close PR #23 and
    PR #24 as superseded with a pointer here.
