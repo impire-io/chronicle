@@ -196,6 +196,37 @@ made while building:
 - **The late-executor boot test from spec 019 is not on this branch** — it
   is PR #23's — and lands with the standalone plane in increment 5.
 
+## Increment 5 — landed on this branch
+
+The control plane stands alone and the workload service is its own
+binary. `chronicle-control --url U --bundle DIR [--github-client-id]
+[--bridge-profile]` is one control instance from its bundle and a URL:
+control's verbs and its bridge over the bucket, the dispatch call that
+keeps the mint's promise, and nothing else — `internal/fleet/
+controlplane.go`, with `startControl` the one composition of control both
+roots share and `up` composing the workload service and the executor
+around it. `cmd/chronicle-workloads --url --creds` is the sixth binary,
+thin over `internal/workloads`, with its goreleaser row, its archive and
+brew entries, and its lint rule; `cmd/chronicle-control` is thin over
+`fleet.RunControl` and reaches the services through `internal/fleet`
+only. No `contrib/`: units are the environment's (0031). Tests: the
+stand-up in miniature — a sealed substrate, then the workload service, a
+control instance, and an executor host each joining with a credential of
+its own role, the mint probe through a cli credential, and the hosted
+boot order with the executor a second late converging through the level
+scan (spec 019's test, carried); the bridge profile written where the
+instance is told; the flag seam. Calls made while building:
+
+- **`chronicle-control` refuses a bundle without `sys.creds`** by name —
+  a one-file bundle is another role's — and names its instance from the
+  credential in its banner and connection names.
+- **The bridge profile is written where the instance is told**, `bridge.
+  json` beside the bundle by default; `up` keeps writing it into the dev
+  dir, where `chronicle login` looks.
+- **The late-executor test restarts the workload service too**, since in
+  the hosted form every unit restarts — the level scan re-auctions
+  regardless of which came back first.
+
 ## Reshaped by 0031 and 0032 — before increment 4
 
 The review of increment 3 asked whether a `fleet`-template credential was a
@@ -226,7 +257,7 @@ nothing else should land on the wrong side of it.
    with the bundle. Tests: each role's own work succeeds and its row's
    "never" is refused, on a real operator-mode server; the late-executor
    boot race from spec 019 still green.
-5. **The standalone plane and the sixth binary**: `chronicle-control --url
+5. ~~**The standalone plane and the sixth binary**~~ — landed: `chronicle-control --url
    --bundle` without workloads; `cmd/chronicle-workloads --url --creds`;
    the goreleaser row; the lint rules. No `contrib/`.
 6. **The ceremony split and the two-step rotation** (chronicle-21): `seal`

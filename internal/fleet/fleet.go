@@ -1,9 +1,11 @@
-// Package fleet composes `chronicle up`: the bootstrap NATS, control, one
-// chronicle-workloads instance, and one embedded executor on the
-// in-process backend — the fleet shape without the fleet ceremony
-// (chronicle-hq/02-DESIGN/06-scheduler.md § both forms, and the local
-// one). Same log, same auction (one bidder), same guard as any fleet; no
-// scheduler-shaped special case.
+// Package fleet is the composition root: `chronicle up` — the embedded
+// NATS, control, one workload-service instance, and one embedded executor
+// on the in-process backend, the fleet shape without the fleet ceremony
+// (chronicle-hq/02-DESIGN/06-scheduler.md § both forms) — and
+// `chronicle-control`, one control instance standing over a substrate the
+// operator runs (02-DESIGN/09-hosted-environment.md, 10-custody.md). One
+// composition of control, both roots; no scheduler-shaped special case in
+// either.
 package fleet
 
 import (
@@ -24,10 +26,8 @@ import (
 	"github.com/nats-io/nats.go/micro"
 
 	"github.com/impire-io/chronicle/contract"
-	"github.com/impire-io/chronicle/internal/control"
 	"github.com/impire-io/chronicle/internal/devdir"
 	"github.com/impire-io/chronicle/internal/executor"
-	"github.com/impire-io/chronicle/internal/identity/github"
 	"github.com/impire-io/chronicle/internal/index/semantic"
 	"github.com/impire-io/chronicle/internal/mint"
 	"github.com/impire-io/chronicle/internal/version"
@@ -253,61 +253,17 @@ func Up(ctx context.Context, cfg Config) (*Fleet, error) {
 	}
 	f.ex = ex
 
-	var bridgeCfg *control.BridgeConfig
-	if cfg.GithubClientID != "" {
-		authRec, _, err := custody.Auth(ctx)
-		if err != nil {
-			f.Stop()
-			return nil, err
-		}
-		authAcct, _, err := custody.Account(ctx, "AUTH")
-		if err != nil {
-			f.Stop()
-			return nil, err
-		}
-		authConn, err := connect([]byte(authRec.BridgeCreds), "chronicle-bridge")
-		if err != nil {
-			f.Stop()
-			return nil, err
-		}
-		bridgeCfg = &control.BridgeConfig{
-			Conn:               authConn,
-			ResponseSignerSeed: []byte(authAcct.Seed),
-			XKeySeed:           []byte(authRec.XKeySeed),
-			Validator:          &github.Client{ClientID: cfg.GithubClientID},
-			Logger:             logger,
-		}
-		// The bridge profile is the hand-out that makes `chronicle login`
-		// possible — public material only (0026: the sentinel is public
-		// by design).
-		if err := writeBridgeProfile(cfg.Dir, f.URL, cfg.GithubClientID, []byte(authRec.SentinelCreds)); err != nil {
-			f.Stop()
-			return nil, err
-		}
-	}
-
-	ctrl, err := control.Start(ctrlConn, control.Config{
-		Driver: driver,
-		URL:    f.URL,
-		Bridge: bridgeCfg,
-		OnTenant: func(name string, serviceCreds []byte) error {
-			// The tenant's node exists because the record says so; the
-			// executor pulls the creds itself — the record-verified pull.
-			dispatchCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
-			defer cancel()
-			if _, err := workloads.Dispatch(dispatchCtx, ctrlConn, contract.FleetDispatchRequest{
-				Tenant:   name,
-				Workload: contract.WorkloadNodeName,
-				Kind:     contract.WorkloadKindNode,
-			}); err != nil {
-				return err
-			}
-			// Placement is asynchronous, but the mint's promise is not: a
-			// minted tenant answers verbs (onboarding § verify by
-			// connecting). Wait until the placed node serves.
-			return waitForNode(dispatchCtx, f.URL, name, serviceCreds)
-		},
-		Logger: logger,
+	// Control last: its boot replay dispatches every tenant in custody,
+	// and the workload service and the executor must be serving by then.
+	ctrl, err := startControl(ctx, controlInputs{
+		url:            f.URL,
+		ctrlConn:       ctrlConn,
+		custody:        custody,
+		driver:         driver,
+		githubClientID: cfg.GithubClientID,
+		bridgeProfile:  filepath.Join(dir, bridgeProfileFile),
+		logger:         logger,
+		connect:        connect,
 	})
 	if err != nil {
 		f.Stop()
@@ -520,16 +476,12 @@ func EmitClusterConfig(args []string, out io.Writer) error {
 	return nil
 }
 
-func writeBridgeProfile(dir, url, clientID string, sentinel []byte) error {
-	if dir == "" {
-		dir = devdir.Default()
-	}
+func writeBridgeProfile(path, url, clientID string, sentinel []byte) error {
 	p := contract.BridgeProfile{URL: url, GithubClientID: clientID, Sentinel: string(sentinel)}
 	data, err := json.MarshalIndent(p, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode bridge profile: %w", err)
 	}
-	path := filepath.Join(dir, "bridge.json")
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		return fmt.Errorf("write bridge profile: %w", err)
 	}
