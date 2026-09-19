@@ -1,9 +1,10 @@
-// Package fleet composes `chronicle up`: the bootstrap NATS, control, one
-// chronicle-workloads instance, and one embedded executor on the
-// in-process backend — the fleet shape without the fleet ceremony
-// (chronicle-hq/02-DESIGN/06-scheduler.md § both forms, and the local
-// one). Same log, same auction (one bidder), same guard as any fleet; no
-// scheduler-shaped special case.
+// Package fleet is the composition root: `chronicle up` — the bootstrap
+// NATS, the control plane, and one embedded executor on the in-process
+// backend, the fleet shape without the fleet ceremony (chronicle-hq/
+// 02-DESIGN/06-scheduler.md § both forms) — and `chronicle-control`, the
+// same control plane standing over a substrate the operator runs
+// (02-DESIGN/09-hosted-environment.md). One composition, both roots; no
+// scheduler-shaped special case in either.
 package fleet
 
 import (
@@ -21,17 +22,13 @@ import (
 
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
-	"github.com/nats-io/nats.go/micro"
 
 	"github.com/impire-io/chronicle/contract"
-	"github.com/impire-io/chronicle/internal/control"
 	"github.com/impire-io/chronicle/internal/devdir"
 	"github.com/impire-io/chronicle/internal/executor"
-	"github.com/impire-io/chronicle/internal/identity/github"
 	"github.com/impire-io/chronicle/internal/index/semantic"
 	"github.com/impire-io/chronicle/internal/mint"
 	"github.com/impire-io/chronicle/internal/version"
-	"github.com/impire-io/chronicle/internal/workloads"
 )
 
 // LocalExecutorID is the embedded executor's durable identity — stable
@@ -74,17 +71,16 @@ const (
 type Fleet struct {
 	URL string
 
-	srv   *server.Server
-	ctrl  micro.Service
-	wl    *workloads.Service
-	ex    *executor.Executor
-	conns []*nats.Conn
+	srv    *server.Server
+	cp     *ControlPlane
+	ex     *executor.Executor
+	exConn *nats.Conn
 }
 
 // Up boots the fleet: bootstrap material generated or loaded, the embedded
-// operator-mode server, the workload service, the embedded executor, and
-// control — which dispatches a node workload for every tenant on disk, so
-// placement flows the one path there is.
+// operator-mode server, the embedded executor, and the control plane —
+// which dispatches a node workload for every tenant on disk, so placement
+// flows the one path there is.
 func Up(ctx context.Context, cfg Config) (*Fleet, error) {
 	dir := cfg.Dir
 	if dir == "" {
@@ -113,46 +109,12 @@ func Up(ctx context.Context, cfg Config) (*Fleet, error) {
 		return nil, err
 	}
 
-	connect := func(creds []byte, name string) (*nats.Conn, error) {
-		nc, err := mint.ConnectCreds(f.URL, creds, name)
-		if err != nil {
-			return nil, fmt.Errorf("connect %s: %w", name, err)
-		}
-		f.conns = append(f.conns, nc)
-		return nc, nil
-	}
-
-	sysConn, err := connect(b.SysCreds, "chronicle-sys")
+	exConn, err := mint.ConnectCreds(f.URL, b.ControlCreds, "chronicle-executor-"+LocalExecutorID)
 	if err != nil {
 		f.Stop()
-		return nil, err
+		return nil, fmt.Errorf("connect chronicle-executor-%s: %w", LocalExecutorID, err)
 	}
-	ctrlConn, err := connect(b.ControlCreds, "chronicle-control")
-	if err != nil {
-		f.Stop()
-		return nil, err
-	}
-	// In the embedded composition every control-plane component shares the
-	// bootstrap control user on its own connection; per-component users
-	// are custody the multi-host increment makes real.
-	wlConn, err := connect(b.ControlCreds, "chronicle-workloads")
-	if err != nil {
-		f.Stop()
-		return nil, err
-	}
-	exConn, err := connect(b.ControlCreds, "chronicle-executor-"+LocalExecutorID)
-	if err != nil {
-		f.Stop()
-		return nil, err
-	}
-
-	wl, err := workloads.Start(ctx, wlConn, workloads.Config{Logger: logger})
-	if err != nil {
-		f.Stop()
-		return nil, fmt.Errorf("start workload service: %w", err)
-	}
-	f.wl = wl
-
+	f.exConn = exConn
 	pull := func(ctx context.Context, tenant, workload string) ([]byte, error) {
 		return executor.PullCreds(ctx, exConn, LocalExecutorID, tenant, workload)
 	}
@@ -181,66 +143,30 @@ func Up(ctx context.Context, cfg Config) (*Fleet, error) {
 		f.Stop()
 		return nil, fmt.Errorf("backend %q is not in this build's vocabulary (inprocess, microsandbox)", cfg.Backend)
 	}
-	ex, err := executor.Start(ctx, exConn, executor.Config{ID: LocalExecutorID, Backend: backend, Logger: logger})
-	if err != nil {
-		f.Stop()
-		return nil, fmt.Errorf("start executor: %w", err)
-	}
-	f.ex = ex
 
-	var bridgeCfg *control.BridgeConfig
-	if cfg.GithubClientID != "" {
-		authConn, err := connect(b.BridgeCreds, "chronicle-bridge")
+	// The embedded executor starts between the workload service and
+	// control: it registers on the roster the former holds, and must be
+	// bidding before the latter's boot replay dispatches the tenants on
+	// disk.
+	startExecutor := func() error {
+		ex, err := executor.Start(ctx, exConn, executor.Config{ID: LocalExecutorID, Backend: backend, Logger: logger})
 		if err != nil {
-			f.Stop()
-			return nil, err
+			return fmt.Errorf("start executor: %w", err)
 		}
-		bridgeCfg = &control.BridgeConfig{
-			Conn:               authConn,
-			ResponseSignerSeed: b.AuthAccountSeed,
-			XKeySeed:           b.AuthXKeySeed,
-			Validator:          &github.Client{ClientID: cfg.GithubClientID},
-			Logger:             logger,
-		}
-		// The bridge profile is the hand-out that makes `chronicle login`
-		// possible — public material only (0026: the sentinel is public
-		// by design).
-		if err := writeBridgeProfile(cfg.Dir, f.URL, cfg.GithubClientID, b.SentinelCreds); err != nil {
-			f.Stop()
-			return nil, err
-		}
+		f.ex = ex
+		return nil
 	}
-
-	driver := b.Driver(sysConn, f.URL)
-	ctrl, err := control.Start(ctrlConn, control.Config{
-		Driver:      driver,
-		URL:         f.URL,
-		AccountsDir: b.AccountsDir(),
-		Bridge:      bridgeCfg,
-		OnTenant: func(name string, serviceCreds []byte) error {
-			// The tenant's node exists because the record says so; the
-			// executor pulls the creds itself — the record-verified pull.
-			dispatchCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
-			defer cancel()
-			if _, err := workloads.Dispatch(dispatchCtx, ctrlConn, contract.FleetDispatchRequest{
-				Tenant:   name,
-				Workload: contract.WorkloadNodeName,
-				Kind:     contract.WorkloadKindNode,
-			}); err != nil {
-				return err
-			}
-			// Placement is asynchronous, but the mint's promise is not: a
-			// minted tenant answers verbs (onboarding § verify by
-			// connecting). Wait until the placed node serves.
-			return waitForNode(dispatchCtx, f.URL, name, serviceCreds)
-		},
-		Logger: logger,
-	})
+	cp, err := startControlPlane(ctx, b, ControlPlaneConfig{
+		Dir:            dir,
+		URL:            f.URL,
+		GithubClientID: cfg.GithubClientID,
+		Logger:         logger,
+	}, startExecutor)
 	if err != nil {
 		f.Stop()
 		return nil, err
 	}
-	f.ctrl = ctrl
+	f.cp = cp
 	return f, nil
 }
 
@@ -269,26 +195,25 @@ func waitForNode(ctx context.Context, url, tenant string, serviceCreds []byte) e
 	}
 }
 
-// Stop tears the composition down: control verbs first, then the workload
-// service, then the executor and its placements, then the server. Appends
-// need none of them — writers lose nothing.
+// Stop tears the composition down: the control plane (control's verbs,
+// then the workload service), then the executor and its placements, then
+// the server. Appends need none of them — writers lose nothing.
 func (f *Fleet) Stop() {
-	if f.ctrl != nil {
-		_ = f.ctrl.Stop()
-	}
-	if f.wl != nil {
-		f.wl.Stop()
+	if f.cp != nil {
+		f.cp.Stop()
+		f.cp = nil
 	}
 	if f.ex != nil {
 		f.ex.Stop()
+		f.ex = nil
 	}
-	conns := f.conns
-	f.conns = nil
-	for _, nc := range conns {
-		nc.Close()
+	if f.exConn != nil {
+		f.exConn.Close()
+		f.exConn = nil
 	}
 	if f.srv != nil {
 		f.srv.Shutdown()
+		f.srv = nil
 	}
 }
 

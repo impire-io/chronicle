@@ -1,0 +1,25 @@
+# A cold, consistent copy of this host's chronicle state to object
+# storage, nightly (chronicle-snapshot.timer). On a NATS node the unit is
+# stopped for the seconds the archive takes — an R3 cluster serves through
+# it, a single-node install pauses briefly — and on the control host the
+# custody dir is archived hot and encrypted before it leaves the host.
+#
+# /etc/chronicle/snapshot.env (a NATS node):
+#   SNAPSHOT_PATHS=/var/lib/nats/jetstream /var/lib/nats/resolver
+#   SNAPSHOT_STOP_UNIT=nats-server.service
+#   SNAPSHOT_REMOTE=scaleway:chronicle-snapshots/nats-1
+# /etc/chronicle/snapshot.env (the control host):
+#   SNAPSHOT_PATHS=/var/lib/chronicle/dev
+#   SNAPSHOT_AGE_RECIPIENT=age1...          # never in the clear off-host
+#   SNAPSHOT_REMOTE=scaleway:chronicle-snapshots/control
+[Unit]
+Description=chronicle state snapshot to object storage
+After=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/chronicle/snapshot.env
+ExecStart=/usr/local/bin/chronicle-snapshot-store
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

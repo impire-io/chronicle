@@ -1,0 +1,35 @@
+# The control plane: control's verbs, the browser identity bridge when a
+# GitHub App is configured, and one chronicle-workloads instance — one
+# process, over the cluster. The bootstrap dir under /var/lib/chronicle is
+# the install's custody (mode 0700, backed up offline): it is the install.
+#
+# /etc/chronicle/control.env:
+#   CHRONICLE_URL=tls://connect.example.com:4222   # the url tenants connect to
+#   CHRONICLE_GITHUB_CLIENT_ID=                    # empty means no bridge
+[Unit]
+Description=chronicle control plane
+Documentation=https://github.com/impire-io/chronicle
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=chronicle
+Group=chronicle
+EnvironmentFile=/etc/chronicle/control.env
+Environment=HOME=/var/lib/chronicle
+ExecStart=/usr/local/bin/chronicle-control --dir /var/lib/chronicle/dev --url ${CHRONICLE_URL} --github-client-id ${CHRONICLE_GITHUB_CLIENT_ID}
+KillSignal=SIGTERM
+TimeoutStopSec=30
+Restart=always
+RestartSec=2
+StateDirectory=chronicle
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

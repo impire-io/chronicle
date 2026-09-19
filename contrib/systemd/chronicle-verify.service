@@ -1,0 +1,26 @@
+# The synthetic tenant's could-not-succeed-if-broken read: append, fold to
+# state, query the declared search index — against the public url, as a
+# tenant would. Green means the environment serves; red is the alarm.
+# Run by chronicle-verify.timer, and by hand after every change:
+#   systemctl start chronicle-verify && journalctl -u chronicle-verify -n 3
+#
+# /etc/chronicle/verify.env:
+#   CHRONICLE_CONTEXT=synthetic   # saved by the chronicle user at stand-up
+#   CHRONICLE_LOG=probe
+#   CHRONICLE_INDEX=text
+[Unit]
+Description=chronicle synthetic-tenant verification read
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=chronicle
+Group=chronicle
+EnvironmentFile=/etc/chronicle/verify.env
+Environment=HOME=/var/lib/chronicle
+ExecStart=/usr/local/bin/chronicle-verify-tenant
+StateDirectory=chronicle
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes

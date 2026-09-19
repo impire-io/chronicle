@@ -1,0 +1,41 @@
+# The host's executor: bids for placements and runs them on this host's
+# one backend. With the microsandbox backend every placement is a microVM,
+# so the unit needs /dev/kvm (the kvm group), `msb` on the PATH, its
+# libkrunfw on the library path, and the linux chronicle-workload guest
+# binary for the host's architecture.
+#
+# The executor dials with the install's control-account user, read from the
+# control plane's dir; on a second executor host, copy control.creds there
+# (mode 0600) and point --creds at it.
+#
+# /etc/chronicle/executor.env:
+#   CHRONICLE_URL=tls://connect.example.com:4222
+#   CHRONICLE_EXECUTOR_ID=work-1          # durable, one per host
+#   CHRONICLE_BACKEND=microsandbox        # or inprocess
+[Unit]
+Description=chronicle executor
+Documentation=https://github.com/impire-io/chronicle
+After=network-online.target chronicle-control.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=chronicle
+Group=chronicle
+SupplementaryGroups=kvm
+EnvironmentFile=/etc/chronicle/executor.env
+Environment=HOME=/var/lib/chronicle
+Environment=LD_LIBRARY_PATH=/usr/local/lib/microsandbox
+ExecStart=/usr/local/bin/chronicle-executor --url ${CHRONICLE_URL} --creds /var/lib/chronicle/dev/control.creds --id ${CHRONICLE_EXECUTOR_ID} --backend ${CHRONICLE_BACKEND} --workload-binary /usr/local/lib/chronicle/chronicle-workload
+KillSignal=SIGTERM
+TimeoutStopSec=90
+Restart=always
+RestartSec=2
+StateDirectory=chronicle
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

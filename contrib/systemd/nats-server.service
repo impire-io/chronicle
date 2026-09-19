@@ -1,0 +1,34 @@
+# One node of the chronicle cluster: nats-server from the config
+# `chronicle operator emit-cluster-config` rendered for it. Install the
+# node's <name>.conf at /etc/nats/nats-server.conf; the JetStream store and
+# the resolver dir are the paths the emit was given (StateDirectory below
+# provides /var/lib/nats).
+#
+# `systemctl reload nats-server` re-reads the config in place — it is how a
+# renewed TLS certificate takes effect without a restart.
+[Unit]
+Description=NATS server (chronicle cluster node)
+Documentation=https://docs.nats.io/running-a-nats-service/configuration
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nats
+Group=nats
+ExecStart=/usr/local/bin/nats-server -c /etc/nats/nats-server.conf
+ExecReload=/bin/kill -HUP $MAINPID
+KillSignal=SIGTERM
+TimeoutStopSec=60
+Restart=always
+RestartSec=2
+LimitNOFILE=65536
+StateDirectory=nats
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadOnlyPaths=/etc/nats
+
+[Install]
+WantedBy=multi-user.target

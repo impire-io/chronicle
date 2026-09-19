@@ -1,11 +1,13 @@
 # Spec 018 — emit the cluster's server configs
 
-**Work ID:** `07-hosted-environment` (chronicle-hq design 09)
+**Work ID:** `09-hosted-environment` (chronicle-hq design 09)
 **Design:** `chronicle-hq` @ `7306847` —
 [`02-DESIGN/09-hosted-environment.md`](../../../chronicle-hq/02-DESIGN/09-hosted-environment.md)
 § the substrate, § the stand-up ceremony, per decision
 [`0027`](../../../chronicle-hq/03-DECISIONS/0027-the-hosted-environment-runs-on-our-own-cluster-at-scaleway.md).
-**Status:** in progress on this branch ([plan.md](plan.md)).
+**Status:** implemented on main (`chronicle` PR #18; citations renumbered
+in PR #21). The control plane that stands beside the emitted cluster is
+spec [019](../019-standalone-control-plane/spec.md).
 
 ## What this delivers
 
