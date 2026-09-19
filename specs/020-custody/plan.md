@@ -3,46 +3,61 @@
 ## Layout
 
 ```
-internal/mint/custody.go         Custody interface: Operator(), Account(name),
-                                 Tenant(name), PutTenant(rec, expectedRev) …;
-                                 Bucket implementation over KV_AUTH (Create /
-                                 Update(rev) / Get / Watch); the templates
-                                 ControlInstanceTemplate(), FleetTemplate()
-                                 (jwt.UserPermissionLimits)
-internal/mint/root.go            the offline root: init (generate, per-node JS
-                                 keys, first bundle), seal (write, read back,
-                                 shred), export; root.json manifest
-internal/mint/bootstrap.go       Bootstrap becomes the in-memory birth `up`
-                                 uses; LoadOrInitBootstrap retired
+internal/mint/custody.go         Custody over KV_AUTH: Operator(), Account(name)
+                                 (seed, JWT, users by instance name), Auth(),
+                                 Tenant(name); PutX(rec, expectedRev) …
+internal/mint/templates.go       the four role templates (0032): control-
+                                 instance, executor(name), workloads, cli —
+                                 allow-lists; Template, ParseTemplate
+internal/mint/instance.go        AddInstance(name, template) / RemoveInstance —
+                                 users recorded on the account record by name;
+                                 mutateAccount: CAS, re-sign and push on change
+internal/mint/root.go            the dev dir: manifest, node key, bundles,
+                                 export; Seal from material (the environment's
+                                 seeds) — stamps the account shapes, issues the
+                                 first bundle; no init/emit verbs
+internal/mint/bootstrap.go       the in-memory generator `up` plays the
+                                 environment with; mints no bootstrap users
 internal/mint/jwt.go             Driver: mint/revoke/rekey read from Custody,
                                  CAS-before-push, Reconcile(ctx)
-internal/mint/rotate.go          rotate over the bucket; requireStopped removed;
-                                 emits the new operator JWT beside the configs
-internal/mint/clusterconfig.go   jetstream { cipher: chacha, key } per node
+internal/mint/rotate.go          the service's rotation step over the live
+                                 bucket; the dev shape composes the environment's
+                                 steps around it; requireStopped gone
+internal/mint/clusterconfig.go   the trio test's renderer only (cipher + key per
+                                 node); not a CLI verb
 internal/mint/authbootstrap.go   CONTROL carries the external-authorization
                                  config; auth_users maintained at issuance;
                                  AUTH account removed
-internal/control/*               reads Custody, never the dir; fleetcreds pulls
-                                 tenant.<name>.service; bridge signs with
-                                 CONTROL's key; reconcile loop
+contract/fleet.go                REGISTER/REPORT/CREDS subjects take the
+                                 executor token; ExecutorFromSubject
+internal/control/*               reads Custody, never the dir; serves CREDS.*
+                                 and reads the caller from the subject; bridge
+                                 signs with CONTROL's key; reconcile loop
+internal/workloads/*             serves REGISTER.* / REPORT.* and reads the
+                                 caller from the subject
+internal/executor/*              publishes on its own subjects; its ID is its
+                                 instance name
 internal/fleet/controlplane.go   from PR #23, minus workloads.Start; bundle
                                  loading; --node-replicas
-internal/fleet/fleet.go          Up on the same path: init in memory → embedded
-                                 server (cipher on) → seal → bundle → control +
-                                 workloads + executor
+internal/fleet/fleet.go          Up on the same path: generate in memory →
+                                 embedded server (cipher on) → seal → bundle →
+                                 members as instances under their templates →
+                                 control + workloads + executor
+internal/fleet/operator.go       seal | instance add|remove | export |
+                                 rotate-signing-key — the service's ceremonies
 internal/fleet/*_test.go         two planes race revoke/rekey → no lost update;
-                                 second plane from bundle+URL alone; fleet user
-                                 fenced (operator mode); rotation live; boot
+                                 second plane from bundle+URL alone; the fence
+                                 per role; seal from material on a trio;
+                                 rotation live with both keys trusted; boot
                                  reconcile; replicas_test.go (PR #24) green
-cmd/chronicle/main.go            operator init | seal | instance add|remove |
-                                 export | rotate-signing-key | emit-cluster-config
+cmd/chronicle/main.go            operator seal | instance add|remove | export |
+                                 rotate-signing-key
 cmd/chronicle-control/main.go    thin: fleet.RunControl(--url --bundle …)
 cmd/chronicle-workloads/main.go  new, thin over internal/workloads (0029)
 internal/node/rollup.go          the losing replica declines cleanly
 .goreleaser.yaml                 the sixth build row; comment names 0029
 .golangci.yml                    cmd/chronicle-workloads rule; control rule
-contrib/systemd/*                chronicle-workloads.service; control's flags
-README.md, specs/018, specs/019  pointers follow
+README.md, specs/018, specs/019  pointers follow; no contrib/ (chronicle-ops)
 ```
 
 ## Increment 1 — landed on this branch
@@ -144,21 +159,51 @@ on a sealed root re-shreds. Calls made while building:
   the fresh seed once the bucket holds it — still the bridge to
   increment 5.
 
+## Reshaped by 0031 and 0032 — before increment 4
+
+The review of increment 3 asked whether a `fleet`-template credential was a
+security issue. It was: a fleet user reached every control verb — a member
+of any tenant, any placed tenant's service creds by naming the executor
+that held them, the fleet log — and the bootstrap's own `control` and
+`sys` users were shredded at seal but never revoked. Decision 0031 then
+drew the line between the service and the environment, and 0032 fixed the
+fence's shape. Increments 1–3 stand as control's own state. What follows
+is the remaining order against design 10 @ `f56ad8c`; the old increments
+4–8 are replaced, not renumbered — the contrib units are gone (the
+environment's), the ceremonies split, and the fence comes first because
+nothing else should land on the wrong side of it.
+
 ## Order — each step a green `make check`
 
-1. `custody.go` + `root.go`: the store, the templates, init/seal/export
-   against an embedded server; unit + integration tests. The dir still
-   works for everything else.
-2. The driver and control read the store; CAS-before-push; reconcile;
-   `claimsMu` retired; the two-planes race test. `up` seals into its
-   embedded JetStream and boots from a bundle it issued.
-3. `operator instance add|remove`; the `fleet` template on workloads,
-   executors, the CLI; the fence test in operator mode.
-4. `cmd/chronicle-workloads`; `chronicle-control --url --bundle` without
-   workloads; goreleaser six; contrib units; the late-executor boot test
-   from spec 019 still green.
-5. Rotation over the bucket, live; the rotation test.
-6. The AUTH fold; spec 017's callout tests re-targeted.
-7. `rollup.go` decline; `replicas_test.go` green; `--node-replicas`.
-8. README and spec pointers; `make check`; mark ready. Close PR #23 and
+1. ~~`custody.go` + `root.go`~~ — landed.
+2. ~~The driver and control read the store~~ — landed.
+3. ~~`instance add|remove`; the `fleet` template; the shred~~ — landed.
+4. **The fence by role** (chronicle-22): the four templates as allow-lists,
+   the `executor` one parameterized by name; `REGISTER`, `REPORT` and
+   `CREDS` take the executor token — workloads serves `REGISTER.*` and
+   `REPORT.*`, control serves `CREDS.*`, each reading the caller from the
+   subject and refusing a mismatched payload; the executor publishes on
+   its own subjects and its ID is its instance name; `instance add
+   --template <role>`; `up`'s members under their roles; `init` mints no
+   bootstrap pair and the test substrate (`natstest.StartOperator`) dials
+   with the bundle. Tests: each role's own work succeeds and its row's
+   "never" is refused, on a real operator-mode server; the late-executor
+   boot race from spec 019 still green.
+5. **The standalone plane and the sixth binary**: `chronicle-control --url
+   --bundle` without workloads; `cmd/chronicle-workloads --url --creds`;
+   the goreleaser row; the lint rules. No `contrib/`.
+6. **The ceremony split and the two-step rotation** (chronicle-21): `seal`
+   takes `--signing-seed --sys-seed --control-seed`, stamps the shapes,
+   pushes, issues `instance-1`, exports; `init` and `emit-cluster-config`
+   leave the CLI, the renderer stays as the trio test's substrate, the
+   node keys leave `root.json` (the trio test passes each node's key by
+   environment, as the environment would); `rotate-signing-key --url
+   --new-signing-seed` over the live bucket by compare-and-set and push;
+   `requireStopped` and the directory ceremony go; the dev shape composes
+   the environment's steps around the service's. Tests: seal from
+   material on an embedded trio; rotation on a live fleet with both keys
+   trusted and a mint mid-roll; every credential connects after.
+7. **The AUTH fold**; spec 017's callout tests re-targeted.
+8. **`rollup.go` decline**; `replicas_test.go` green; `--node-replicas`.
+9. README and spec pointers; `make check`; mark ready. Close PR #23 and
    PR #24 as superseded with a pointer here.
