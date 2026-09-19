@@ -129,11 +129,11 @@ func GenerateMaterial() (Material, *Bootstrap, error) {
 // birth ceremony, handed the environment's seeds against a cluster whose
 // resolver preloads the bare accounts. It issues the first control
 // instance's users from the seeds and connects with them; stamps the
-// account shapes the service defines — CONTROL's JetStream limits and the
-// bridge export — by re-signing and pushing; births the AUTH account
-// (until the fold, decision 0030 point 6) and pushes it; creates the
-// bucket, writes every working key, reads each back, and records the
-// first instance on the accounts. The bundle comes back for the caller
+// account shapes the service defines — CONTROL's JetStream limits, the
+// bridge export, and the callout config that makes CONTROL the auth
+// account with the first instance listed and the sentinel not — by
+// re-signing and pushing; creates the bucket, writes every working key,
+// reads each back, and records the first instance on the accounts. The bundle comes back for the caller
 // to write where the host reads it. Idempotent: against a bucket that
 // already exists it verifies by public key that the material is the
 // bucket's, and writes nothing.
@@ -179,11 +179,6 @@ func SealFromMaterial(ctx context.Context, url string, m Material, opts SealOpti
 		return rep, Bundle{}, nil, fmt.Errorf("connect %s as the first instance's system user (does the resolver preload the bare SYS account?): %w", url, err)
 	}
 	defer sysConn.Close()
-	ctrlConn, err := ConnectCreds(url, bundle.ControlCreds, "chronicle-seal")
-	if err != nil {
-		return rep, Bundle{}, nil, fmt.Errorf("connect %s as the first instance's control user (does the resolver preload the bare CONTROL account?): %w", url, err)
-	}
-	defer ctrlConn.Close()
 
 	// The accounts as the environment preloaded them, then CONTROL
 	// stamped with the service's shape and pushed — before anything else,
@@ -208,8 +203,30 @@ func SealFromMaterial(ctx context.Context, url string, m Material, opts SealOpti
 		b.ControlAccountJWT = stamped
 	}
 
-	// A bucket that exists is verified, never re-sealed. The stamp lands
-	// in the node's account a beat after the push answers.
+	// Once CONTROL is the auth account, a user issued afresh from the
+	// seeds is gated: a sealed cluster is verified with the first
+	// instance's bundle, which the first seal handed out.
+	current, err := jwt.DecodeAccountClaims(b.ControlAccountJWT)
+	if err != nil {
+		return rep, Bundle{}, nil, fmt.Errorf("decode CONTROL: %w", err)
+	}
+	ctrlCreds := bundle.ControlCreds
+	if current.HasExternalAuthorization() {
+		if len(opts.VerifyWith.ControlCreds) == 0 {
+			return rep, Bundle{}, nil, fmt.Errorf("%s is sealed already (CONTROL is the auth account): verify with the first instance's bundle (--bundle)", url)
+		}
+		ctrlCreds = opts.VerifyWith.ControlCreds
+	}
+	ctrlConn, err := ConnectCreds(url, ctrlCreds, "chronicle-seal")
+	if err != nil {
+		return rep, Bundle{}, nil, fmt.Errorf("connect %s as the control user: %w", url, err)
+	}
+	defer ctrlConn.Close()
+
+	// A bucket that exists is verified, never re-sealed; the callout
+	// stamp, which comes last, is repaired from the bucket when a first
+	// seal stopped before it. The stamp lands in the node's account a
+	// beat after the push answers.
 	var c *Custody
 	for attempt := 0; ; attempt++ {
 		c, err = OpenCustody(ctx, ctrlConn)
@@ -225,32 +242,71 @@ func SealFromMaterial(ctx context.Context, url string, m Material, opts SealOpti
 	switch {
 	case err == nil:
 		rep, err = verifyByPublicKeys(ctx, c, opPub, map[string]string{"SYS": sysPub, "CONTROL": ctrlPub})
-		return rep, Bundle{}, c, err
+		if err != nil {
+			return rep, Bundle{}, c, err
+		}
+		return rep, Bundle{}, c, ensureCalloutFromBucket(ctx, c, sysConn, oskp)
 	case errors.Is(err, ErrNotSealed):
 	default:
 		return rep, Bundle{}, nil, err
 	}
-	auth, err := newAuthMaterial(oskp)
+
+	if b.AuthXKeySeed, err = newXKey(); err != nil {
+		return rep, Bundle{}, nil, err
+	}
+	sentinel, err := issueSentinel(m.ControlAccountSeed, ctrlPub)
 	if err != nil {
 		return rep, Bundle{}, nil, err
 	}
-	auth.applyTo(b)
-	if err := pushAccount(ctx, sysConn, b.AuthAccountJWT); err != nil {
-		return rep, Bundle{}, nil, fmt.Errorf("push the AUTH account: %w", err)
-	}
-
 	c, err = CreateCustody(ctx, ctrlConn, opts.Replicas)
 	if err != nil {
 		return rep, Bundle{}, nil, err
 	}
 	ctrlUsers := map[string]string{firstInstance: ctrlUser.PublicKey}
 	sysUsers := map[string]string{firstInstance: sysUser.PublicKey}
-	rep, err = sealEntries(ctx, c, b, ctrlUsers, sysUsers)
+	rep, err = sealEntries(ctx, c, b, ctrlUsers, sysUsers, sentinel)
 	if err != nil {
+		return rep, Bundle{}, nil, err
+	}
+	// CONTROL becomes the auth account (0030 point 6), last: the callout
+	// xkey, the first instance listed as bypassing callout, the sentinel
+	// never listed.
+	if err := ensureCalloutFromBucket(ctx, c, sysConn, oskp); err != nil {
 		return rep, Bundle{}, nil, err
 	}
 	rep.Instance = firstInstance
 	return rep, bundle, c, nil
+}
+
+// ensureCalloutFromBucket stamps the callout config on CONTROL from what
+// the bucket holds — the xkey seed in `auth`, every user the CONTROL
+// record lists — lands it, and pushes it. Idempotent: a CONTROL that
+// carries all of it is left alone.
+func ensureCalloutFromBucket(ctx context.Context, c *Custody, sysConn *nats.Conn, oskp nkeys.KeyPair) error {
+	auth, _, err := c.Auth(ctx)
+	if err != nil {
+		return err
+	}
+	rec, rev, err := c.Account(ctx, "CONTROL")
+	if err != nil {
+		return err
+	}
+	var listed []string
+	for _, pub := range rec.Users {
+		listed = append(listed, pub)
+	}
+	stamped, changed, err := stampCallout(rec.JWT, oskp, []byte(auth.XKeySeed), listed)
+	if err != nil || !changed {
+		return err
+	}
+	rec.JWT = stamped
+	if _, err := c.PutAccount(ctx, rec, rev); err != nil {
+		return err
+	}
+	if err := pushAccount(ctx, sysConn, stamped); err != nil {
+		return fmt.Errorf("push the CONTROL account with its callout: %w", err)
+	}
+	return nil
 }
 
 // verifyByPublicKeys is the idempotent second seal: the bucket names this
@@ -266,7 +322,7 @@ func verifyByPublicKeys(ctx context.Context, c *Custody, opPub string, accounts 
 	} else {
 		rep.Conflict = append(rep.Conflict, keyOperator)
 	}
-	for _, name := range []string{"SYS", "CONTROL", "AUTH"} {
+	for _, name := range []string{"SYS", "CONTROL"} {
 		rec, _, err := c.Account(ctx, name)
 		if err != nil {
 			return rep, err

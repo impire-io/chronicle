@@ -28,9 +28,9 @@ type OperatorRecord struct {
 	SigningSeed string `json:"signing_seed"`
 }
 
-// AccountRecord is an `account.<NAME>` entry — SYS, CONTROL, and until the
-// fold AUTH: the account seed, from which its users are issued, the
-// account's current JWT, and the users issued from it by instance name.
+// AccountRecord is an `account.<NAME>` entry — SYS and CONTROL: the
+// account seed, from which its users are issued, the account's current
+// JWT, and the users issued from it by instance name.
 // The users travel with the account so `operator instance remove` finds
 // what to revoke without the host's bundle — losing the host is how the
 // bundle is lost.
@@ -44,12 +44,13 @@ type AccountRecord struct {
 	Users map[string]string `json:"users,omitempty"`
 }
 
-// AuthRecord is the `auth` entry: what the callout bridge answers with. The
-// sentinel is public by design and lives here only so an instance can hand
-// it out.
+// AuthRecord is the `auth` entry: the callout xkey the bridge opens
+// requests with, and the sentinel — the one CONTROL user not listed in
+// auth_users, public by design, held here only so an instance can hand
+// it out. The bridge answers on an instance's own connection and signs
+// with CONTROL's account key, both of which the instance already holds.
 type AuthRecord struct {
 	XKeySeed      string `json:"xkey_seed"`
-	BridgeCreds   string `json:"bridge_creds"`
 	SentinelCreds string `json:"sentinel_creds"`
 }
 
@@ -140,7 +141,7 @@ func (c *Custody) PutOperator(ctx context.Context, rec OperatorRecord, expectedR
 	return put(ctx, c.kv, keyOperator, rec, expectedRev)
 }
 
-// Account reads a bootstrap account by name (SYS, CONTROL, AUTH).
+// Account reads a platform account by name (SYS, CONTROL).
 func (c *Custody) Account(ctx context.Context, name string) (AccountRecord, uint64, error) {
 	return get[AccountRecord](ctx, c.kv, keyAccountPrefix+name)
 }
@@ -151,6 +152,18 @@ func (c *Custody) PutAccount(ctx context.Context, rec AccountRecord, expectedRev
 		return 0, fmt.Errorf("custody: account record needs a name")
 	}
 	return put(ctx, c.kv, keyAccountPrefix+rec.Name, rec, expectedRev)
+}
+
+// updateAccountJWT lands a platform account's re-signed JWT by
+// compare-and-set — the seal's own stamp, or a repair of it.
+func (c *Custody) updateAccountJWT(ctx context.Context, name, token string) error {
+	rec, rev, err := c.Account(ctx, name)
+	if err != nil {
+		return err
+	}
+	rec.JWT = token
+	_, err = c.PutAccount(ctx, rec, rev)
+	return err
 }
 
 // Auth reads the callout material.

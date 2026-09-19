@@ -35,7 +35,7 @@ type RotationReport struct {
 // rotate-signing-key --url --new-signing-seed`: proves the nodes trust the
 // new key by re-signing SYS under it and pushing — a refusal is put back
 // and reported, and the bucket is untouched — then lands the new seed in
-// `operator` by compare-and-set and re-signs CONTROL, AUTH, and every
+// `operator` by compare-and-set and re-signs CONTROL and every
 // tenant, each by compare-and-set at the revision it was read at, then
 // pushed. Mints that interleave sign under whichever key the bucket names
 // at that moment.
@@ -93,15 +93,10 @@ func RotateOverBucket(ctx context.Context, d *JWTDriver, newSeed []byte) (Rotati
 		}
 		break
 	}
-	for _, name := range []string{"CONTROL", "AUTH"} {
-		if err := d.resignAccount(ctx, name, newKP); err != nil {
-			if errors.Is(err, ErrNoRecord) {
-				continue
-			}
-			return rep, err
-		}
-		rep.Resigned = append(rep.Resigned, name)
+	if err := d.resignAccount(ctx, "CONTROL", newKP); err != nil {
+		return rep, err
 	}
+	rep.Resigned = append(rep.Resigned, "CONTROL")
 	tenants, err := d.Custody.Tenants(ctx)
 	if err != nil {
 		return rep, err
@@ -335,7 +330,7 @@ func withEmbeddedServer(b *Bootstrap, key string, fn func(url string) error) err
 // refreshAccountFiles rewrites the dev dir's public account JWTs from the
 // bucket after a rotation — the preloads a dev boot renders from.
 func (r *Root) refreshAccountFiles(ctx context.Context, c *Custody) error {
-	files := map[string]string{"SYS": fSysAcctJWT, "CONTROL": fCtrlAcctJWT, "AUTH": fAuthAcctJWT}
+	files := map[string]string{"SYS": fSysAcctJWT, "CONTROL": fCtrlAcctJWT}
 	for name, file := range files {
 		rec, _, err := c.Account(ctx, name)
 		if errors.Is(err, ErrNoRecord) {
@@ -352,8 +347,6 @@ func (r *Root) refreshAccountFiles(ctx context.Context, c *Custody) error {
 			r.B.SystemAccountJWT = rec.JWT
 		case "CONTROL":
 			r.B.ControlAccountJWT = rec.JWT
-		case "AUTH":
-			r.B.AuthAccountJWT = rec.JWT
 		}
 	}
 	return nil

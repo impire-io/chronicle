@@ -75,13 +75,13 @@ func TestInitRootSealsAndExports(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect with the bundle's system user: %v", err)
 	}
-	sysnc.Close()
+	defer sysnc.Close()
 
-	rep, err := r.Seal(ctx, nc, mint.SealOptions{Replicas: 1})
+	rep, err := r.Seal(ctx, sysnc, nc, mint.SealOptions{Replicas: 1})
 	if err != nil {
 		t.Fatalf("seal: %v", err)
 	}
-	if len(rep.Written) != 5 || len(rep.Matched) != 0 || rep.Export == "" {
+	if len(rep.Written) != 4 || len(rep.Matched) != 0 || rep.Export == "" {
 		t.Fatalf("first seal: %+v", rep)
 	}
 	if _, err := os.Stat(rep.Export); err != nil {
@@ -117,8 +117,7 @@ func TestInitRootSealsAndExports(t *testing.T) {
 
 	// Seal shredded the working keys: the bucket is the only place they
 	// live now. The identity, the node keys, and the bundle stay.
-	for _, f := range []string{"operator-signing.nk", "sys-account.nk", "control-account.nk",
-		"auth-account.nk", "auth-xkey.nk", "bridge.creds", "sentinel.creds"} {
+	for _, f := range []string{"operator-signing.nk", "sys-account.nk", "control-account.nk", "auth-xkey.nk"} {
 		if _, err := os.Stat(filepath.Join(dir, f)); !os.IsNotExist(err) {
 			t.Fatalf("seal left %s in the root (%v)", f, err)
 		}
@@ -130,29 +129,29 @@ func TestInitRootSealsAndExports(t *testing.T) {
 		}
 	}
 
-	// The process that sealed still holds the keys: a second seal from it
-	// finds every entry and writes a fresh export.
-	rep2, err := r.Seal(ctx, nc, mint.SealOptions{Replicas: 1})
+	// A bucket that exists is verified, never re-sealed — by the process
+	// that sealed, keys in hand, as much as by a root reloaded from disk
+	// without them: the seal checks by public key that the bucket is its
+	// own and writes nothing.
+	rep2, err := r.Seal(ctx, sysnc, nc, mint.SealOptions{Replicas: 1})
 	if err != nil {
 		t.Fatalf("second seal: %v", err)
 	}
-	if len(rep2.Written) != 0 || len(rep2.Matched) != 5 || rep2.Export == "" {
+	if len(rep2.Written) != 0 || len(rep2.Matched) != 3 || rep2.Export != "" {
 		t.Fatalf("second seal: %+v", rep2)
 	}
-	// A root reloaded from disk holds no keys: its seal verifies by public
-	// key that the bucket is its own, and writes nothing.
 	reloaded, err := mint.LoadRoot(dir)
-	if err != nil || reloaded.Manifest.Sealed == "" || len(reloaded.Manifest.Exports) != 2 {
+	if err != nil || reloaded.Manifest.Sealed == "" || len(reloaded.Manifest.Exports) != 1 {
 		t.Fatalf("manifest after two seals: %+v, %v", reloaded.Manifest, err)
 	}
 	if reloaded.B.HasWorkingKeys() {
 		t.Fatal("a reloaded sealed root has working keys")
 	}
-	rep3, err := reloaded.Seal(ctx, nc, mint.SealOptions{Replicas: 1})
+	rep3, err := reloaded.Seal(ctx, sysnc, nc, mint.SealOptions{Replicas: 1})
 	if err != nil {
 		t.Fatalf("seal from the shredded root: %v", err)
 	}
-	if len(rep3.Written) != 0 || len(rep3.Matched) != 4 || rep3.Export != "" || len(reloaded.Manifest.Exports) != 2 {
+	if len(rep3.Written) != 0 || len(rep3.Matched) != 3 || rep3.Export != "" || len(reloaded.Manifest.Exports) != 1 {
 		t.Fatalf("verifying seal: %+v, exports %v", rep3, reloaded.Manifest.Exports)
 	}
 
@@ -161,7 +160,7 @@ func TestInitRootSealsAndExports(t *testing.T) {
 	if err != nil {
 		t.Fatalf("other root: %v", err)
 	}
-	if _, err := other.Seal(ctx, nc, mint.SealOptions{Replicas: 1}); err == nil || !strings.Contains(err.Error(), "seal refused") {
+	if _, err := other.Seal(ctx, sysnc, nc, mint.SealOptions{Replicas: 1}); err == nil || !strings.Contains(err.Error(), "seal refused") {
 		t.Fatalf("a different root sealed over the bucket: %v", err)
 	}
 	if op2, _, _ := c.Operator(ctx); op2.SigningSeed != string(r.B.OperatorSigningSeed) {

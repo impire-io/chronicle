@@ -301,6 +301,11 @@ type SealOptions struct {
 	// Replicas of the bucket — three on the hosted trio, one on a single
 	// embedded server. Zero means one.
 	Replicas int
+	// VerifyWith is the first instance's bundle, for the material seal's
+	// second run against a cluster that is sealed already: once CONTROL
+	// is the auth account, a user issued afresh from the seeds is gated,
+	// and only a listed one can open the bucket to verify it.
+	VerifyWith Bundle
 }
 
 // SealReport says what the ceremony did.
@@ -320,7 +325,7 @@ type SealReport struct {
 // verifies by public keys that the bucket is this root's and reports
 // every entry matched. An entry that exists and differs is a conflict:
 // the ceremony refuses rather than overwrite what another root sealed.
-func (r *Root) Seal(ctx context.Context, nc *nats.Conn, opts SealOptions) (SealReport, error) {
+func (r *Root) Seal(ctx context.Context, sysConn, nc *nats.Conn, opts SealOptions) (SealReport, error) {
 	var rep SealReport
 	b := r.B
 	if !b.HasWorkingKeys() {
@@ -329,17 +334,62 @@ func (r *Root) Seal(ctx context.Context, nc *nats.Conn, opts SealOptions) (SealR
 		}
 		return r.verifySealed(ctx, nc)
 	}
-	c, err := CreateCustody(ctx, nc, opts.Replicas)
-	if err != nil {
+	// A bucket that exists is verified, never re-sealed — the process
+	// that sealed and seals again included.
+	if _, err := OpenCustody(ctx, nc); err == nil {
+		return r.verifySealed(ctx, nc)
+	} else if !errors.Is(err, ErrNotSealed) {
 		return rep, err
 	}
 	ctrlUsers, sysUsers, err := r.bundleUsers()
 	if err != nil {
 		return rep, err
 	}
-	rep, err = sealEntries(ctx, c, b, ctrlUsers, sysUsers)
+	if len(b.AuthXKeySeed) == 0 {
+		if b.AuthXKeySeed, err = newXKey(); err != nil {
+			return rep, err
+		}
+	}
+	sentinel, err := issueSentinel(b.ControlAccountSeed, b.ControlAccountPub)
 	if err != nil {
 		return rep, err
+	}
+	c, err := CreateCustody(ctx, nc, opts.Replicas)
+	if err != nil {
+		return rep, err
+	}
+	rep, err = sealEntries(ctx, c, b, ctrlUsers, sysUsers, sentinel)
+	if err != nil {
+		return rep, err
+	}
+	// CONTROL becomes the auth account, last: the callout config stamped,
+	// every user the root issued listed, the sentinel unlisted — pushed
+	// so the running server serves it, and written so the next dev boot
+	// preloads it. Last, so a seal that stops before this line is re-run
+	// from a bucket the ceremony can still reach.
+	oskp, err := nkeys.FromSeed(b.OperatorSigningSeed)
+	if err != nil {
+		return rep, fmt.Errorf("operator signing seed: %w", err)
+	}
+	var listed []string
+	for _, pub := range ctrlUsers {
+		listed = append(listed, pub)
+	}
+	stamped, changed, err := stampCallout(b.ControlAccountJWT, oskp, b.AuthXKeySeed, listed)
+	if err != nil {
+		return rep, err
+	}
+	if changed {
+		if err := pushAccount(ctx, sysConn, stamped); err != nil {
+			return rep, fmt.Errorf("push the stamped CONTROL account: %w", err)
+		}
+		if err := c.updateAccountJWT(ctx, "CONTROL", stamped); err != nil {
+			return rep, err
+		}
+		b.ControlAccountJWT = stamped
+		if err := os.WriteFile(filepath.Join(r.Dir, fCtrlAcctJWT), []byte(stamped), plainFileMode); err != nil {
+			return rep, fmt.Errorf("write control account jwt: %w", err)
+		}
 	}
 
 	path, err := r.Export(ctx, c)
@@ -364,12 +414,13 @@ func (r *Root) Seal(ctx context.Context, nc *nats.Conn, opts SealOptions) (SealR
 // sealEntries writes every entry the material holds, reads each back, and
 // reports; an entry that exists and differs is a conflict. The core both
 // seals share — the dev root's and the material's.
-func sealEntries(ctx context.Context, c *Custody, b *Bootstrap, ctrlUsers, sysUsers map[string]string) (SealReport, error) {
+func sealEntries(ctx context.Context, c *Custody, b *Bootstrap, ctrlUsers, sysUsers map[string]string, sentinel []byte) (SealReport, error) {
 	var rep SealReport
 	opPub, err := PublicKeyOfSeed(b.OperatorSigningSeed)
 	if err != nil {
 		return rep, fmt.Errorf("operator signing seed: %w", err)
 	}
+	auth := AuthRecord{XKeySeed: string(b.AuthXKeySeed), SentinelCreds: string(sentinel)}
 	entries := []sealEntry{
 		{
 			key:  keyOperator,
@@ -381,14 +432,11 @@ func sealEntries(ctx context.Context, c *Custody, b *Bootstrap, ctrlUsers, sysUs
 		},
 		accountEntry(ctx, c, AccountRecord{Name: "SYS", PublicKey: b.SystemAccountPub, Seed: string(b.SystemAccountSeed), JWT: b.SystemAccountJWT, Users: sysUsers}),
 		accountEntry(ctx, c, AccountRecord{Name: "CONTROL", PublicKey: b.ControlAccountPub, Seed: string(b.ControlAccountSeed), JWT: b.ControlAccountJWT, Users: ctrlUsers}),
-		accountEntry(ctx, c, AccountRecord{Name: "AUTH", PublicKey: b.AuthAccountPub, Seed: string(b.AuthAccountSeed), JWT: b.AuthAccountJWT}),
 		{
-			key:  keyAuth,
-			want: AuthRecord{XKeySeed: string(b.AuthXKeySeed), BridgeCreds: string(b.BridgeCreds), SentinelCreds: string(b.SentinelCreds)},
-			write: func() (uint64, error) {
-				return c.PutAuth(ctx, AuthRecord{XKeySeed: string(b.AuthXKeySeed), BridgeCreds: string(b.BridgeCreds), SentinelCreds: string(b.SentinelCreds)}, 0)
-			},
-			read: func() (any, uint64, error) { return c.Auth(ctx) },
+			key:   keyAuth,
+			want:  auth,
+			write: func() (uint64, error) { return c.PutAuth(ctx, auth, 0) },
+			read:  func() (any, uint64, error) { return c.Auth(ctx) },
 		},
 	}
 	for _, e := range entries {
@@ -421,8 +469,8 @@ func sealEntries(ctx context.Context, c *Custody, b *Bootstrap, ctrlUsers, sysUs
 }
 
 // verifySealed is the ceremony on a root that already sealed: the bucket
-// exists and its identities — the operator signing key, every bootstrap
-// account — are this root's. The account JWTs are not compared: the
+// exists and its identities — the operator signing key, both platform
+// accounts — are this root's. The account JWTs are not compared: the
 // bucket's move on with every instance change and rotation, and the root's
 // copies are the rendering inputs they were born as.
 func (r *Root) verifySealed(ctx context.Context, nc *nats.Conn) (SealReport, error) {
@@ -454,7 +502,7 @@ func (r *Root) verifySealed(ctx context.Context, nc *nats.Conn) (SealReport, err
 		rep.Conflict = append(rep.Conflict, keyOperator)
 	}
 	for _, want := range []struct{ name, pub string }{
-		{"SYS", r.B.SystemAccountPub}, {"CONTROL", r.B.ControlAccountPub}, {"AUTH", r.B.AuthAccountPub},
+		{"SYS", r.B.SystemAccountPub}, {"CONTROL", r.B.ControlAccountPub},
 	} {
 		rec, _, err := c.Account(ctx, want.name)
 		if err != nil {

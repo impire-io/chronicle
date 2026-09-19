@@ -414,14 +414,19 @@ func TestRotationLiveWithBothKeysTrusted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bundle: %v", err)
 	}
+	sealSys, err := mint.ConnectCreds(url, bundle.SysCreds, "seal-sys")
+	if err != nil {
+		t.Fatalf("connect for seal: %v", err)
+	}
 	sealConn, err := mint.ConnectCreds(url, bundle.ControlCreds, "seal")
 	if err != nil {
 		t.Fatalf("connect for seal: %v", err)
 	}
-	if _, err := r.Seal(ctx, sealConn, mint.SealOptions{Replicas: 1}); err != nil {
+	if _, err := r.Seal(ctx, sealSys, sealConn, mint.SealOptions{Replicas: 1}); err != nil {
 		t.Fatalf("seal: %v", err)
 	}
 	sealConn.Close()
+	sealSys.Close()
 
 	// A tenant and a member under the old key.
 	driverAt := func(url string) *mint.JWTDriver {
@@ -526,7 +531,7 @@ func TestRotationLiveWithBothKeysTrusted(t *testing.T) {
 	if op, _, _ := c1.Operator(ctx); op.PublicKey != newPub {
 		t.Fatalf("the bucket names %s, want the new key %s", op.PublicKey, newPub)
 	}
-	for _, name := range []string{"SYS", "CONTROL", "AUTH"} {
+	for _, name := range []string{"SYS", "CONTROL"} {
 		rec, _, err := c1.Account(ctx, name)
 		if err != nil {
 			t.Fatal(err)

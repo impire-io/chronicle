@@ -153,7 +153,7 @@ func Up(ctx context.Context, cfg Config) (*Fleet, error) {
 		f.Stop()
 		return nil, err
 	}
-	if _, err := r.Seal(ctx, ctrlConn, mint.SealOptions{Replicas: 1}); err != nil {
+	if _, err := r.Seal(ctx, sysConn, ctrlConn, mint.SealOptions{Replicas: 1}); err != nil {
 		f.Stop()
 		return nil, fmt.Errorf("seal custody: %w", err)
 	}
@@ -261,7 +261,6 @@ func Up(ctx context.Context, cfg Config) (*Fleet, error) {
 		githubClientID: cfg.GithubClientID,
 		bridgeProfile:  filepath.Join(dir, bridgeProfileFile),
 		logger:         logger,
-		connect:        connect,
 	})
 	if err != nil {
 		f.Stop()

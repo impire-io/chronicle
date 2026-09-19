@@ -41,6 +41,7 @@ func Seal(ctx context.Context, args []string, out io.Writer) error {
 	controlSeed := fs.String("control-seed", "", "the CONTROL account seed the environment generated (required)")
 	outDir := fs.String("out", filepath.Join(devdir.BundlesDir, "instance-1"), "where the first instance's bundle is written")
 	export := fs.String("export", "", "where the dated export is written (default: auth-export-<stamp>.json beside the bundle)")
+	verifyWith := fs.String("bundle", "", "the first instance's bundle, to verify a cluster that is sealed already")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -57,7 +58,13 @@ func Seal(ctx context.Context, args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	rep, bundle, custody, err := mint.SealFromMaterial(ctx, *url, m, mint.SealOptions{Replicas: *replicas})
+	sealOpts := mint.SealOptions{Replicas: *replicas}
+	if *verifyWith != "" {
+		if sealOpts.VerifyWith, err = mint.ReadBundle(*verifyWith); err != nil {
+			return err
+		}
+	}
+	rep, bundle, custody, err := mint.SealFromMaterial(ctx, *url, m, sealOpts)
 	if err != nil {
 		return err
 	}

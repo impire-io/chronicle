@@ -753,7 +753,7 @@ func TestUpFleetUsersAreFenced(t *testing.T) {
 
 	// The dev dir keeps what the offline root keeps: identity, node keys,
 	// bundles, exports — no working key, no bootstrap user.
-	for _, file := range []string{"operator-signing.nk", "sys-account.nk", "control-account.nk", "bridge.creds"} {
+	for _, file := range []string{"operator-signing.nk", "sys-account.nk", "control-account.nk", "auth-xkey.nk"} {
 		if _, err := os.Stat(filepath.Join(dir, file)); !os.IsNotExist(err) {
 			t.Fatalf("up left %s in the dev dir (%v)", file, err)
 		}

@@ -43,15 +43,10 @@ type Bootstrap struct {
 	ControlAccountJWT  string
 	ControlAccountSeed []byte
 
-	// The AUTH account of decision 0026 — the callout bridge's trigger
-	// account (authbootstrap.go). SentinelCreds are public by design;
-	// the seeds are custody like every other.
-	AuthAccountPub  string
-	AuthAccountJWT  string
-	AuthAccountSeed []byte
-	AuthXKeySeed    []byte
-	BridgeCreds     []byte
-	SentinelCreds   []byte
+	// AuthXKeySeed is the callout xkey (authbootstrap.go): CONTROL is the
+	// auth account, and requests arrive sealed to this key's public half.
+	// The dev root holds it until seal; the bucket's `auth` entry after.
+	AuthXKeySeed []byte
 }
 
 // bootstrap file names inside the data dir. The two the CLI reads are
@@ -124,7 +119,7 @@ func loadBootstrap(dir string) (*Bootstrap, error) {
 	if err := b.ensureControlJetStream(); err != nil {
 		return nil, err
 	}
-	if err := b.ensureAuthAccount(); err != nil {
+	if err := b.loadXKey(); err != nil {
 		return nil, err
 	}
 	return b, nil
@@ -147,13 +142,9 @@ func (b *Bootstrap) OperatorSigningKeys() ([]string, error) {
 }
 
 // workingSecretFiles is what seal shreds from the root once the bucket
-// holds it: the seeds the bucket now keeps, and the AUTH account's users
-// until the fold moves them. What survives is the operator identity, the
-// node keys, the bundles, and public material.
-var workingSecretFiles = []string{
-	fOperatorSK, fSysAcctNK, fCtrlAcctNK,
-	fAuthAcctNK, fAuthXKeyNK, fBridgeCreds, fSentinelCreds,
-}
+// holds it: the seeds the bucket now keeps. What survives is the operator
+// identity, the node keys, the bundles, and public material.
+var workingSecretFiles = []string{fOperatorSK, fSysAcctNK, fCtrlAcctNK, fAuthXKeyNK}
 
 // shredWorkingKeys overwrites and removes the working secrets from dir.
 // Absent files are already shredded. The in-memory Bootstrap keeps what
@@ -371,21 +362,17 @@ func initBootstrap(dir string) (*Bootstrap, error) {
 		ControlAccountJWT:   controlJWT,
 		ControlAccountSeed:  caSeed,
 	}
-	if err := b.ensureAuthAccount(); err != nil {
+	if err := b.ensureXKey(); err != nil {
 		return nil, err
 	}
 	return b, nil
 }
 
-// issueDirect mints a user signed by the account key itself — the
-// bootstrap accounts need no signing-key ceremony. The public key comes
-// back beside the creds: the AUTH account lists its bridge user by it.
-func issueDirect(akp nkeys.KeyPair, apub, name string) ([]byte, string, error) {
-	return issueDirectWith(akp, apub, name, jwt.UserPermissionLimits{})
-}
-
-// issueDirectWith is issueDirect with a permission template — the fence of
-// design 10: every SYS and CONTROL user carries its role's template.
+// issueDirectWith mints a user signed by the account key itself — the
+// platform accounts need no signing-key ceremony — under a permission
+// template, the fence of design 10: every SYS and CONTROL user carries
+// its role's template. The public key comes back beside the creds: the
+// account record lists the user by it.
 func issueDirectWith(akp nkeys.KeyPair, apub, name string, limits jwt.UserPermissionLimits) ([]byte, string, error) {
 	ukp, upub, err := newKey(nkeys.CreateUser)
 	if err != nil {
@@ -427,7 +414,7 @@ func newKey(create func() (nkeys.KeyPair, error)) (nkeys.KeyPair, string, error)
 
 // ServerOptions builds the embedded operator-mode server for this
 // bootstrap: trusted operator, dir (full) resolver preloaded with the two
-// bootstrap accounts, JetStream on. Port -1 picks a free port.
+// platform accounts, JetStream on. Port -1 picks a free port.
 func (b *Bootstrap) ServerOptions(port int) (*server.Options, error) {
 	opClaims, err := jwt.DecodeOperatorClaims(b.OperatorJWT)
 	if err != nil {
@@ -442,9 +429,6 @@ func (b *Bootstrap) ServerOptions(port int) (*server.Options, error) {
 	}
 	if err := res.Store(b.ControlAccountPub, b.ControlAccountJWT); err != nil {
 		return nil, fmt.Errorf("preload control account: %w", err)
-	}
-	if err := res.Store(b.AuthAccountPub, b.AuthAccountJWT); err != nil {
-		return nil, fmt.Errorf("preload auth account: %w", err)
 	}
 	return &server.Options{
 		Host:             "127.0.0.1",

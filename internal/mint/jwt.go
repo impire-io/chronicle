@@ -288,7 +288,7 @@ func (d *JWTDriver) Reconcile(ctx context.Context) ([]string, error) {
 	}
 	type acct struct{ name, pub, token string }
 	var accts []acct
-	for _, name := range []string{"SYS", "CONTROL", "AUTH"} {
+	for _, name := range []string{"SYS", "CONTROL"} {
 		rec, _, err := d.Custody.Account(ctx, name)
 		if errors.Is(err, ErrNoRecord) {
 			continue

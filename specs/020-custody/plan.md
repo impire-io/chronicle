@@ -273,6 +273,39 @@ round trip through `up`. Calls made while building:
   The hosted shape has no such guard — it runs against the live cluster.
 - **A rotation refuses an unsealed dev dir** by name: run `up` once first.
 
+## Increment 7 — landed on this branch
+
+The AUTH account folds into CONTROL (0030 point 6). CONTROL's JWT carries
+the external-authorization config — every account allowed, the callout
+xkey whose seed the bucket's `auth` entry holds — and lists every user
+chronicle issued as bypassing callout: seal lists the first instance,
+`instance add` lists each new user in the same re-sign it lands by
+compare-and-set and pushes, `instance remove` unlists and revokes. The
+sentinel is the one CONTROL user never listed, issued at seal and held in
+`auth`, so it is always gated. The bridge answers on a control instance's
+own connection and signs with CONTROL's account key, both of which the
+instance already holds; `auth-account.*`, `bridge.creds` and the AUTH
+preload are gone, and chronicle's platform accounts are SYS and CONTROL.
+Spec 017's callout tests re-target CONTROL and pass: placement through
+the bridge lands in the tenant, the refusals hold. Calls made while
+building:
+
+- **A bucket that exists is verified, never re-sealed** — by the process
+  that sealed as much as by a reloaded root — because a re-seal would
+  issue a second sentinel and conflict with the first.
+- **The callout stamp comes last, and is repaired from the bucket.** The
+  material seal writes the bucket first and stamps CONTROL after, so a
+  seal that stops between the two is re-run from a bucket the ceremony
+  can still reach; every later run re-derives the stamp from the bucket's
+  xkey and users list and pushes only if something is missing.
+- **A sealed cluster is verified with the first instance's bundle.** Once
+  CONTROL gates every user it did not list, a control user issued afresh
+  from the seeds cannot connect; `seal --bundle` names the bundle the
+  first seal handed out, and without it the seal says the cluster is
+  sealed already rather than dialing.
+- **Tenant users are untouched by CONTROL's callout** — it gates one
+  account — verified beside the gate on the sentinel.
+
 ## Reshaped by 0031 and 0032 — before increment 4
 
 The review of increment 3 asked whether a `fleet`-template credential was a
@@ -317,7 +350,7 @@ nothing else should land on the wrong side of it.
    the environment's steps around the service's. Tests: seal from
    material on an embedded trio; rotation on a live fleet with both keys
    trusted and a mint mid-roll; every credential connects after.
-7. **The AUTH fold**; spec 017's callout tests re-targeted.
+7. ~~**The AUTH fold**~~ — landed; spec 017's callout tests re-targeted.
 8. **`rollup.go` decline**; `replicas_test.go` green; `--node-replicas`.
 9. README and spec pointers; `make check`; mark ready. Close PR #23 and
    PR #24 as superseded with a pointer here.

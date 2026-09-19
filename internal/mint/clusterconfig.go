@@ -68,23 +68,13 @@ type preloadEntry struct {
 	jwt string
 }
 
-// preloadAccounts is every account the bootstrap holds. A bootstrap account
-// added later (the AUTH account of design 08 among them) joins the preload
-// here and rides into every emitted config without touching the rendering.
+// preloadAccounts is the two platform accounts — SYS, which is NATS's,
+// and CONTROL, which is chronicle's and the auth account (0030 point 6).
 func (b *Bootstrap) preloadAccounts() []preloadEntry {
-	var entries []preloadEntry
-	for _, e := range []preloadEntry{
+	return []preloadEntry{
 		{pub: b.SystemAccountPub, jwt: b.SystemAccountJWT},
 		{pub: b.ControlAccountPub, jwt: b.ControlAccountJWT},
-		{pub: b.AuthAccountPub, jwt: b.AuthAccountJWT},
-	} {
-		// The environment's material has no AUTH account: the service
-		// births it at seal (until the fold, 0030 point 6).
-		if e.pub != "" {
-			entries = append(entries, e)
-		}
 	}
-	return entries
 }
 
 // EmitClusterConfigs renders one self-contained nats-server config per node:

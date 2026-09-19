@@ -29,7 +29,8 @@ that verified the load-bearing parts on real servers is chronicle-hq
 **Status:** specified on this branch ([plan.md](plan.md)); increments 1–3
 landed at design 10 @ `dd6b17c`; the remainder reshaped against `f56ad8c`
 (0031, 0032); increments 4 (the fence by role), 5 (the standalone plane,
-the sixth binary) and 6 (the ceremony split, rotation live) landed.
+the sixth binary), 6 (the ceremony split, rotation live) and 7 (the AUTH
+fold) landed.
 **Supersedes:** spec 019 / PR #23 (the standalone control plane, still
 hosting the workload service) — its composition is carried here, reshaped;
 its `contrib/` units are **not**: units are the environment's

@@ -133,7 +133,6 @@ func StartControlPlane(ctx context.Context, cfg ControlPlaneConfig) (*ControlPla
 		githubClientID: cfg.GithubClientID,
 		bridgeProfile:  profile,
 		logger:         logger,
-		connect:        connect,
 	})
 	if err != nil {
 		cp.Stop()
@@ -147,8 +146,8 @@ func StartControlPlane(ctx context.Context, cfg ControlPlaneConfig) (*ControlPla
 const bridgeProfileFile = "bridge.json"
 
 // controlInputs is what starting control needs, whichever root composes
-// it: the instance's control connection and its driver over custody, the
-// bridge's configuration, and a connect the owner tracks for teardown.
+// it: the instance's control connection and its driver over custody, and
+// the bridge's configuration.
 type controlInputs struct {
 	url            string
 	ctrlConn       *nats.Conn
@@ -157,7 +156,6 @@ type controlInputs struct {
 	githubClientID string
 	bridgeProfile  string
 	logger         *slog.Logger
-	connect        func(creds []byte, name string) (*nats.Conn, error)
 }
 
 // startControl is the composition both roots share: the bridge from
@@ -167,21 +165,20 @@ type controlInputs struct {
 func startControl(ctx context.Context, in controlInputs) (micro.Service, error) {
 	var bridgeCfg *control.BridgeConfig
 	if in.githubClientID != "" {
+		// CONTROL is the auth account (0030 point 6): the bridge answers
+		// on this instance's own connection — a listed user — and signs
+		// with CONTROL's account key, both read from custody.
 		authRec, _, err := in.custody.Auth(ctx)
 		if err != nil {
 			return nil, err
 		}
-		authAcct, _, err := in.custody.Account(ctx, "AUTH")
-		if err != nil {
-			return nil, err
-		}
-		authConn, err := in.connect([]byte(authRec.BridgeCreds), "chronicle-bridge")
+		ctrlAcct, _, err := in.custody.Account(ctx, "CONTROL")
 		if err != nil {
 			return nil, err
 		}
 		bridgeCfg = &control.BridgeConfig{
-			Conn:               authConn,
-			ResponseSignerSeed: []byte(authAcct.Seed),
+			Conn:               in.ctrlConn,
+			ResponseSignerSeed: []byte(ctrlAcct.Seed),
 			XKeySeed:           []byte(authRec.XKeySeed),
 			Validator:          &github.Client{ClientID: in.githubClientID},
 			Logger:             in.logger,

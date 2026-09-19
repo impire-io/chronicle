@@ -51,6 +51,11 @@ func StartSealedOperator(t *testing.T) (url string, r *mint.Root) {
 	if err != nil {
 		t.Fatalf("bundle: %v", err)
 	}
+	sysConn, err := mint.ConnectCreds(srv.ClientURL(), bundle.SysCreds, "seal-sys")
+	if err != nil {
+		t.Fatalf("connect for seal: %v", err)
+	}
+	defer sysConn.Close()
 	nc, err := mint.ConnectCreds(srv.ClientURL(), bundle.ControlCreds, "seal")
 	if err != nil {
 		t.Fatalf("connect for seal: %v", err)
@@ -58,7 +63,7 @@ func StartSealedOperator(t *testing.T) (url string, r *mint.Root) {
 	defer nc.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	if _, err := r.Seal(ctx, nc, mint.SealOptions{Replicas: 1}); err != nil {
+	if _, err := r.Seal(ctx, sysConn, nc, mint.SealOptions{Replicas: 1}); err != nil {
 		t.Fatalf("seal: %v", err)
 	}
 	return srv.ClientURL(), r

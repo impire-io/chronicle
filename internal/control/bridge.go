@@ -24,7 +24,7 @@ import (
 // refusals, and no registry write ever happens on this path.
 
 // authCalloutSubject is where the server asks (ADR-26); the bridge answers
-// on a connection inside the AUTH account.
+// on a connection inside CONTROL, the auth account (0030 point 6).
 const authCalloutSubject = "$SYS.REQ.USER.AUTH"
 
 // serverXKeyHeader carries the server's public curve key on encrypted
@@ -33,14 +33,16 @@ const serverXKeyHeader = "Nats-Server-Xkey"
 
 // BridgeConfig wires the responder.
 type BridgeConfig struct {
-	// Conn is a connection authenticated as the AUTH account's bridge
-	// user (mint.Bootstrap.BridgeCreds) — the auth_users bypass.
+	// Conn is a connection authenticated as a CONTROL user listed in
+	// auth_users — the control instance's own; every user chronicle
+	// issues is listed, and only the sentinel is not.
 	Conn *nats.Conn
-	// ResponseSignerSeed is the AUTH account's identity seed: responses
-	// must be signed by the account the callout runs in.
+	// ResponseSignerSeed is CONTROL's account seed: responses must be
+	// signed by the account the callout runs in.
 	ResponseSignerSeed []byte
-	// XKeySeed is the AUTH account's curve seed; requests arrive sealed
-	// to its public half and responses go back sealed to the server.
+	// XKeySeed is the callout's curve seed (custody's `auth` entry);
+	// requests arrive sealed to its public half and responses go back
+	// sealed to the server.
 	XKeySeed []byte
 	// Validator answers who holds a presented token.
 	Validator github.TokenValidator

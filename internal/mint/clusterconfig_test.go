@@ -233,12 +233,17 @@ func TestEmittedConfigsFormAClusterThatMintsEverywhere(t *testing.T) {
 	if sealErr != nil {
 		t.Fatalf("seal from material into the cluster: %v", sealErr)
 	}
-	if rep.Instance != "instance-1" || len(rep.Written) != 5 || len(bundle.SysCreds) == 0 {
+	if rep.Instance != "instance-1" || len(rep.Written) != 4 || len(bundle.SysCreds) == 0 {
 		t.Fatalf("seal report %+v, bundle sys=%d", rep, len(bundle.SysCreds))
 	}
-	// A second seal with the same material writes nothing.
-	again, _, _, err := mint.SealFromMaterial(ctx, servers[0].ClientURL(), material, mint.SealOptions{Replicas: 3})
-	if err != nil || len(again.Written) != 0 || len(again.Matched) != 4 {
+	// A second seal with the same material writes nothing — and needs the
+	// first instance's bundle, since CONTROL now gates every user it did
+	// not list; without it the seal says so.
+	if _, _, _, err := mint.SealFromMaterial(ctx, servers[0].ClientURL(), material, mint.SealOptions{Replicas: 3}); err == nil || !strings.Contains(err.Error(), "sealed already") {
+		t.Fatalf("second seal without the bundle: %v", err)
+	}
+	again, _, _, err := mint.SealFromMaterial(ctx, servers[0].ClientURL(), material, mint.SealOptions{Replicas: 3, VerifyWith: bundle})
+	if err != nil || len(again.Written) != 0 || len(again.Matched) != 3 {
 		t.Fatalf("second seal: %+v, %v", again, err)
 	}
 

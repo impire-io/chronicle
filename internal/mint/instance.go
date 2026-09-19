@@ -37,15 +37,17 @@ var ErrInstanceExists = errors.New("instance already exists")
 var ErrNoSuchInstance = errors.New("no such instance")
 
 // AddInstance issues an instance's users from the account seeds custody
-// holds and records them on the accounts by compare-and-set. Nothing in
-// the account JWTs changes before the AUTH fold, so nothing is pushed;
-// the bundle comes back for the caller to write where the host reads it.
+// holds and records them on the accounts by compare-and-set. CONTROL is
+// the auth account, so the new user is listed as bypassing callout — the
+// re-sign and push design 10 § the AUTH account folds into CONTROL names
+// as the cost of one account fewer. The bundle comes back for the caller
+// to write where the host reads it.
 func (d *JWTDriver) AddInstance(ctx context.Context, name string, t Template) (Bundle, error) {
 	if err := validInstanceName(name); err != nil {
 		return Bundle{}, err
 	}
 	var bundle Bundle
-	err := d.mutateAccount(ctx, "CONTROL", func(rec *AccountRecord, _ *jwt.AccountClaims) (bool, error) {
+	err := d.mutateAccount(ctx, "CONTROL", func(rec *AccountRecord, ac *jwt.AccountClaims) (bool, error) {
 		if _, taken := rec.Users[name]; taken {
 			return false, fmt.Errorf("%w: %s", ErrInstanceExists, name)
 		}
@@ -58,7 +60,8 @@ func (d *JWTDriver) AddInstance(ctx context.Context, name string, t Template) (B
 		}
 		rec.Users[name] = creds.PublicKey
 		bundle.ControlCreds = creds.File
-		return false, nil
+		ac.Authorization.AuthUsers.Add(creds.PublicKey)
+		return true, nil
 	})
 	if err != nil {
 		return Bundle{}, err
@@ -80,9 +83,10 @@ func (d *JWTDriver) AddInstance(ctx context.Context, name string, t Template) (B
 	})
 	if err != nil {
 		// Half an instance is no instance: take the CONTROL record back.
-		_ = d.mutateAccount(ctx, "CONTROL", func(rec *AccountRecord, _ *jwt.AccountClaims) (bool, error) {
+		_ = d.mutateAccount(ctx, "CONTROL", func(rec *AccountRecord, ac *jwt.AccountClaims) (bool, error) {
+			ac.Authorization.AuthUsers.Remove(rec.Users[name])
 			delete(rec.Users, name)
-			return false, nil
+			return true, nil
 		})
 		return Bundle{}, err
 	}
@@ -106,6 +110,7 @@ func (d *JWTDriver) RemoveInstance(ctx context.Context, name string) error {
 			}
 			found = true
 			ac.Revoke(pub)
+			ac.Authorization.AuthUsers.Remove(pub)
 			delete(rec.Users, name)
 			return true, nil
 		})

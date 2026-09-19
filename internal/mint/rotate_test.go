@@ -194,7 +194,7 @@ func sealedDriver(ctx context.Context, t *testing.T, r *mint.Root, bundle mint.B
 		t.Fatalf("connect control: %v", err)
 	}
 	t.Cleanup(ctrlConn.Close)
-	if _, err := r.Seal(ctx, ctrlConn, mint.SealOptions{Replicas: 1}); err != nil {
+	if _, err := r.Seal(ctx, sysConn, ctrlConn, mint.SealOptions{Replicas: 1}); err != nil {
 		t.Fatalf("seal: %v", err)
 	}
 	c, err := mint.OpenCustody(ctx, ctrlConn)
