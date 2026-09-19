@@ -211,12 +211,7 @@ func Up(ctx context.Context, cfg Config) (*Fleet, error) {
 		}
 	}
 
-	driver := &mint.JWTDriver{
-		OperatorSigningSeed: b.OperatorSigningSeed,
-		SysConn:             sysConn,
-		URL:                 f.URL,
-		ControlAccountPub:   b.ControlAccountPub,
-	}
+	driver := b.Driver(sysConn, f.URL)
 	ctrl, err := control.Start(ctrlConn, control.Config{
 		Driver:      driver,
 		URL:         f.URL,

@@ -8,6 +8,7 @@ import (
 
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats-server/v2/server"
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
 
 	"github.com/impire-io/chronicle/contract"
@@ -372,6 +373,20 @@ func (b *Bootstrap) StartServer(port int) (*server.Server, error) {
 
 // AccountsDir is where the install keeps per-tenant issuance material.
 func (b *Bootstrap) AccountsDir() string { return b.ensureDir(accountsDir) }
+
+// Driver builds the account-minting driver from this bootstrap's material.
+// Every composition root — the in-process fleet and the standalone
+// chronicle-control binary — must build it here: hand-assembled drivers
+// are how the two drifted on whether a minted tenant carries the
+// fleet-bridge import (chronicle-16).
+func (b *Bootstrap) Driver(sysConn *nats.Conn, url string) *JWTDriver {
+	return &JWTDriver{
+		OperatorSigningSeed: b.OperatorSigningSeed,
+		SysConn:             sysConn,
+		URL:                 url,
+		ControlAccountPub:   b.ControlAccountPub,
+	}
+}
 
 // WriteClientURL records the running server's client URL for the CLI.
 func (b *Bootstrap) WriteClientURL(url string) error {
