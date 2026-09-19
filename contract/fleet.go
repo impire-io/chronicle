@@ -17,6 +17,13 @@ import (
 // state bucket STATE_FLEET, subjects CHRON.fleet.>.
 const FleetLog = "fleet"
 
+// AuthBucket is the control account's custody bucket (decision 0030;
+// design 10-custody.md): the working keys every control instance shares
+// and the canonical account JWTs beside them. Fenced by the permissions in
+// every non-control user's JWT, encrypted at rest by the server, never
+// exported to a tenant. Its stream is KV_AUTH.
+const AuthBucket = "AUTH"
+
 // The thing families. The family tokens are reserved within the fleet log;
 // a third family is a design amendment, not an ad-hoc subject.
 const (

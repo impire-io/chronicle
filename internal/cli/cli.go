@@ -136,8 +136,11 @@ func usage(out io.Writer) error {
 
 run a fleet
   chronicle up [--dir D] [--port N]
-  chronicle operator rotate-signing-key [--dir D]        the trust root, fleet stopped
+  chronicle operator init [--dir D]                      birth the offline root and the first instance's bundle
   chronicle operator emit-cluster-config --node <name>=<host>[:cp[:kp]] ... [--dir D] [--out P]
+  chronicle operator seal --url U --replicas N [--dir D] move the working keys into the AUTH bucket
+  chronicle operator export [--url U] [--dir D]          a dated export of the bucket into the root
+  chronicle operator rotate-signing-key [--dir D]        the trust root, fleet stopped
 
 own its tenants (fleet dir)
   chronicle tenant create <name> [--admin P] [--out F]   mints and selects the admin's context

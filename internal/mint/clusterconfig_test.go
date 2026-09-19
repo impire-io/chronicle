@@ -68,6 +68,24 @@ func TestEmitClusterConfigsRendering(t *testing.T) {
 	}
 }
 
+// TestEmitClusterConfigsEncryptAtRest: every emitted node encrypts its
+// store (design 10 § at rest), and the key is read from the node's
+// environment — it never enters the file.
+func TestEmitClusterConfigsEncryptAtRest(t *testing.T) {
+	b := testBootstrap(t)
+	cfgs, err := b.EmitClusterConfigs(mint.ClusterConfig{Nodes: []mint.ClusterNode{{Name: "n1", Host: "10.0.0.1"}}})
+	if err != nil {
+		t.Fatalf("emit: %v", err)
+	}
+	c := cfgs[0].Content
+	if !strings.Contains(c, "cipher: chacha") || !strings.Contains(c, "key: $"+mint.JetStreamKeyEnv) {
+		t.Fatalf("config does not encrypt at rest from the environment:\n%s", c)
+	}
+	if strings.Contains(c, "key: \"") || strings.Contains(c, "key: '") {
+		t.Fatal("config carries a literal key")
+	}
+}
+
 func TestEmitClusterConfigsRefusals(t *testing.T) {
 	b := testBootstrap(t)
 	one := []mint.ClusterNode{{Name: "n1", Host: "10.0.0.1"}}
@@ -126,6 +144,9 @@ func TestEmittedConfigsFormAClusterThatMintsEverywhere(t *testing.T) {
 	b := testBootstrap(t)
 	tmp := t.TempDir()
 	ports := freePorts(t, 6)
+	// The emitted configs read their JetStream key from the environment;
+	// one key serves the three colocated nodes of this test.
+	t.Setenv(mint.JetStreamKeyEnv, strings.Repeat("ab", 32))
 
 	nodes := []mint.ClusterNode{
 		{Name: "n1", Host: "127.0.0.1", ClientPort: ports[0], ClusterPort: ports[3]},

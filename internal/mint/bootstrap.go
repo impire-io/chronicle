@@ -33,10 +33,16 @@ type Bootstrap struct {
 	SystemAccountPub string
 	SystemAccountJWT string
 	SysCreds         []byte
+	// SystemAccountSeed and ControlAccountSeed issue further users of the
+	// two accounts — instance bundles and fleet users (design 10). Empty
+	// on installs bootstrapped before they were persisted; those cannot
+	// issue instances and need a fresh init.
+	SystemAccountSeed []byte
 
-	ControlAccountPub string
-	ControlAccountJWT string
-	ControlCreds      []byte
+	ControlAccountPub  string
+	ControlAccountJWT  string
+	ControlCreds       []byte
+	ControlAccountSeed []byte
 
 	// The AUTH account of decision 0026 — the callout bridge's trigger
 	// account (authbootstrap.go). SentinelCreds are public by design;
@@ -58,9 +64,11 @@ const (
 	fOperatorSK   = "operator-signing.nk"
 	fSysAcctJWT   = "sys-account.jwt"
 	fSysAcctPub   = "sys-account.pub"
+	fSysAcctNK    = "sys-account.nk"
 	fSysCreds     = "sys.creds"
 	fCtrlAcctJWT  = "control-account.jwt"
 	fCtrlAcctPub  = "control-account.pub"
+	fCtrlAcctNK   = "control-account.nk"
 	fCtrlCreds    = devdir.ControlCredsFile
 	resolverDir   = "resolver"
 	jetstreamDir  = "jetstream"
@@ -104,6 +112,14 @@ func loadBootstrap(dir string) (*Bootstrap, error) {
 	// rotation refuses with guidance when it is missing.
 	if opSeed, err := os.ReadFile(filepath.Join(dir, fOperatorNK)); err == nil {
 		b.OperatorSeed = opSeed
+	}
+	// The account seeds arrived with design 10 — same rule: absent is
+	// valid, and only issuing instances needs them.
+	if seed, err := os.ReadFile(filepath.Join(dir, fSysAcctNK)); err == nil {
+		b.SystemAccountSeed = seed
+	}
+	if seed, err := os.ReadFile(filepath.Join(dir, fCtrlAcctNK)); err == nil {
+		b.ControlAccountSeed = seed
 	}
 	b.OperatorJWT = string(opJWT)
 	b.OperatorSigningSeed = opSK
@@ -246,6 +262,14 @@ func initBootstrap(dir string) (*Bootstrap, error) {
 	if err != nil {
 		return nil, fmt.Errorf("operator signing seed: %w", err)
 	}
+	saSeed, err := sakp.Seed()
+	if err != nil {
+		return nil, fmt.Errorf("system account seed: %w", err)
+	}
+	caSeed, err := cakp.Seed()
+	if err != nil {
+		return nil, fmt.Errorf("control account seed: %w", err)
+	}
 
 	files := []struct {
 		name string
@@ -257,9 +281,11 @@ func initBootstrap(dir string) (*Bootstrap, error) {
 		{fOperatorSK, osSeed, keyFileMode},
 		{fSysAcctJWT, []byte(sysJWT), plainFileMode},
 		{fSysAcctPub, []byte(sapub), plainFileMode},
+		{fSysAcctNK, saSeed, keyFileMode},
 		{fSysCreds, sysCreds, keyFileMode},
 		{fCtrlAcctJWT, []byte(controlJWT), plainFileMode},
 		{fCtrlAcctPub, []byte(capub), plainFileMode},
+		{fCtrlAcctNK, caSeed, keyFileMode},
 		{fCtrlCreds, ctrlCreds, keyFileMode},
 	}
 	for _, f := range files {
@@ -276,9 +302,11 @@ func initBootstrap(dir string) (*Bootstrap, error) {
 		SystemAccountPub:    sapub,
 		SystemAccountJWT:    sysJWT,
 		SysCreds:            sysCreds,
+		SystemAccountSeed:   saSeed,
 		ControlAccountPub:   capub,
 		ControlAccountJWT:   controlJWT,
 		ControlCreds:        ctrlCreds,
+		ControlAccountSeed:  caSeed,
 	}
 	if err := b.ensureAuthAccount(); err != nil {
 		return nil, err
@@ -290,12 +318,26 @@ func initBootstrap(dir string) (*Bootstrap, error) {
 // bootstrap accounts need no signing-key ceremony. The public key comes
 // back beside the creds: the AUTH account lists its bridge user by it.
 func issueDirect(akp nkeys.KeyPair, apub, name string) ([]byte, string, error) {
+	return issueDirectWith(akp, apub, name, jwt.UserPermissionLimits{})
+}
+
+// issueDirectWith is issueDirect with a permission template — the fence of
+// design 10: `fleet` users carry FleetTemplate, control instances carry
+// ControlInstanceTemplate.
+func issueDirectWith(akp nkeys.KeyPair, apub, name string, limits jwt.UserPermissionLimits) ([]byte, string, error) {
 	ukp, upub, err := newKey(nkeys.CreateUser)
 	if err != nil {
 		return nil, "", err
 	}
 	uc := jwt.NewUserClaims(upub)
 	uc.Name = name
+	uc.Permissions = limits.Permissions
+	if limits.NatsLimits != (jwt.NatsLimits{}) {
+		// A template that states limits replaces the defaults; one that
+		// states none keeps NewUserClaims' no-limit defaults rather than
+		// zeroing them (a zero jwt.NatsLimits means zero subscriptions).
+		uc.Limits = limits.Limits
+	}
 	token, err := uc.Encode(akp)
 	if err != nil {
 		return nil, "", err
@@ -397,4 +439,37 @@ func (b *Bootstrap) ensureDir(name string) string {
 	p := filepath.Join(b.Dir, name)
 	_ = os.MkdirAll(p, 0o700)
 	return p
+}
+
+// ErrNoAccountSeeds says the install predates design 10's persisted account
+// seeds: it cannot issue instances or fleet users, and its remedy is a
+// fresh init — the same rule operator.nk set for rotation.
+var ErrNoAccountSeeds = fmt.Errorf("this install keeps no SYS/CONTROL account seeds (bootstrapped before design 10); a fresh `chronicle operator init` is the remedy")
+
+// IssueControlUser issues a user of the CONTROL account under the given
+// permission template — a control instance (ControlInstanceTemplate) or a
+// fleet user (FleetTemplate).
+func (b *Bootstrap) IssueControlUser(name string, limits jwt.UserPermissionLimits) (Creds, error) {
+	return issueAccountUser(b.ControlAccountSeed, b.ControlAccountPub, name, limits)
+}
+
+// IssueSystemUser issues a user of the SYS account: every control instance
+// holds one for claims pushes and account lookups.
+func (b *Bootstrap) IssueSystemUser(name string) (Creds, error) {
+	return issueAccountUser(b.SystemAccountSeed, b.SystemAccountPub, name, jwt.UserPermissionLimits{})
+}
+
+func issueAccountUser(seed []byte, pub, name string, limits jwt.UserPermissionLimits) (Creds, error) {
+	if len(seed) == 0 {
+		return Creds{}, ErrNoAccountSeeds
+	}
+	akp, err := nkeys.FromSeed(seed)
+	if err != nil {
+		return Creds{}, fmt.Errorf("account seed: %w", err)
+	}
+	file, upub, err := issueDirectWith(akp, pub, name, limits)
+	if err != nil {
+		return Creds{}, err
+	}
+	return Creds{PublicKey: upub, File: file}, nil
 }

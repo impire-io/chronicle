@@ -45,6 +45,12 @@ type NodeConfig struct {
 	Content string
 }
 
+// JetStreamKeyEnv is the environment variable an emitted config reads its
+// JetStream encryption key from — one key per node, born in the offline
+// root the first time the node is emitted, delivered to the node's unit
+// environment and nowhere else.
+const JetStreamKeyEnv = "NATS_JETSTREAM_KEY"
+
 const (
 	defaultClientPort  = 4222
 	defaultClusterPort = 6222
@@ -147,7 +153,9 @@ func (b *Bootstrap) EmitClusterConfigs(cfg ClusterConfig) ([]NodeConfig, error) 
 		}
 		fmt.Fprintf(&c, "operator: %s\n", strings.TrimSpace(b.OperatorJWT))
 		fmt.Fprintf(&c, "system_account: %s\n\n", b.SystemAccountPub)
-		fmt.Fprintf(&c, "jetstream {\n  store_dir: '%s'\n}\n\n", storeDir)
+		// Encrypted at rest with the node's own key (design 10 § at rest),
+		// which never enters the config: the unit environment carries it.
+		fmt.Fprintf(&c, "jetstream {\n  store_dir: '%s'\n  cipher: chacha\n  key: $%s\n}\n\n", storeDir, JetStreamKeyEnv)
 		fmt.Fprintf(&c, "cluster {\n  name: %s\n  listen: %s:%d\n  routes: [\n%s  ]\n}\n\n",
 			clusterName, listenHost, portOr(n.ClusterPort, clusterPort), routes.String())
 		fmt.Fprintf(&c, "resolver {\n  type: full\n  dir: '%s'\n  interval: \"2m\"\n  timeout: \"1.9s\"\n}\n\n", resolverDir)

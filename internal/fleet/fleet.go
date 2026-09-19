@@ -407,11 +407,18 @@ func EmitClusterConfig(args []string, out io.Writer) error {
 		return fmt.Errorf("operator emit-cluster-config takes no positionals")
 	}
 
-	b, err := mint.LoadOrInitBootstrap(*dir)
+	r, err := mint.InitRoot(*dir)
 	if err != nil {
 		return err
 	}
-	cfgs, err := b.EmitClusterConfigs(mint.ClusterConfig{
+	// Every emitted node encrypts its store at rest with its own key, born
+	// here the first time the node is named and kept in the root only.
+	for _, n := range nodes {
+		if _, err := r.NodeKey(n.Name); err != nil {
+			return err
+		}
+	}
+	cfgs, err := r.B.EmitClusterConfigs(mint.ClusterConfig{
 		Nodes:       nodes,
 		ClientPort:  *clientPort,
 		ClusterPort: *clusterPort,
@@ -436,7 +443,7 @@ func EmitClusterConfig(args []string, out io.Writer) error {
 		fmt.Fprintf(out, "wrote %s\n", path)
 	}
 	fmt.Fprintln(out, "copy each config to its host and run: nats-server -c <name>.conf")
-	fmt.Fprintln(out, "the configs carry no seeds; the bootstrap dir stays the custody")
+	fmt.Fprintf(out, "each node's %s is recorded in %s — set it in the node's unit environment; the configs carry no seeds and no keys\n", mint.JetStreamKeyEnv, filepath.Join(r.Dir, "root.json"))
 	return nil
 }
 

@@ -45,6 +45,32 @@ contrib/systemd/*                chronicle-workloads.service; control's flags
 README.md, specs/018, specs/019  pointers follow
 ```
 
+## Increment 1 — landed on this branch
+
+The store (`custody.go`), the templates (`templates.go`), the root
+(`root.go`: init, seal, export, bundles, node keys), encryption at rest in
+every emitted config, and the three verbs — with tests on real servers:
+eight-way compare-and-set with no lost update; the fence in operator mode
+(open, direct get, publish, consumer all refused; the user's own bucket
+works; a control instance reads); init → bundle connects → seal → read back
+→ export → second seal matches → a foreign root is refused; the emitted
+trio boots encrypted from the environment key. Three calls made while
+building, recorded against the spec:
+
+- **Node keys are born at emit, not at init.** `emit-cluster-config` is
+  where nodes are named; the first emit of a node records its key in
+  `root.json`. `init` stays a nodes-free birth.
+- **The config carries no key.** It reads `$NATS_JETSTREAM_KEY` from the
+  node's unit environment; the root records the value. A config file is
+  world-readable by convention; a key in it would not be.
+- **`seal --replicas` is required**, not defaulted: 3 on the trio, 1 on a
+  single server, said by the operator reading the runbook — a silent R1
+  custody bucket on a cluster is the failure a default would invite.
+- **Seal does not yet shred the root's working seeds**: the driver and
+  control still read the directory until increment 2 moves them; the
+  shred lands with that move, so no intermediate state on this branch
+  leaves a working install without its keys.
+
 ## Order — each step a green `make check`
 
 1. `custody.go` + `root.go`: the store, the templates, init/seal/export
