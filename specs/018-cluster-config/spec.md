@@ -6,6 +6,11 @@
 § the substrate, § the stand-up ceremony, per decision
 [`0027`](../../../chronicle-hq/03-DECISIONS/0027-the-hosted-environment-runs-on-our-own-cluster-at-scaleway.md).
 **Status:** in progress on this branch ([plan.md](plan.md)).
+**Superseded in part by spec [020](../020-custody/spec.md)** (decision
+0031): rendering node configs is the environment's, so `chronicle
+operator emit-cluster-config` left the CLI; the renderer this spec built
+stays in `internal/mint` as the substrate the trio test boots from, with
+`jetstream { cipher, key }` per node as design 10 asked.
 
 ## What this delivers
 

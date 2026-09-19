@@ -43,11 +43,14 @@ chronicle up
 ```
 
 That single process is the whole thing: it bootstraps its own
-operator-mode NATS server with JetStream, the control plane, a node, and
-an embedded executor. Nothing to install or configure first — keys, creds,
-and data live under `~/.chronicle/dev` (change with `--dir`), the server
-listens on 4222 (`--port`, `-1` picks a free one), and it runs in the
-foreground until interrupted.
+operator-mode NATS server with JetStream (encrypted at rest), seals its
+working keys into the `AUTH` bucket, and runs the control plane, the
+workload service, a node, and an embedded executor — each on a credential
+of its own role. Nothing to install or configure first — the dev dir
+`~/.chronicle/dev` (change with `--dir`) keeps what an operator's offline
+root keeps: the operator identity, the node key, the credential bundles,
+and the data; the server listens on 4222 (`--port`, `-1` picks a free
+one), and it runs in the foreground until interrupted.
 
 **3. Mint a tenant and work with it** — in another terminal:
 
@@ -139,21 +142,36 @@ chronicle up --backend microsandbox --workload-binary ./chronicle-workload_0.1.0
 
 `chronicle up` is the getting-started and single-host shape. The same
 fleet composes from the standalone binaries when you want the pieces
-scheduled individually — control plane, per-tenant nodes, and one executor
-per host, bidding for placements over the shared roster:
+scheduled individually — n control instances, n workload-service
+instances, per-tenant nodes, and one executor per host, bidding for
+placements over the shared roster. Every member holds one credential of
+its own role, issued over the `AUTH` bucket
+([`chronicle-hq/02-DESIGN/10-custody.md`](../chronicle-hq/02-DESIGN/10-custody.md)):
 
 ```sh
-chronicle-control --dir <data-dir>
-chronicle-node --url <nats-url> --creds <tenant-service-creds>
-chronicle-executor --url <nats-url> --creds <control-creds> --id <stable-host-id> \
+# once, from the environment's seeds, against the running cluster
+chronicle operator seal --url <nats-url> --replicas 3 \
+  --signing-seed operator-signing.nk --sys-seed sys.nk --control-seed control.nk
+# every further member, by role, from any control instance's bundle
+chronicle operator instance add control-2 --template control-instance --bundle <dir> --url <nats-url>
+chronicle operator instance add host-1    --template executor         --bundle <dir> --url <nats-url>
+chronicle operator instance add wl-1      --template workloads        --bundle <dir> --url <nats-url>
+
+chronicle-control   --url <nats-url> --bundle <bundle-dir> [--node-replicas 2]
+chronicle-workloads --url <nats-url> --creds <control.creds>
+chronicle-node      --url <nats-url> --creds <tenant-service-creds>
+chronicle-executor  --url <nats-url> --creds <control.creds> \
   --backend inprocess|microsandbox [--workload-binary <path>]
 ```
 
+The cluster itself — the operator identity, the node configs, the keys at
+rest, the units — is the environment's, not the product's (decision
+[0031](../chronicle-hq/03-DECISIONS/0031-open-is-one-tenant-the-service-is-managed.md)).
 The fleet design
-([`chronicle-hq/02-DESIGN/04-fleet.md`](../chronicle-hq/02-DESIGN/04-fleet.md))
-and the scheduler design
-([`06-scheduler.md`](../chronicle-hq/02-DESIGN/06-scheduler.md)) carry the
-shape; all binaries ship in every release archive (decision
+([`04-fleet.md`](../chronicle-hq/02-DESIGN/04-fleet.md)), the scheduler
+design ([`06-scheduler.md`](../chronicle-hq/02-DESIGN/06-scheduler.md)),
+and the custody design carry the shape; all binaries ship in every release
+archive (decision
 [0017](../chronicle-hq/03-DECISIONS/0017-release-flow.md)).
 
 ## Layout
@@ -161,7 +179,8 @@ shape; all binaries ship in every release archive (decision
 | Path | What it is |
 |---|---|
 | `cmd/chronicle` | The CLI, and — through `chronicle up` — the whole local fleet in one process (thin main; logic in `internal/cli` and `internal/fleet`). |
-| `cmd/chronicle-control` | The control plane, standalone: tenant minting, JWT issuance (thin main; logic in `internal/control`). |
+| `cmd/chronicle-control` | One control instance, standalone: tenant minting, JWT issuance, the identity bridge, over the `AUTH` bucket (thin main; wiring in `internal/fleet`, logic in `internal/control` and `internal/mint`). |
+| `cmd/chronicle-workloads` | The workload service, standalone: the fleet log, the dispatch surface, the auctions (thin main; logic in `internal/workloads`; decision [0029](../chronicle-hq/03-DECISIONS/0029-the-workload-service-is-its-own-binary.md)). |
 | `cmd/chronicle-node` | One tenant's node, standalone: the fold, state, and API verbs (thin main; logic in `internal/node`). |
 | `cmd/chronicle-executor` | The per-host executor: joins the roster, bids, runs placements on its backend (thin main; logic in `internal/executor`). |
 | `cmd/chronicle-workload` | The one binary a placement runs — node or index kind — and the guest half of the microsandbox backend (thin main; logic in `internal/workloads`). |
@@ -180,7 +199,7 @@ make build   # all binaries land in bin/
 
 Pushing a `v*` tag builds and publishes a GitHub release via goreleaser
 ([release workflow](.github/workflows/release.yml)): one archive per
-platform carrying the five binaries, plus the standalone linux guest
+platform carrying the six binaries, plus the standalone linux guest
 workloads (amd64 and arm64), with the tag's version stamped into every
 binary (decision
 [0017](../chronicle-hq/03-DECISIONS/0017-release-flow.md)). CI runs the

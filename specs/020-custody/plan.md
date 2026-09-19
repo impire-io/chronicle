@@ -328,6 +328,17 @@ one. Calls made while building:
   stall a peer's rollup causes is one wait, and the test asserts every
   concurrent rollup answers well inside the old budget.
 
+## Increment 9 — landed on this branch
+
+The pointers. The README's multi-host section shows the fleet as it now
+composes — seal from the environment's seeds, every member by role, the
+six binaries — and names the environment's part as not the product's;
+the quick start says what the dev dir keeps; the layout and the release
+notes count six. Spec 018 points at this spec for the verb that left.
+Spec 019 never existed on this branch — it is PR #23's — and this spec
+carries what it built. `make check` green; PR #25 marked ready; PRs #23
+and #24 closed as superseded with a pointer here.
+
 ## Reshaped by 0031 and 0032 — before increment 4
 
 The review of increment 3 asked whether a `fleet`-template credential was a
@@ -374,5 +385,5 @@ nothing else should land on the wrong side of it.
    trusted and a mint mid-roll; every credential connects after.
 7. ~~**The AUTH fold**~~ — landed; spec 017's callout tests re-targeted.
 8. ~~**`rollup.go` decline**; `replicas_test.go` green; `--node-replicas`~~ — landed.
-9. README and spec pointers; `make check`; mark ready. Close PR #23 and
-   PR #24 as superseded with a pointer here.
+9. ~~README and spec pointers; `make check`; mark ready. Close PR #23 and
+   PR #24 as superseded with a pointer here.~~ — landed.

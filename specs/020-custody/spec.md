@@ -26,11 +26,11 @@ and § rotation, [`04-fleet.md`](../../../chronicle-hq/02-DESIGN/04-fleet.md)
 (the ceremony, split between the environment and the service). The research
 that verified the load-bearing parts on real servers is chronicle-hq
 `01-RESEARCH/010-shared-custody`.
-**Status:** specified on this branch ([plan.md](plan.md)); increments 1–3
+**Status:** implemented on this branch ([plan.md](plan.md)): increments 1–3
 landed at design 10 @ `dd6b17c`; the remainder reshaped against `f56ad8c`
-(0031, 0032); increments 4 (the fence by role), 5 (the standalone plane,
-the sixth binary), 6 (the ceremony split, rotation live), 7 (the AUTH
-fold) and 8 (the rollup decline, two replicas) landed.
+(0031, 0032) and landed — the fence by role, the standalone plane and
+the sixth binary, the ceremony split with rotation live, the AUTH fold,
+the rollup decline with two replicas, the pointers. Ready for review.
 **Supersedes:** spec 019 / PR #23 (the standalone control plane, still
 hosting the workload service) — its composition is carried here, reshaped;
 its `contrib/` units are **not**: units are the environment's
