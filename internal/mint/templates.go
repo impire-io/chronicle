@@ -1,6 +1,8 @@
 package mint
 
 import (
+	"fmt"
+
 	"github.com/nats-io/jwt/v2"
 
 	"github.com/impire-io/chronicle/contract"
@@ -10,6 +12,33 @@ import (
 // chronicle issues every CONTROL-account user itself, so it stamps one of
 // two permission templates into the user JWT. That is the whole access
 // boundary around the AUTH bucket — no second account, no sealing layer.
+
+// Template names one of the two fences — the value `operator instance add
+// --template` takes.
+type Template string
+
+// The two templates.
+const (
+	TemplateControlInstance Template = "control-instance"
+	TemplateFleet           Template = "fleet"
+)
+
+// ParseTemplate reads a template name; anything else is refused by name.
+func ParseTemplate(s string) (Template, error) {
+	switch Template(s) {
+	case TemplateControlInstance, TemplateFleet:
+		return Template(s), nil
+	}
+	return "", fmt.Errorf("template %q is not one of %s, %s", s, TemplateControlInstance, TemplateFleet)
+}
+
+// Limits is the permission template a user under this fence carries.
+func (t Template) Limits() jwt.UserPermissionLimits {
+	if t == TemplateFleet {
+		return FleetTemplate()
+	}
+	return ControlInstanceTemplate()
+}
 
 // ControlInstanceTemplate is unrestricted in the account: only
 // chronicle-control's own connections carry it.

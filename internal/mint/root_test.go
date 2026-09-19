@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/jwt/v2"
+
 	"github.com/impire-io/chronicle/internal/mint"
 )
 
@@ -101,17 +103,57 @@ func TestInitRootSealsAndExports(t *testing.T) {
 	if err != nil || auth.XKeySeed != string(r.B.AuthXKeySeed) || !strings.Contains(auth.SentinelCreds, "NATS USER JWT") {
 		t.Fatalf("auth in the bucket = %+v, %v", auth, err)
 	}
+	// The accounts list the first instance's users by name, so a later
+	// `instance remove` finds them without the bundle.
+	ctrlJWT, _ := jwt.ParseDecoratedJWT(bundle.ControlCreds)
+	ctrlUser, _ := jwt.DecodeUserClaims(ctrlJWT)
+	if ctrlAcct.Users["instance-1"] != ctrlUser.Subject {
+		t.Fatalf("CONTROL users = %v, want instance-1 → %s", ctrlAcct.Users, ctrlUser.Subject)
+	}
+	sysAcct, _, err := c.Account(ctx, "SYS")
+	if err != nil || sysAcct.Users["instance-1"] == "" {
+		t.Fatalf("SYS users = %v, %v", sysAcct.Users, err)
+	}
 
+	// Seal shredded the working keys: the bucket is the only place they
+	// live now. The identity, the node keys, and the bundle stay.
+	for _, f := range []string{"operator-signing.nk", "sys-account.nk", "control-account.nk", "sys.creds", "control.creds",
+		"auth-account.nk", "auth-xkey.nk", "bridge.creds", "sentinel.creds"} {
+		if _, err := os.Stat(filepath.Join(dir, f)); !os.IsNotExist(err) {
+			t.Fatalf("seal left %s in the root (%v)", f, err)
+		}
+	}
+	for _, f := range []string{"operator.nk", "operator.jwt", "control-account.jwt", "root.json",
+		filepath.Join("bundles", "instance-1", "control.creds")} {
+		if _, err := os.Stat(filepath.Join(dir, f)); err != nil {
+			t.Fatalf("seal took %s from the root: %v", f, err)
+		}
+	}
+
+	// The process that sealed still holds the keys: a second seal from it
+	// finds every entry and writes a fresh export.
 	rep2, err := r.Seal(ctx, nc, mint.SealOptions{Replicas: 1})
 	if err != nil {
 		t.Fatalf("second seal: %v", err)
 	}
-	if len(rep2.Written) != 0 || len(rep2.Matched) != 5 {
+	if len(rep2.Written) != 0 || len(rep2.Matched) != 5 || rep2.Export == "" {
 		t.Fatalf("second seal: %+v", rep2)
 	}
+	// A root reloaded from disk holds no keys: its seal verifies by public
+	// key that the bucket is its own, and writes nothing.
 	reloaded, err := mint.LoadRoot(dir)
 	if err != nil || reloaded.Manifest.Sealed == "" || len(reloaded.Manifest.Exports) != 2 {
 		t.Fatalf("manifest after two seals: %+v, %v", reloaded.Manifest, err)
+	}
+	if reloaded.B.HasWorkingKeys() {
+		t.Fatal("a reloaded sealed root has working keys")
+	}
+	rep3, err := reloaded.Seal(ctx, nc, mint.SealOptions{Replicas: 1})
+	if err != nil {
+		t.Fatalf("seal from the shredded root: %v", err)
+	}
+	if len(rep3.Written) != 0 || len(rep3.Matched) != 4 || rep3.Export != "" || len(reloaded.Manifest.Exports) != 2 {
+		t.Fatalf("verifying seal: %+v, exports %v", rep3, reloaded.Manifest.Exports)
 	}
 
 	// Another root cannot seal over this one.

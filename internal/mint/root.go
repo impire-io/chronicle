@@ -11,24 +11,27 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
+
+	"github.com/impire-io/chronicle/internal/devdir"
 )
 
 // The offline root (chronicle-hq/02-DESIGN/10-custody.md § first boot, § what
 // stays offline): the material an install is born from. `init` generates
 // it, `emit-cluster-config` renders the servers from it, `seal` moves the
-// working keys into the AUTH bucket once the cluster serves, and what the
-// root keeps afterwards is the operator identity, one JetStream key per
-// node, the instance bundles it issued, and dated exports of the bucket.
-// Until seal, the root is also the bootstrap dir the rest of the code
-// reads — one directory, two roles.
+// working keys into the AUTH bucket once the cluster serves and shreds
+// them here, and what the root keeps afterwards is the operator identity,
+// one JetStream key per node, the instance bundles it issued, and dated
+// exports of the bucket. Until seal, the root is also the bootstrap dir
+// the rest of the code reads — one directory, two roles.
 
 const (
 	fRootManifest = "root.json"
-	dBundles      = "bundles"
+	dBundles      = devdir.BundlesDir
 	dExports      = "exports"
-	fBundleCtrl   = "control.creds"
+	fBundleCtrl   = devdir.ControlCredsFile
 	fBundleSys    = "sys.creds"
 	// firstInstance is the bundle init issues: the control instance that
 	// seals and serves first.
@@ -144,35 +147,64 @@ func (r *Root) NodeKey(name string) (string, error) {
 // BundleDir is where an instance's bundle lives under the root.
 func (r *Root) BundleDir(name string) string { return filepath.Join(r.Dir, dBundles, name) }
 
-// IssueBundle issues one control instance's credentials — a CONTROL user
-// under the control-instance template and a SYS user — and writes them as
-// a bundle directory (mode 0700). Before seal this is the only way to
-// issue an instance; after it, `operator instance add` does the same over
-// the live bucket.
-func (r *Root) IssueBundle(name string) (string, error) {
-	if name == "" {
-		return "", fmt.Errorf("an instance needs a name")
+// Bundle is an instance's credentials — the one secret a host holds
+// (design 10 § instances). A control instance carries both users; a fleet
+// instance (a workload service, an executor, the operator's CLI) carries
+// the CONTROL user alone, under the fleet template.
+type Bundle struct {
+	ControlCreds []byte
+	SysCreds     []byte
+}
+
+// Template says which fence the bundle was issued under, read from its
+// shape: a SYS user is what only a control instance holds.
+func (b Bundle) Template() Template {
+	if len(b.SysCreds) > 0 {
+		return TemplateControlInstance
 	}
-	ctrl, err := r.B.IssueControlUser(name+"-control", ControlInstanceTemplate())
+	return TemplateFleet
+}
+
+// IssueBundle issues one control instance's credentials from the root's
+// own seeds — a CONTROL user under the control-instance template and a
+// SYS user — and writes them as a bundle. It is how init issues the first
+// instance, before any bucket exists; after seal the seeds are gone and
+// `operator instance add` issues over the live bucket instead.
+func (r *Root) IssueBundle(name string) (string, error) {
+	if err := validInstanceName(name); err != nil {
+		return "", err
+	}
+	ctrl, err := r.B.IssueControlUser(name, ControlInstanceTemplate())
 	if err != nil {
 		return "", fmt.Errorf("issue control user for %s: %w", name, err)
 	}
-	sys, err := r.B.IssueSystemUser(name + "-sys")
+	sys, err := r.B.IssueSystemUser(name)
 	if err != nil {
 		return "", fmt.Errorf("issue system user for %s: %w", name, err)
+	}
+	return r.WriteBundle(name, Bundle{ControlCreds: ctrl.File, SysCreds: sys.File})
+}
+
+// WriteBundle records an issued bundle under the root: a directory of mode
+// 0700 holding control.creds and, for a control instance, sys.creds.
+func (r *Root) WriteBundle(name string, b Bundle) (string, error) {
+	if err := validInstanceName(name); err != nil {
+		return "", err
 	}
 	dir := r.BundleDir(name)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("create bundle dir: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, fBundleCtrl), ctrl.File, keyFileMode); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, fBundleCtrl), b.ControlCreds, keyFileMode); err != nil {
 		return "", fmt.Errorf("write bundle: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, fBundleSys), sys.File, keyFileMode); err != nil {
-		return "", fmt.Errorf("write bundle: %w", err)
+	if len(b.SysCreds) > 0 {
+		if err := os.WriteFile(filepath.Join(dir, fBundleSys), b.SysCreds, keyFileMode); err != nil {
+			return "", fmt.Errorf("write bundle: %w", err)
+		}
 	}
-	for _, b := range r.Manifest.Bundles {
-		if b == name {
+	for _, existing := range r.Manifest.Bundles {
+		if existing == name {
 			return dir, nil
 		}
 	}
@@ -180,23 +212,76 @@ func (r *Root) IssueBundle(name string) (string, error) {
 	return dir, r.saveManifest()
 }
 
-// Bundle reads an instance's bundle: the two credentials files.
-type Bundle struct {
-	ControlCreds []byte
-	SysCreds     []byte
+// RemoveBundle forgets an instance's bundle: the directory and the
+// manifest entry. A bundle this root never held is not an error — the
+// instance may have been issued elsewhere.
+func (r *Root) RemoveBundle(name string) error {
+	if err := os.RemoveAll(r.BundleDir(name)); err != nil {
+		return fmt.Errorf("remove bundle %s: %w", name, err)
+	}
+	kept := r.Manifest.Bundles[:0]
+	for _, existing := range r.Manifest.Bundles {
+		if existing != name {
+			kept = append(kept, existing)
+		}
+	}
+	if len(kept) == len(r.Manifest.Bundles) {
+		return nil
+	}
+	r.Manifest.Bundles = kept
+	return r.saveManifest()
 }
 
-// ReadBundle loads a bundle directory.
+// ControlBundle is the bundle a ceremony run from this root connects with:
+// the first control instance the root issued, skipping `except` — a
+// ceremony that removes an instance cannot be that instance. Empty when
+// the root holds none.
+func (r *Root) ControlBundle(except string) (name string, b Bundle, err error) {
+	for _, candidate := range r.Manifest.Bundles {
+		if candidate == except {
+			continue
+		}
+		b, err := ReadBundle(r.BundleDir(candidate))
+		if err != nil || b.Template() != TemplateControlInstance {
+			continue
+		}
+		return candidate, b, nil
+	}
+	return "", Bundle{}, fmt.Errorf("the root at %s holds no control-instance bundle to run the ceremony with%s", r.Dir, exceptHint(except))
+}
+
+func exceptHint(except string) string {
+	if except == "" {
+		return ""
+	}
+	return " other than " + except + "'s — add another instance first"
+}
+
+// ReadBundle loads a bundle directory: control.creds always, sys.creds
+// when the bundle is a control instance's.
 func ReadBundle(dir string) (Bundle, error) {
 	ctrl, err := os.ReadFile(filepath.Join(dir, fBundleCtrl))
 	if err != nil {
 		return Bundle{}, fmt.Errorf("bundle %s: %w", dir, err)
 	}
 	sys, err := os.ReadFile(filepath.Join(dir, fBundleSys))
-	if err != nil {
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return Bundle{}, fmt.Errorf("bundle %s: %w", dir, err)
 	}
 	return Bundle{ControlCreds: ctrl, SysCreds: sys}, nil
+}
+
+// userPublicKey is the subject of the user JWT a creds file decorates.
+func userPublicKey(creds []byte) (string, error) {
+	token, err := jwt.ParseDecoratedJWT(creds)
+	if err != nil {
+		return "", err
+	}
+	uc, err := jwt.DecodeUserClaims(token)
+	if err != nil {
+		return "", err
+	}
+	return uc.Subject, nil
 }
 
 // SealOptions shapes the ceremony.
@@ -216,15 +301,20 @@ type SealReport struct {
 
 // Seal moves the root's working keys into the AUTH bucket over an
 // authenticated control connection: create the bucket, write every entry
-// the root holds, read each back, write the first dated export. Idempotent
-// — a second run finds every entry and reports it matched. An entry that
-// exists and differs is a conflict: the ceremony refuses rather than
-// overwrite what another root sealed.
+// the root holds, read each back, write the first dated export, then
+// shred the working keys from the root — from here on the bucket is the
+// only place they live. Idempotent: a second run on the shredded root
+// verifies by public keys that the bucket is this root's and reports
+// every entry matched. An entry that exists and differs is a conflict:
+// the ceremony refuses rather than overwrite what another root sealed.
 func (r *Root) Seal(ctx context.Context, nc *nats.Conn, opts SealOptions) (SealReport, error) {
 	var rep SealReport
 	b := r.B
-	if len(b.SystemAccountSeed) == 0 || len(b.ControlAccountSeed) == 0 {
-		return rep, ErrNoAccountSeeds
+	if !b.HasWorkingKeys() {
+		if r.Manifest.Sealed == "" {
+			return rep, ErrNoAccountSeeds
+		}
+		return r.verifySealed(ctx, nc)
 	}
 	c, err := CreateCustody(ctx, nc, opts.Replicas)
 	if err != nil {
@@ -235,6 +325,10 @@ func (r *Root) Seal(ctx context.Context, nc *nats.Conn, opts SealOptions) (SealR
 	if err != nil {
 		return rep, fmt.Errorf("operator signing seed: %w", err)
 	}
+	ctrlUsers, sysUsers, err := r.bundleUsers()
+	if err != nil {
+		return rep, err
+	}
 	entries := []sealEntry{
 		{
 			key:  keyOperator,
@@ -244,8 +338,8 @@ func (r *Root) Seal(ctx context.Context, nc *nats.Conn, opts SealOptions) (SealR
 			},
 			read: func() (any, uint64, error) { return c.Operator(ctx) },
 		},
-		accountEntry(ctx, c, AccountRecord{Name: "SYS", PublicKey: b.SystemAccountPub, Seed: string(b.SystemAccountSeed), JWT: b.SystemAccountJWT}),
-		accountEntry(ctx, c, AccountRecord{Name: "CONTROL", PublicKey: b.ControlAccountPub, Seed: string(b.ControlAccountSeed), JWT: b.ControlAccountJWT}),
+		accountEntry(ctx, c, AccountRecord{Name: "SYS", PublicKey: b.SystemAccountPub, Seed: string(b.SystemAccountSeed), JWT: b.SystemAccountJWT, Users: sysUsers}),
+		accountEntry(ctx, c, AccountRecord{Name: "CONTROL", PublicKey: b.ControlAccountPub, Seed: string(b.ControlAccountSeed), JWT: b.ControlAccountJWT, Users: ctrlUsers}),
 		accountEntry(ctx, c, AccountRecord{Name: "AUTH", PublicKey: b.AuthAccountPub, Seed: string(b.AuthAccountSeed), JWT: b.AuthAccountJWT}),
 		{
 			key:  keyAuth,
@@ -294,7 +388,95 @@ func (r *Root) Seal(ctx context.Context, nc *nats.Conn, opts SealOptions) (SealR
 			return rep, err
 		}
 	}
+	// The bucket holds every working key and the export is on disk: the
+	// root stops being a place they live.
+	if err := shredWorkingKeys(r.Dir); err != nil {
+		return rep, err
+	}
 	return rep, nil
+}
+
+// verifySealed is the ceremony on a root that already sealed: the bucket
+// exists and its identities — the operator signing key, every bootstrap
+// account — are this root's. The account JWTs are not compared: the
+// bucket's move on with every instance change and rotation, and the root's
+// copies are the rendering inputs they were born as.
+func (r *Root) verifySealed(ctx context.Context, nc *nats.Conn) (SealReport, error) {
+	var rep SealReport
+	c, err := OpenCustody(ctx, nc)
+	if err != nil {
+		if errors.Is(err, ErrNotSealed) {
+			return rep, fmt.Errorf("%s sealed on %s but the substrate holds no AUTH bucket: restore it from the root's latest export", r.Dir, r.Manifest.Sealed)
+		}
+		return rep, err
+	}
+	signing, err := r.B.OperatorSigningKeys()
+	if err != nil {
+		return rep, err
+	}
+	op, _, err := c.Operator(ctx)
+	if err != nil {
+		return rep, err
+	}
+	trusted := false
+	for _, k := range signing {
+		if k == op.PublicKey {
+			trusted = true
+		}
+	}
+	if trusted {
+		rep.Matched = append(rep.Matched, keyOperator)
+	} else {
+		rep.Conflict = append(rep.Conflict, keyOperator)
+	}
+	for _, want := range []struct{ name, pub string }{
+		{"SYS", r.B.SystemAccountPub}, {"CONTROL", r.B.ControlAccountPub}, {"AUTH", r.B.AuthAccountPub},
+	} {
+		rec, _, err := c.Account(ctx, want.name)
+		if err != nil {
+			return rep, err
+		}
+		if rec.PublicKey == want.pub {
+			rep.Matched = append(rep.Matched, keyAccountPrefix+want.name)
+		} else {
+			rep.Conflict = append(rep.Conflict, keyAccountPrefix+want.name)
+		}
+	}
+	if len(rep.Conflict) > 0 {
+		return rep, fmt.Errorf("seal refused: the bucket already holds different material for %v — this root is not the one that sealed it", rep.Conflict)
+	}
+	return rep, nil
+}
+
+// bundleUsers reads the users the root issued before seal, by instance
+// name, so the account records carry them from the first write.
+func (r *Root) bundleUsers() (ctrl, sys map[string]string, err error) {
+	for _, name := range r.Manifest.Bundles {
+		b, err := ReadBundle(r.BundleDir(name))
+		if err != nil {
+			return nil, nil, err
+		}
+		pub, err := userPublicKey(b.ControlCreds)
+		if err != nil {
+			return nil, nil, fmt.Errorf("bundle %s: %w", name, err)
+		}
+		if ctrl == nil {
+			ctrl = map[string]string{}
+		}
+		ctrl[name] = pub
+		if len(b.SysCreds) == 0 {
+			continue
+		}
+		pub, err = userPublicKey(b.SysCreds)
+		if err != nil {
+			return nil, nil, fmt.Errorf("bundle %s: %w", name, err)
+		}
+		if sys == nil {
+			sys = map[string]string{}
+		}
+		sys[name] = pub
+	}
+	return ctrl, sys, nil
 }
 
 // sealEntry is one record the ceremony writes, reads back, or finds.

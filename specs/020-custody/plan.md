@@ -99,6 +99,51 @@ A warning seen in the fleet tests' output — a member connection exceeding
 its subscription limit during the member lifecycle test — predates this
 work (it prints on main) and is noted, not touched.
 
+## Increment 3 — landed on this branch
+
+The instance ceremony over the bucket — `operator instance add|remove
+<name> [--template control-instance|fleet]` — the `fleet` template on
+`up`'s own members and on every executor's and workload service's
+credential, and the shred: seal leaves no working key in the root. On
+real servers: a second control plane from a bundle and a URL alone mints,
+and the first instance sees the tenant; a fleet instance reaches every
+verb and never the bucket; removal evicts the live instance and its
+bundle is refused; the name comes back with fresh keys; `up`'s workloads,
+executor, and CLI users are fenced and reused across a restart; rotation
+on a sealed root re-shreds. Calls made while building:
+
+- **The account record lists its users by instance name.** `account.SYS`
+  and `account.CONTROL` carry `users: {<instance>: <user public key>}`,
+  written at seal for the bundles the root issued and by every `instance
+  add` after. `remove` revokes by name: losing the host is how the bundle
+  is lost, so the bundle cannot be what removal needs.
+- **A fleet bundle is one file** — `control.creds` under the fleet
+  template; no SYS user for a workload service, an executor, or the CLI.
+  A bundle's template is read from its shape.
+- **The ceremonies dial with the root's own control-instance bundle**,
+  never through a control verb: a verb any fleet user could call would
+  let a fleet user mint an instance. `remove` never runs as the instance
+  it removes, and the root refuses to remove its last control instance.
+- **`up`'s members are instances** — `workloads`, `executor-local`,
+  `cli` — issued over the bucket on first boot and reused as bundles
+  under the dev dir on every boot after. The CLI reads
+  `bundles/cli/control.creds`.
+- **Seal shreds** the working seeds and the bootstrap users' creds
+  (zero-filled, removed); the root keeps `operator.nk`, `root.json`,
+  `bundles/`, `exports/`, and public material. A seal on a shredded root
+  verifies by public key — the operator signing key, every bootstrap
+  account — and writes no export; the account JWTs are not compared,
+  since the bucket's move on with every instance change and rotation.
+  The bootstrap `control` and `sys` users are shredded, not revoked: the
+  revocation lands with the fold (increment 6), where CONTROL's JWT is
+  re-signed anyway.
+- **`add` records only** before the fold: issuing a user changes nothing
+  in the account JWT, so nothing is pushed. `remove` re-signs by
+  compare-and-set and pushes.
+- **The directory rotation ceremony** dials with the bundle and shreds
+  the fresh seed once the bucket holds it — still the bridge to
+  increment 5.
+
 ## Order — each step a green `make check`
 
 1. `custody.go` + `root.go`: the store, the templates, init/seal/export

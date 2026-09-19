@@ -1,6 +1,7 @@
 package mint
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -68,7 +69,7 @@ const (
 	fCtrlAcctJWT  = "control-account.jwt"
 	fCtrlAcctPub  = "control-account.pub"
 	fCtrlAcctNK   = "control-account.nk"
-	fCtrlCreds    = devdir.ControlCredsFile
+	fCtrlCreds    = "control.creds"
 	resolverDir   = "resolver"
 	jetstreamDir  = "jetstream"
 	accountsDir   = "accounts"
@@ -88,46 +89,43 @@ func LoadOrInitBootstrap(dir string) (*Bootstrap, error) {
 
 func loadBootstrap(dir string) (*Bootstrap, error) {
 	b := &Bootstrap{Dir: dir}
+	var missing []string
+	// The public material every root keeps: the operator JWT and the
+	// account JWTs and public keys the servers are rendered from.
 	read := func(name string) []byte {
 		p, err := os.ReadFile(filepath.Join(dir, name))
 		if err != nil {
-			b = nil
+			missing = append(missing, name)
 		}
 		return p
 	}
-	opJWT := read(fOperatorJWT)
-	opSK := read(fOperatorSK)
-	sysJWT := read(fSysAcctJWT)
-	sysPub := read(fSysAcctPub)
-	sysCreds := read(fSysCreds)
-	ctrlJWT := read(fCtrlAcctJWT)
-	ctrlPub := read(fCtrlAcctPub)
-	ctrlCreds := read(fCtrlCreds)
-	if b == nil {
-		return nil, fmt.Errorf("bootstrap dir %s is incomplete; move it aside to regenerate", dir)
+	// The working keys: present until seal shreds them (design 10 § first
+	// boot), absent ever after — the bucket holds them then, and only the
+	// ceremonies that run before seal need them here.
+	optional := func(name string) []byte {
+		p, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			return nil
+		}
+		return p
+	}
+	b.OperatorJWT = string(read(fOperatorJWT))
+	b.SystemAccountJWT = string(read(fSysAcctJWT))
+	b.SystemAccountPub = string(read(fSysAcctPub))
+	b.ControlAccountJWT = string(read(fCtrlAcctJWT))
+	b.ControlAccountPub = string(read(fCtrlAcctPub))
+	if len(missing) > 0 {
+		return nil, fmt.Errorf("bootstrap dir %s is incomplete (no %s); move it aside to regenerate", dir, missing[0])
 	}
 	// The operator identity seed arrived after the first installs shipped:
 	// absent is a valid state — only signing-key rotation needs it, and
 	// rotation refuses with guidance when it is missing.
-	if opSeed, err := os.ReadFile(filepath.Join(dir, fOperatorNK)); err == nil {
-		b.OperatorSeed = opSeed
-	}
-	// The account seeds arrived with design 10 — same rule: absent is
-	// valid, and only issuing instances needs them.
-	if seed, err := os.ReadFile(filepath.Join(dir, fSysAcctNK)); err == nil {
-		b.SystemAccountSeed = seed
-	}
-	if seed, err := os.ReadFile(filepath.Join(dir, fCtrlAcctNK)); err == nil {
-		b.ControlAccountSeed = seed
-	}
-	b.OperatorJWT = string(opJWT)
-	b.OperatorSigningSeed = opSK
-	b.SystemAccountJWT = string(sysJWT)
-	b.SystemAccountPub = string(sysPub)
-	b.SysCreds = sysCreds
-	b.ControlAccountJWT = string(ctrlJWT)
-	b.ControlAccountPub = string(ctrlPub)
-	b.ControlCreds = ctrlCreds
+	b.OperatorSeed = optional(fOperatorNK)
+	b.OperatorSigningSeed = optional(fOperatorSK)
+	b.SystemAccountSeed = optional(fSysAcctNK)
+	b.ControlAccountSeed = optional(fCtrlAcctNK)
+	b.SysCreds = optional(fSysCreds)
+	b.ControlCreds = optional(fCtrlCreds)
 	if err := b.ensureControlJetStream(); err != nil {
 		return nil, err
 	}
@@ -135,6 +133,68 @@ func loadBootstrap(dir string) (*Bootstrap, error) {
 		return nil, err
 	}
 	return b, nil
+}
+
+// HasWorkingKeys says the root still holds the seeds seal moves into the
+// bucket: true before seal, false after it shreds them.
+func (b *Bootstrap) HasWorkingKeys() bool {
+	return len(b.OperatorSigningSeed) > 0 && len(b.SystemAccountSeed) > 0 && len(b.ControlAccountSeed) > 0
+}
+
+// OperatorSigningKeys are the signing keys the operator JWT trusts — the
+// public half, readable on a sealed root that holds no seed.
+func (b *Bootstrap) OperatorSigningKeys() ([]string, error) {
+	oc, err := jwt.DecodeOperatorClaims(b.OperatorJWT)
+	if err != nil {
+		return nil, fmt.Errorf("decode operator jwt: %w", err)
+	}
+	return oc.SigningKeys, nil
+}
+
+// workingSecretFiles is what seal shreds from the root once the bucket
+// holds it: the seeds the bucket now keeps and the bootstrap users issued
+// from them before any bundle existed. What survives is the operator
+// identity, the node keys, the bundles, and public material.
+var workingSecretFiles = []string{
+	fOperatorSK, fSysAcctNK, fCtrlAcctNK, fSysCreds, fCtrlCreds,
+	fAuthAcctNK, fAuthXKeyNK, fBridgeCreds, fSentinelCreds,
+}
+
+// shredWorkingKeys overwrites and removes the working secrets from dir.
+// Absent files are already shredded. The in-memory Bootstrap keeps what
+// it loaded: the process that sealed still has the material it sealed.
+func shredWorkingKeys(dir string) error {
+	for _, name := range workingSecretFiles {
+		if err := shredFile(filepath.Join(dir, name)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func shredFile(path string) error {
+	info, err := os.Stat(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("shred %s: %w", path, err)
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY, 0)
+	if err != nil {
+		return fmt.Errorf("shred %s: %w", path, err)
+	}
+	zeros := make([]byte, info.Size())
+	_, werr := f.Write(zeros)
+	serr := f.Sync()
+	cerr := f.Close()
+	if err := errors.Join(werr, serr, cerr); err != nil {
+		return fmt.Errorf("shred %s: %w", path, err)
+	}
+	if err := os.Remove(path); err != nil {
+		return fmt.Errorf("shred %s: %w", path, err)
+	}
+	return nil
 }
 
 // controlJetStreamLimits mirrors the tenant default: the fleet log is an
@@ -178,6 +238,9 @@ func (b *Bootstrap) ensureControlJetStream() error {
 	claims.Limits.JetStreamLimits = controlJetStreamLimits
 	if !hasExport {
 		claims.Exports.Add(bridgeExport())
+	}
+	if len(b.OperatorSigningSeed) == 0 {
+		return fmt.Errorf("the control account JWT in %s predates the fleet log and the root holds no signing seed to refresh it; a fresh `chronicle operator init` is the remedy", b.Dir)
 	}
 	oskp, err := nkeys.FromSeed(b.OperatorSigningSeed)
 	if err != nil {
@@ -453,19 +516,4 @@ func (b *Bootstrap) IssueControlUser(name string, limits jwt.UserPermissionLimit
 // holds one for claims pushes and account lookups.
 func (b *Bootstrap) IssueSystemUser(name string) (Creds, error) {
 	return issueAccountUser(b.SystemAccountSeed, b.SystemAccountPub, name, jwt.UserPermissionLimits{})
-}
-
-func issueAccountUser(seed []byte, pub, name string, limits jwt.UserPermissionLimits) (Creds, error) {
-	if len(seed) == 0 {
-		return Creds{}, ErrNoAccountSeeds
-	}
-	akp, err := nkeys.FromSeed(seed)
-	if err != nil {
-		return Creds{}, fmt.Errorf("account seed: %w", err)
-	}
-	file, upub, err := issueDirectWith(akp, pub, name, limits)
-	if err != nil {
-		return Creds{}, err
-	}
-	return Creds{PublicKey: upub, File: file}, nil
 }

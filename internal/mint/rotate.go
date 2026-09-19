@@ -35,14 +35,19 @@ func RotateOperatorSigningKey(dir string) (string, error) {
 	if _, err := os.Stat(filepath.Join(dir, fOperatorJWT)); err != nil {
 		return "", fmt.Errorf("no bootstrap at %s: %w", dir, err)
 	}
-	b, err := loadBootstrap(dir)
+	r, err := LoadRoot(dir)
 	if err != nil {
 		return "", err
 	}
+	b := r.B
 	if len(b.OperatorSeed) == 0 {
 		return "", fmt.Errorf("%s has no %s: the install predates operator-identity custody, and its operator JWT can never be re-issued — rotation needs a fresh bootstrap", dir, fOperatorNK)
 	}
-	if err := requireStopped(dir, b); err != nil {
+	sysCreds, _, err := ceremonyCreds(r)
+	if err != nil {
+		return "", err
+	}
+	if err := requireStopped(dir, sysCreds); err != nil {
 		return "", err
 	}
 
@@ -154,18 +159,31 @@ func RotateOperatorSigningKey(dir string) (string, error) {
 	return ospub2, nil
 }
 
+// ceremonyCreds is what the directory ceremony dials with: the root's
+// control-instance bundle once one exists — after seal it is all the root
+// holds — and the bootstrap users before any bundle was issued.
+func ceremonyCreds(r *Root) (sys, ctrl []byte, err error) {
+	if _, bundle, err := r.ControlBundle(""); err == nil {
+		return bundle.SysCreds, bundle.ControlCreds, nil
+	}
+	if len(r.B.SysCreds) > 0 && len(r.B.ControlCreds) > 0 {
+		return r.B.SysCreds, r.B.ControlCreds, nil
+	}
+	return nil, nil, fmt.Errorf("%s holds no credentials to run the ceremony with: no control-instance bundle and no bootstrap users", r.Dir)
+}
+
 // requireStopped refuses the ceremony while the fleet answers: the running
 // server trusts the old key and would fight the rewrite. A stale
 // client.url after a clean stop is normal — the dial is the test. The dial
 // carries the install's own sys creds; an authorization refusal still
 // proves something is listening.
-func requireStopped(dir string, b *Bootstrap) error {
+func requireStopped(dir string, sysCreds []byte) error {
 	url, err := devdir.ReadClientURL(dir)
 	if err != nil {
 		return nil
 	}
-	token, jwtErr := jwt.ParseDecoratedJWT(b.SysCreds)
-	kp, kpErr := jwt.ParseDecoratedUserNKey(b.SysCreds)
+	token, jwtErr := jwt.ParseDecoratedJWT(sysCreds)
+	kp, kpErr := jwt.ParseDecoratedUserNKey(sysCreds)
 	if jwtErr != nil || kpErr != nil {
 		return fmt.Errorf("parse sys creds: %w", errors.Join(jwtErr, kpErr))
 	}
@@ -196,19 +214,24 @@ func resignAccount(token string, signer nkeys.KeyPair) (string, error) {
 }
 
 // verifyRotated boots the rewritten install, brings custody in step with
-// the rewritten directory when the root is sealed, and connects with every
-// credential the install holds — sys, control, and each tenant's service
-// user. The could-not-succeed-if-broken read: a bad rewrite cannot pass it.
+// the rewritten directory when the root is sealed — and shreds the new
+// seed from the root again once the bucket holds it — and connects with
+// every credential the install holds: the ceremony's own, and each
+// tenant's service user. The could-not-succeed-if-broken read: a bad
+// rewrite cannot pass it.
 func verifyRotated(dir string) error {
-	b, err := loadBootstrap(dir)
+	r, err := LoadRoot(dir)
 	if err != nil {
 		return err
 	}
+	b := r.B
 	key := ""
-	if r, err := LoadRoot(dir); err == nil {
-		if n, ok := r.Manifest.Nodes["embedded"]; ok {
-			key = n.JetStreamKey
-		}
+	if n, ok := r.Manifest.Nodes["embedded"]; ok {
+		key = n.JetStreamKey
+	}
+	sysCreds, ctrlCreds, err := ceremonyCreds(r)
+	if err != nil {
+		return err
 	}
 	srv, err := b.StartServerWithKey(-1, key)
 	if err != nil {
@@ -224,8 +247,8 @@ func verifyRotated(dir string) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	creds := map[string][]byte{"sys": b.SysCreds, "control": b.ControlCreds}
-	ctrlConn, err := ConnectCreds(url, b.ControlCreds, "rotate-verify-custody")
+	creds := map[string][]byte{"sys": sysCreds, "control": ctrlCreds}
+	ctrlConn, err := ConnectCreds(url, ctrlCreds, "rotate-verify-custody")
 	if err != nil {
 		return fmt.Errorf("control cannot connect after rotation: %w", err)
 	}
@@ -239,6 +262,10 @@ func verifyRotated(dir string) error {
 	default:
 		if err := rotateCustody(ctx, c, dir, b); err != nil {
 			return fmt.Errorf("bring custody in step: %w", err)
+		}
+		// A sealed root keeps no working seed: the bucket has the new one.
+		if err := shredWorkingKeys(dir); err != nil {
+			return err
 		}
 		names, err := c.Tenants(ctx)
 		if err != nil {

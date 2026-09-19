@@ -140,6 +140,10 @@ run a fleet
   chronicle operator emit-cluster-config --node <name>=<host>[:cp[:kp]] ... [--dir D] [--out P]
   chronicle operator seal --url U --replicas N [--dir D] move the working keys into the AUTH bucket
   chronicle operator export [--url U] [--dir D]          a dated export of the bucket into the root
+  chronicle operator instance add <name> [--template control-instance|fleet] [--url U] [--dir D]
+                                                         issue an instance's users over the bucket; write its bundle
+  chronicle operator instance remove <name> [--url U] [--dir D]
+                                                         revoke an instance's users; a lost host is a revocation
   chronicle operator rotate-signing-key [--dir D]        the trust root, fleet stopped
 
 own its tenants (fleet dir)

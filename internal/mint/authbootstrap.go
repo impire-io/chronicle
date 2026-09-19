@@ -110,6 +110,9 @@ func (b *Bootstrap) ensureAuthAccount() error {
 	return nil
 }
 
+// loadAuthAccount reads the AUTH material: the JWT and public key every
+// root keeps, and the seeds and users seal shreds — absent after it, held
+// by the bucket.
 func (b *Bootstrap) loadAuthAccount() error {
 	var firstErr error
 	read := func(name string) []byte {
@@ -119,20 +122,23 @@ func (b *Bootstrap) loadAuthAccount() error {
 		}
 		return p
 	}
+	optional := func(name string) []byte {
+		p, err := os.ReadFile(filepath.Join(b.Dir, name))
+		if err != nil {
+			return nil
+		}
+		return p
+	}
 	authJWT := read(fAuthAcctJWT)
 	authPub := read(fAuthAcctPub)
-	authSeed := read(fAuthAcctNK)
-	xSeed := read(fAuthXKeyNK)
-	bridgeCreds := read(fBridgeCreds)
-	sentinelCreds := read(fSentinelCreds)
 	if firstErr != nil {
 		return fmt.Errorf("auth account material incomplete in %s: %w", b.Dir, firstErr)
 	}
 	b.AuthAccountJWT = string(authJWT)
 	b.AuthAccountPub = string(authPub)
-	b.AuthAccountSeed = authSeed
-	b.AuthXKeySeed = xSeed
-	b.BridgeCreds = bridgeCreds
-	b.SentinelCreds = sentinelCreds
+	b.AuthAccountSeed = optional(fAuthAcctNK)
+	b.AuthXKeySeed = optional(fAuthXKeyNK)
+	b.BridgeCreds = optional(fBridgeCreds)
+	b.SentinelCreds = optional(fSentinelCreds)
 	return nil
 }

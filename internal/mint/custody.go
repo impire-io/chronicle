@@ -29,13 +29,19 @@ type OperatorRecord struct {
 }
 
 // AccountRecord is an `account.<NAME>` entry — SYS, CONTROL, and until the
-// fold AUTH: the account seed, from which its users are issued, and the
-// account's current JWT.
+// fold AUTH: the account seed, from which its users are issued, the
+// account's current JWT, and the users issued from it by instance name.
+// The users travel with the account so `operator instance remove` finds
+// what to revoke without the host's bundle — losing the host is how the
+// bundle is lost.
 type AccountRecord struct {
 	Name      string `json:"name"`
 	PublicKey string `json:"public_key"`
 	Seed      string `json:"seed"`
 	JWT       string `json:"jwt"`
+	// Users maps an instance name to the public key of the user this
+	// account issued for it (design 10 § instances).
+	Users map[string]string `json:"users,omitempty"`
 }
 
 // AuthRecord is the `auth` entry: what the callout bridge answers with. The

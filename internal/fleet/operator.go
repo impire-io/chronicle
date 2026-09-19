@@ -5,6 +5,8 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"path/filepath"
+	"strings"
 
 	"github.com/nats-io/nats.go"
 
@@ -36,12 +38,12 @@ func InitRoot(args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	pub, err := mint.PublicKeyOfSeed(r.B.OperatorSigningSeed)
+	signing, err := r.B.OperatorSigningKeys()
 	if err != nil {
-		return fmt.Errorf("operator signing seed: %w", err)
+		return err
 	}
 	fmt.Fprintf(out, "root: %s\n", r.Dir)
-	fmt.Fprintf(out, "  operator signing key: %s\n", pub)
+	fmt.Fprintf(out, "  operator signing key: %s\n", strings.Join(signing, ", "))
 	fmt.Fprintf(out, "  bundle:               %s (the first control instance)\n", r.BundleDir(firstInstance))
 	if r.Manifest.Sealed != "" {
 		fmt.Fprintf(out, "  sealed:               %s\n", r.Manifest.Sealed)
@@ -69,19 +71,94 @@ func Seal(ctx context.Context, args []string, out io.Writer) error {
 	if *replicas <= 0 {
 		return fmt.Errorf("operator seal needs --replicas: 3 on a cluster, 1 on a single server")
 	}
-	r, target, nc, err := openRoot(*dir, *url, "chronicle-seal")
+	r, conns, err := openRoot(*dir, *url, "chronicle-seal", "")
 	if err != nil {
 		return err
 	}
-	defer nc.Close()
-	rep, err := r.Seal(ctx, nc, mint.SealOptions{Replicas: *replicas})
+	defer conns.close()
+	rep, err := r.Seal(ctx, conns.ctrl, mint.SealOptions{Replicas: *replicas})
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "sealed %s into %s\n", r.Dir, target)
+	fmt.Fprintf(out, "sealed %s into %s\n", r.Dir, conns.url)
 	fmt.Fprintf(out, "  written: %d  matched: %d\n", len(rep.Written), len(rep.Matched))
-	fmt.Fprintf(out, "  export:  %s\n", rep.Export)
-	fmt.Fprintln(out, "the root keeps the operator identity, the node keys, and its exports; keep it offline")
+	if rep.Export != "" {
+		fmt.Fprintf(out, "  export:  %s\n", rep.Export)
+	}
+	fmt.Fprintln(out, "the root keeps the operator identity, the node keys, its bundles and its exports — no working key; keep it offline")
+	return nil
+}
+
+// Instance is `chronicle operator instance add|remove <name>`: issue an
+// instance's users over the live bucket and write its bundle, or revoke
+// them. Run from the root against any node of the cluster, with the
+// root's own control-instance bundle.
+func Instance(ctx context.Context, args []string, out io.Writer) error {
+	if len(args) == 0 || (args[0] != "add" && args[0] != "remove") {
+		return fmt.Errorf("operator instance wants add or remove")
+	}
+	verb := args[0]
+	fs := flag.NewFlagSet("chronicle operator instance "+verb, flag.ContinueOnError)
+	fs.SetOutput(out)
+	dir := fs.String("dir", devdir.Default(), "the offline root (the data dir)")
+	url := fs.String("url", "", "the cluster's client url (default: the root's recorded url)")
+	template := fs.String("template", string(mint.TemplateControlInstance), "add: control-instance (a chronicle-control peer) or fleet (a workload service, an executor, a CLI)")
+	pos, err := parseInterleaved(fs, args[1:])
+	if err != nil {
+		return err
+	}
+	if len(pos) != 1 {
+		return fmt.Errorf("operator instance %s takes one positional: the instance name", verb)
+	}
+	name := pos[0]
+	t, err := mint.ParseTemplate(*template)
+	if err != nil {
+		return err
+	}
+	except := ""
+	if verb == "remove" {
+		except = name
+	}
+	r, conns, err := openRoot(*dir, *url, "chronicle-instance-"+verb, except)
+	if err != nil {
+		return err
+	}
+	defer conns.close()
+	custody, err := mint.OpenCustody(ctx, conns.ctrl)
+	if err != nil {
+		return err
+	}
+	driver, err := mint.NewJWTDriver(ctx, custody, conns.sys, conns.url)
+	if err != nil {
+		return err
+	}
+
+	if verb == "remove" {
+		if err := driver.RemoveInstance(ctx, name); err != nil {
+			return err
+		}
+		if err := r.RemoveBundle(name); err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "instance %s removed: its users are revoked, live connections evicted\n", name)
+		return nil
+	}
+	bundle, err := driver.AddInstance(ctx, name, t)
+	if err != nil {
+		return err
+	}
+	path, err := r.WriteBundle(name, bundle)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "instance %s added (%s)\n", name, t)
+	fmt.Fprintf(out, "  bundle: %s\n", path)
+	switch t {
+	case mint.TemplateControlInstance:
+		fmt.Fprintf(out, "copy the bundle to its host and run: chronicle-control --url %s --bundle <dir>\n", conns.url)
+	case mint.TemplateFleet:
+		fmt.Fprintf(out, "copy %s to its host: chronicle-executor --url %s --creds <file> --id %s, or the workload service's --creds\n", filepath.Join(path, devdir.ControlCredsFile), conns.url, name)
+	}
 	return nil
 }
 
@@ -99,12 +176,12 @@ func Export(ctx context.Context, args []string, out io.Writer) error {
 	if fs.NArg() != 0 {
 		return fmt.Errorf("operator export takes no positionals")
 	}
-	r, _, nc, err := openRoot(*dir, *url, "chronicle-export")
+	r, conns, err := openRoot(*dir, *url, "chronicle-export", "")
 	if err != nil {
 		return err
 	}
-	defer nc.Close()
-	c, err := mint.OpenCustody(ctx, nc)
+	defer conns.close()
+	c, err := mint.OpenCustody(ctx, conns.ctrl)
 	if err != nil {
 		return err
 	}
@@ -116,29 +193,70 @@ func Export(ctx context.Context, args []string, out io.Writer) error {
 	return nil
 }
 
-// openRoot loads the root and connects as its first instance — the bundle
-// init issued — falling back to the bootstrap control user on a root that
-// predates bundles.
-func openRoot(dir, url, name string) (*mint.Root, string, *nats.Conn, error) {
+// parseInterleaved parses flags and positionals in any order — the CLI's
+// grammar, where the name comes first and the flags after: the stdlib
+// flag package stops at the first positional, so pop it and parse on.
+func parseInterleaved(fs *flag.FlagSet, args []string) ([]string, error) {
+	var pos []string
+	for {
+		if err := fs.Parse(args); err != nil {
+			return nil, err
+		}
+		args = fs.Args()
+		if len(args) == 0 {
+			return pos, nil
+		}
+		pos = append(pos, args[0])
+		args = args[1:]
+	}
+}
+
+// ceremonyConns is what a ceremony holds open: the instance's two users.
+type ceremonyConns struct {
+	url       string
+	sys, ctrl *nats.Conn
+}
+
+func (c *ceremonyConns) close() {
+	if c.sys != nil {
+		c.sys.Close()
+	}
+	if c.ctrl != nil {
+		c.ctrl.Close()
+	}
+}
+
+// openRoot loads the root and connects as one of its control instances —
+// the first bundle it issued, skipping `except` — falling back to the
+// bootstrap users on a root that predates bundles and is not yet sealed.
+func openRoot(dir, url, name, except string) (*mint.Root, *ceremonyConns, error) {
 	r, err := mint.LoadRoot(dir)
 	if err != nil {
-		return nil, "", nil, err
+		return nil, nil, err
 	}
 	target := url
 	if target == "" {
 		recorded, err := devdir.ReadClientURL(dir)
 		if err != nil {
-			return nil, "", nil, fmt.Errorf("no --url and no recorded url in %s: %w", dir, err)
+			return nil, nil, fmt.Errorf("no --url and no recorded url in %s: %w", dir, err)
 		}
 		target = recorded
 	}
-	creds := r.B.ControlCreds
-	if b, err := mint.ReadBundle(r.BundleDir(firstInstance)); err == nil {
-		creds = b.ControlCreds
+	sysCreds, ctrlCreds := r.B.SysCreds, r.B.ControlCreds
+	if _, bundle, err := r.ControlBundle(except); err == nil {
+		sysCreds, ctrlCreds = bundle.SysCreds, bundle.ControlCreds
+	} else if len(sysCreds) == 0 || len(ctrlCreds) == 0 {
+		return nil, nil, err
 	}
-	nc, err := mint.ConnectCreds(target, creds, name)
+	conns := &ceremonyConns{url: target}
+	conns.sys, err = mint.ConnectCreds(target, sysCreds, name+"-sys")
 	if err != nil {
-		return nil, "", nil, fmt.Errorf("connect %s: %w", target, err)
+		return nil, nil, fmt.Errorf("connect %s as the system user: %w", target, err)
 	}
-	return r, target, nc, nil
+	conns.ctrl, err = mint.ConnectCreds(target, ctrlCreds, name)
+	if err != nil {
+		conns.close()
+		return nil, nil, fmt.Errorf("connect %s as the control user: %w", target, err)
+	}
+	return r, conns, nil
 }

@@ -42,6 +42,13 @@ const LocalExecutorID = "local"
 // JetStream key lives there, beside the keys of any emitted node.
 const embeddedNode = "embedded"
 
+// The fleet instances `up` issues for its own members, named as their
+// bundles under the dev dir.
+const (
+	workloadsInstance = "workloads"
+	executorInstance  = "executor-" + LocalExecutorID
+)
+
 // Config selects what the fleet runs.
 type Config struct {
 	// Dir is the data dir: bootstrap material, resolver, JetStream store,
@@ -112,17 +119,16 @@ func Up(ctx context.Context, cfg Config) (*Fleet, error) {
 	if err != nil {
 		return nil, err
 	}
-	b := r.B
 	nodeKey, err := r.NodeKey(embeddedNode)
 	if err != nil {
 		return nil, err
 	}
-	srv, err := b.StartServerWithKey(port, nodeKey)
+	srv, err := r.B.StartServerWithKey(port, nodeKey)
 	if err != nil {
 		return nil, fmt.Errorf("%w (a dev dir from before design 10 holds an unencrypted store: move %s aside and start again)", err, dir)
 	}
 	f := &Fleet{URL: srv.ClientURL(), srv: srv}
-	if err := b.WriteClientURL(f.URL); err != nil {
+	if err := r.B.WriteClientURL(f.URL); err != nil {
 		f.Stop()
 		return nil, err
 	}
@@ -160,15 +166,48 @@ func Up(ctx context.Context, cfg Config) (*Fleet, error) {
 		f.Stop()
 		return nil, err
 	}
-	// In the embedded composition every control-plane component shares the
-	// bootstrap control user on its own connection; per-component users
-	// are custody the multi-host increment makes real.
-	wlConn, err := connect(b.ControlCreds, "chronicle-workloads")
+	driver, err := mint.NewJWTDriver(ctx, custody, sysConn, f.URL)
 	if err != nil {
 		f.Stop()
 		return nil, err
 	}
-	exConn, err := connect(b.ControlCreds, "chronicle-executor-"+LocalExecutorID)
+	// The fleet's members hold fleet-template users of their own (design
+	// 10 § the fence): the workload service, the embedded executor, and
+	// the operator's CLI, each a bundle under the dev dir — issued over
+	// the bucket the first time, reused on every boot after.
+	fleetBundle := func(name string) ([]byte, error) {
+		if bundle, err := mint.ReadBundle(r.BundleDir(name)); err == nil {
+			return bundle.ControlCreds, nil
+		}
+		bundle, err := driver.AddInstance(ctx, name, mint.TemplateFleet)
+		if err != nil {
+			return nil, fmt.Errorf("issue fleet user %s: %w", name, err)
+		}
+		if _, err := r.WriteBundle(name, bundle); err != nil {
+			return nil, err
+		}
+		return bundle.ControlCreds, nil
+	}
+	wlCreds, err := fleetBundle(workloadsInstance)
+	if err != nil {
+		f.Stop()
+		return nil, err
+	}
+	exCreds, err := fleetBundle(executorInstance)
+	if err != nil {
+		f.Stop()
+		return nil, err
+	}
+	if _, err := fleetBundle(devdir.CLIBundle); err != nil {
+		f.Stop()
+		return nil, err
+	}
+	wlConn, err := connect(wlCreds, "chronicle-workloads")
+	if err != nil {
+		f.Stop()
+		return nil, err
+	}
+	exConn, err := connect(exCreds, "chronicle-executor-"+LocalExecutorID)
 	if err != nil {
 		f.Stop()
 		return nil, err
@@ -249,11 +288,6 @@ func Up(ctx context.Context, cfg Config) (*Fleet, error) {
 		}
 	}
 
-	driver, err := mint.NewJWTDriver(ctx, custody, sysConn, f.URL)
-	if err != nil {
-		f.Stop()
-		return nil, err
-	}
 	ctrl, err := control.Start(ctrlConn, control.Config{
 		Driver: driver,
 		URL:    f.URL,

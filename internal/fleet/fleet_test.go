@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/impire-io/chronicle/internal/devdir"
 	"github.com/impire-io/chronicle/internal/fleet"
 	"github.com/impire-io/chronicle/internal/index/semantic"
+	"github.com/impire-io/chronicle/internal/mint"
 )
 
 // TestWalkingSkeleton drives the whole floor in one flow, the same one the
@@ -691,5 +693,83 @@ func TestOperatorRotationRoundTrip(t *testing.T) {
 	defer ctrl2.Close()
 	if _, err := ctrl2.MintTenant(ctx, "beta", ""); err != nil {
 		t.Fatalf("mint under the rotated key: %v", err)
+	}
+}
+
+// TestUpFleetUsersAreFenced: `up` walks design 10's first boot, so its own
+// members — the workload service, the embedded executor, the CLI — hold
+// fleet-template users that cannot reach the bucket, the root keeps no
+// working key once sealed, and a restart reuses the bundles it issued.
+func TestUpFleetUsersAreFenced(t *testing.T) {
+	dir := t.TempDir()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	f, err := fleet.Up(ctx, fleet.Config{Dir: dir, Port: -1})
+	if err != nil {
+		t.Fatalf("up: %v", err)
+	}
+	stopped := false
+	defer func() {
+		if !stopped {
+			f.Stop()
+		}
+	}()
+
+	bundles := map[string][]byte{}
+	for _, name := range []string{"workloads", "executor-local", "cli"} {
+		b, err := mint.ReadBundle(filepath.Join(dir, "bundles", name))
+		if err != nil || b.Template() != mint.TemplateFleet {
+			t.Fatalf("bundle %s: %+v, %v", name, b, err)
+		}
+		bundles[name] = b.ControlCreds
+		assertFenced(t, f.URL, b.ControlCreds, name)
+	}
+	first, err := mint.ReadBundle(filepath.Join(dir, "bundles", "instance-1"))
+	if err != nil || first.Template() != mint.TemplateControlInstance {
+		t.Fatalf("instance-1's bundle: %v", err)
+	}
+	inc, err := mint.ConnectCreds(f.URL, first.ControlCreds, "instance-1-reads")
+	if err != nil {
+		t.Fatalf("instance-1 connects: %v", err)
+	}
+	if _, err := mint.OpenCustody(ctx, inc); err != nil {
+		t.Fatalf("the control instance cannot open the bucket: %v", err)
+	}
+	inc.Close()
+
+	// The dev dir keeps what the offline root keeps: identity, node keys,
+	// bundles, exports — no working key, no bootstrap user.
+	for _, file := range []string{"operator-signing.nk", "sys-account.nk", "control-account.nk", "control.creds", "sys.creds", "bridge.creds"} {
+		if _, err := os.Stat(filepath.Join(dir, file)); !os.IsNotExist(err) {
+			t.Fatalf("up left %s in the dev dir (%v)", file, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "operator.nk")); err != nil {
+		t.Fatalf("up took the operator identity: %v", err)
+	}
+
+	// A restart reuses the bundles: the same users, still fenced, and the
+	// CLI's still mints.
+	f.Stop()
+	stopped = true
+	f2, err := fleet.Up(ctx, fleet.Config{Dir: dir, Port: -1})
+	if err != nil {
+		t.Fatalf("up again: %v", err)
+	}
+	defer f2.Stop()
+	for name, creds := range bundles {
+		b, err := mint.ReadBundle(filepath.Join(dir, "bundles", name))
+		if err != nil || !bytes.Equal(b.ControlCreds, creds) {
+			t.Fatalf("bundle %s was re-issued on restart (%v)", name, err)
+		}
+	}
+	ctrl, err := client.ConnectControlCreds(f2.URL, bundles["cli"])
+	if err != nil {
+		t.Fatalf("cli bundle connects: %v", err)
+	}
+	defer ctrl.Close()
+	if _, err := ctrl.MintTenant(ctx, "acme", "dana"); err != nil {
+		t.Fatalf("mint through the cli bundle: %v", err)
 	}
 }
