@@ -153,15 +153,21 @@ linters:
               desc: this main runs internal/node and nothing else
             - pkg: github.com/impire-io/chronicle/internal/mint
               desc: a node holds a tenant's service user only, never minting material
-        cmd-chronicle-control-runs-its-service:
+        cmd-chronicle-control-runs-the-control-plane:
+          # The standalone control plane (specs/019-standalone-control-plane)
+          # is the composition root's wiring over an operator-run substrate:
+          # like cmd/chronicle, this main reaches the services only through
+          # internal/fleet.
           files: ["**/cmd/chronicle-control/*.go"]
           deny:
             - pkg: github.com/impire-io/chronicle/internal/node
-              desc: this main runs internal/control and nothing else
-            - pkg: github.com/impire-io/chronicle/internal/fleet
-              desc: this main runs internal/control and nothing else
+              desc: cmd/chronicle-control reaches the services only through internal/fleet
+            - pkg: github.com/impire-io/chronicle/internal/control
+              desc: cmd/chronicle-control reaches the services only through internal/fleet
+            - pkg: github.com/impire-io/chronicle/internal/mint
+              desc: cmd/chronicle-control holds no minting material
             - pkg: github.com/impire-io/chronicle/internal/cli
-              desc: this main runs internal/control and nothing else
+              desc: cmd/chronicle-control never imports the adapters
     errcheck:
       # Writing to stdout/stderr and ignoring the (near-impossible) error is idiomatic.
       exclude-functions:

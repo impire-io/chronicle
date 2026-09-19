@@ -143,11 +143,19 @@ scheduled individually — control plane, per-tenant nodes, and one executor
 per host, bidding for placements over the shared roster:
 
 ```sh
-chronicle-control --dir <data-dir>
-chronicle-node --url <nats-url> --creds <tenant-service-creds>
+chronicle-control --dir <data-dir> --url <nats-url> [--github-client-id <app>]
 chronicle-executor --url <nats-url> --creds <control-creds> --id <stable-host-id> \
   --backend inprocess|microsandbox [--workload-binary <path>]
 ```
+
+`chronicle-control` is the whole control plane — control's verbs, the
+browser identity bridge when a GitHub App is configured, and one
+`chronicle-workloads` instance — so a composed install runs three unit
+kinds: the NATS cluster (`chronicle operator emit-cluster-config` renders
+its configs from the same data dir), control, and one executor per host.
+Tenant nodes and indexers are placed by the executors, never started by
+hand. [`contrib/`](contrib/) carries the systemd units and the
+verification and snapshot scripts a composed install runs.
 
 The fleet design
 ([`chronicle-hq/02-DESIGN/04-fleet.md`](../chronicle-hq/02-DESIGN/04-fleet.md))
@@ -167,6 +175,7 @@ shape; all binaries ship in every release archive (decision
 | `cmd/chronicle-workload` | The one binary a placement runs — node or index kind — and the guest half of the microsandbox backend (thin main; logic in `internal/workloads`). |
 | `contract` | The wire contract: subjects, headers, stream/bucket names, META grammar. |
 | `client` | The public Go client package — the one way callers talk to the fleet. |
+| `contrib/` | Systemd units and the operational scripts for a composed install — generic, address-free. |
 | `specs/` | The spec-kit increments this repo was built through. |
 
 ## Build & run from source
