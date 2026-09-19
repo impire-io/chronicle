@@ -70,12 +70,7 @@ func TestBridgePlacesGithubIdentities(t *testing.T) {
 	}}
 	accountsDir := t.TempDir()
 	svc, err := control.Start(ctrlConn, control.Config{
-		Driver: &mint.JWTDriver{
-			OperatorSigningSeed: b.OperatorSigningSeed,
-			SysConn:             sysConn,
-			URL:                 url,
-			ControlAccountPub:   b.ControlAccountPub,
-		},
+		Driver:      b.Driver(sysConn, url),
 		URL:         url,
 		AccountsDir: accountsDir,
 		Bridge: &control.BridgeConfig{

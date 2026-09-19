@@ -51,11 +51,7 @@ func run() error {
 	defer ctrlConn.Close()
 
 	svc, err := control.Start(ctrlConn, control.Config{
-		Driver: &mint.JWTDriver{
-			OperatorSigningSeed: b.OperatorSigningSeed,
-			SysConn:             sysConn,
-			URL:                 target,
-		},
+		Driver:      b.Driver(sysConn, target),
 		URL:         target,
 		AccountsDir: b.AccountsDir(),
 	})

@@ -45,12 +45,7 @@ func TestBridgeStampsTenantsAndRefusesMembers(t *testing.T) {
 	}
 	t.Cleanup(svc.Stop)
 
-	driver := &mint.JWTDriver{
-		OperatorSigningSeed: b.OperatorSigningSeed,
-		SysConn:             sysConn,
-		URL:                 url,
-		ControlAccountPub:   b.ControlAccountPub,
-	}
+	driver := b.Driver(sysConn, url)
 	acct, err := driver.MintAccount(ctx, "acme")
 	if err != nil {
 		t.Fatalf("mint account: %v", err)
