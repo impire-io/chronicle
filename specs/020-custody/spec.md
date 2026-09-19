@@ -28,8 +28,8 @@ that verified the load-bearing parts on real servers is chronicle-hq
 `01-RESEARCH/010-shared-custody`.
 **Status:** specified on this branch ([plan.md](plan.md)); increments 1–3
 landed at design 10 @ `dd6b17c`; the remainder reshaped against `f56ad8c`
-(0031, 0032); increments 4 (the fence by role) and 5 (the standalone plane,
-the sixth binary) landed.
+(0031, 0032); increments 4 (the fence by role), 5 (the standalone plane,
+the sixth binary) and 6 (the ceremony split, rotation live) landed.
 **Supersedes:** spec 019 / PR #23 (the standalone control plane, still
 hosting the workload service) — its composition is carried here, reshaped;
 its `contrib/` units are **not**: units are the environment's

@@ -227,6 +227,52 @@ instance is told; the flag seam. Calls made while building:
   the hosted form every unit restarts — the level scan re-auctions
   regardless of which came back first.
 
+## Increment 6 — landed on this branch
+
+The ceremonies split and rotation runs live. `chronicle operator seal
+--url --replicas --signing-seed --sys-seed --control-seed [--out] [--export]`
+is the service's birth ceremony from the environment's material: it
+issues the first instance from the seeds and connects with it, reads the
+bare accounts the environment preloaded, stamps CONTROL with the fleet
+log's shape and pushes it, births the AUTH account and pushes it, creates
+the bucket, writes every entry and reads each back, writes the bundle and
+the export; a second run verifies by public key and writes nothing.
+`init` and `emit-cluster-config` left the CLI — the dev dir's own
+generator stays for `up`, the renderer stays as the trio test's
+substrate, and `GenerateMaterial` is the environment's birth in one call
+for tests. `chronicle operator rotate-signing-key --url --bundle
+--new-signing-seed` is the service's step: it asks every node what it
+trusts, lands the seed in `operator` by compare-and-set, and re-signs SYS,
+CONTROL, AUTH and every tenant, each by compare-and-set then push; with
+`--dir` alone it is the dev shape, playing the environment's two steps
+around the same step over the embedded server. `instance`, `export` and
+`rotate-signing-key` take `--bundle --url` (the hosted shape) or `--dir`
+(the dev shape). On real servers: seal from material on an embedded trio
+at R3, the stamped CONTROL serving JetStream and the driver minting
+across nodes; the live rotation with both keys trusted, a mint mid-roll,
+and every credential connecting after the old key is gone; the dev
+round trip through `up`. Calls made while building:
+
+- **The trust check asks the nodes, and comes before any push.** The
+  full resolver's `$SYS.REQ.CLAIMS.UPDATE` stores whatever it is handed
+  and refuses an untrusted issuer only when the account is next loaded —
+  a push under a key the nodes do not trust would poison the account,
+  not fail. The service scatters `$SYS.REQ.SERVER.PING.VARZ` over the
+  system account and requires every node that answers in the window to
+  list the new key; it refuses, naming the nodes, before touching the
+  bucket. The first build tried a probe by push; the server's behaviour
+  is why it did not survive.
+- **CONTROL is stamped before the bucket is looked for.** A bare CONTROL
+  account has no JetStream, so the bucket cannot even be looked for in
+  it; the stamp is pushed first and the bucket found or born after.
+- **The environment's material has no AUTH account**, so the emitter
+  skips an absent preload; the service births AUTH at seal and pushes it,
+  until the fold removes it in increment 7.
+- **The dev shape keeps its stopped-fleet guard**: the ceremony boots the
+  dev dir's server itself, and two servers on one store is a corruption.
+  The hosted shape has no such guard — it runs against the live cluster.
+- **A rotation refuses an unsealed dev dir** by name: run `up` once first.
+
 ## Reshaped by 0031 and 0032 — before increment 4
 
 The review of increment 3 asked whether a `fleet`-template credential was a
@@ -260,7 +306,7 @@ nothing else should land on the wrong side of it.
 5. ~~**The standalone plane and the sixth binary**~~ — landed: `chronicle-control --url
    --bundle` without workloads; `cmd/chronicle-workloads --url --creds`;
    the goreleaser row; the lint rules. No `contrib/`.
-6. **The ceremony split and the two-step rotation** (chronicle-21): `seal`
+6. ~~**The ceremony split and the two-step rotation** (chronicle-21)~~ — landed: `seal`
    takes `--signing-seed --sys-seed --control-seed`, stamps the shapes,
    pushes, issues `instance-1`, exports; `init` and `emit-cluster-config`
    leave the CLI, the renderer stays as the trio test's substrate, the

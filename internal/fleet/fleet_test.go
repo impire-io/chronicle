@@ -663,7 +663,7 @@ func TestOperatorRotationRoundTrip(t *testing.T) {
 	stopped = true
 
 	var out bytes.Buffer
-	if err := fleet.RotateSigningKey([]string{"--dir", dir}, &out); err != nil {
+	if err := fleet.RotateSigningKey(ctx, []string{"--dir", dir}, &out); err != nil {
 		t.Fatalf("rotate: %v\n%s", err, out.String())
 	}
 	if !strings.Contains(out.String(), "operator signing key rotated") {

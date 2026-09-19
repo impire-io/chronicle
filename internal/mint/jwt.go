@@ -2,7 +2,6 @@ package mint
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -383,7 +382,7 @@ func memberScope(scopedPub string) *jwt.UserScope {
 
 // lookupAccountJWT reads the account's current JWT from the resolver —
 // the raw token, so it compares byte-for-byte with custody's. An empty
-// payload means the resolver does not know the account.
+// token means the resolver does not know the account.
 func (d *JWTDriver) lookupAccountJWT(ctx context.Context, accountPub string) (string, error) {
 	msg, err := d.SysConn.RequestWithContext(ctx, fmt.Sprintf(accountLookupSubject, accountPub), nil)
 	if err != nil {
@@ -396,23 +395,7 @@ func (d *JWTDriver) push(ctx context.Context, accountJWT string) error {
 	if d.SysConn == nil {
 		return fmt.Errorf("this driver holds no system connection and cannot push")
 	}
-	msg, err := d.SysConn.RequestWithContext(ctx, claimsUpdateSubject, []byte(accountJWT))
-	if err != nil {
-		return fmt.Errorf("claims update: %w", err)
-	}
-	var resp struct {
-		Error *struct {
-			Code        int    `json:"code"`
-			Description string `json:"description"`
-		} `json:"error"`
-	}
-	if err := json.Unmarshal(msg.Data, &resp); err != nil {
-		return fmt.Errorf("claims update response: %w", err)
-	}
-	if resp.Error != nil {
-		return fmt.Errorf("claims update refused: %d %s", resp.Error.Code, resp.Error.Description)
-	}
-	return nil
+	return pushAccount(ctx, d.SysConn, accountJWT)
 }
 
 // MemberBaseline is the scoped key's permission template: every member can

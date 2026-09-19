@@ -72,11 +72,19 @@ type preloadEntry struct {
 // added later (the AUTH account of design 08 among them) joins the preload
 // here and rides into every emitted config without touching the rendering.
 func (b *Bootstrap) preloadAccounts() []preloadEntry {
-	return []preloadEntry{
+	var entries []preloadEntry
+	for _, e := range []preloadEntry{
 		{pub: b.SystemAccountPub, jwt: b.SystemAccountJWT},
 		{pub: b.ControlAccountPub, jwt: b.ControlAccountJWT},
 		{pub: b.AuthAccountPub, jwt: b.AuthAccountJWT},
+	} {
+		// The environment's material has no AUTH account: the service
+		// births it at seal (until the fold, 0030 point 6).
+		if e.pub != "" {
+			entries = append(entries, e)
+		}
 	}
+	return entries
 }
 
 // EmitClusterConfigs renders one self-contained nats-server config per node:

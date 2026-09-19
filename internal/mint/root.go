@@ -307,8 +307,9 @@ type SealOptions struct {
 type SealReport struct {
 	Written  []string // entries created
 	Matched  []string // entries already present and identical
-	Export   string   // the dated export written under the root
+	Export   string   // the dated export written under the root (the dev shape)
 	Conflict []string // entries present and DIFFERENT — the ceremony refuses
+	Instance string   // the first instance issued (the material seal)
 }
 
 // Seal moves the root's working keys into the AUTH bucket over an
@@ -332,14 +333,42 @@ func (r *Root) Seal(ctx context.Context, nc *nats.Conn, opts SealOptions) (SealR
 	if err != nil {
 		return rep, err
 	}
-
-	opPub, err := PublicKeyOfSeed(b.OperatorSigningSeed)
-	if err != nil {
-		return rep, fmt.Errorf("operator signing seed: %w", err)
-	}
 	ctrlUsers, sysUsers, err := r.bundleUsers()
 	if err != nil {
 		return rep, err
+	}
+	rep, err = sealEntries(ctx, c, b, ctrlUsers, sysUsers)
+	if err != nil {
+		return rep, err
+	}
+
+	path, err := r.Export(ctx, c)
+	if err != nil {
+		return rep, err
+	}
+	rep.Export = path
+	if r.Manifest.Sealed == "" {
+		r.Manifest.Sealed = time.Now().UTC().Format(time.RFC3339)
+		if err := r.saveManifest(); err != nil {
+			return rep, err
+		}
+	}
+	// The bucket holds every working key and the export is on disk: the
+	// root stops being a place they live.
+	if err := shredWorkingKeys(r.Dir); err != nil {
+		return rep, err
+	}
+	return rep, nil
+}
+
+// sealEntries writes every entry the material holds, reads each back, and
+// reports; an entry that exists and differs is a conflict. The core both
+// seals share — the dev root's and the material's.
+func sealEntries(ctx context.Context, c *Custody, b *Bootstrap, ctrlUsers, sysUsers map[string]string) (SealReport, error) {
+	var rep SealReport
+	opPub, err := PublicKeyOfSeed(b.OperatorSigningSeed)
+	if err != nil {
+		return rep, fmt.Errorf("operator signing seed: %w", err)
 	}
 	entries := []sealEntry{
 		{
@@ -387,23 +416,6 @@ func (r *Root) Seal(ctx context.Context, nc *nats.Conn, opts SealOptions) (SealR
 	}
 	if len(rep.Conflict) > 0 {
 		return rep, fmt.Errorf("seal refused: the bucket already holds different material for %v — this root is not the one that sealed it", rep.Conflict)
-	}
-
-	path, err := r.Export(ctx, c)
-	if err != nil {
-		return rep, err
-	}
-	rep.Export = path
-	if r.Manifest.Sealed == "" {
-		r.Manifest.Sealed = time.Now().UTC().Format(time.RFC3339)
-		if err := r.saveManifest(); err != nil {
-			return rep, err
-		}
-	}
-	// The bucket holds every working key and the export is on disk: the
-	// root stops being a place they live.
-	if err := shredWorkingKeys(r.Dir); err != nil {
-		return rep, err
 	}
 	return rep, nil
 }
@@ -522,7 +534,7 @@ func PublicKeyOfSeed(seed []byte) (string, error) {
 // disaster-recovery root for the day the cluster and every snapshot are
 // gone.
 func (r *Root) Export(ctx context.Context, c *Custody) (string, error) {
-	entries, err := c.Entries(ctx)
+	data, err := ExportJSON(ctx, c)
 	if err != nil {
 		return "", err
 	}
@@ -539,13 +551,6 @@ func (r *Root) Export(ctx context.Context, c *Custody) (string, error) {
 			break
 		}
 		name = fmt.Sprintf("%s-%d.json", stamp, i)
-	}
-	data, err := json.MarshalIndent(struct {
-		ExportedAt string                     `json:"exported_at"`
-		Entries    map[string]json.RawMessage `json:"entries"`
-	}{time.Now().UTC().Format(time.RFC3339), entries}, "", "  ")
-	if err != nil {
-		return "", fmt.Errorf("encode export: %w", err)
 	}
 	path := filepath.Join(dir, name)
 	if err := os.WriteFile(path, data, keyFileMode); err != nil {

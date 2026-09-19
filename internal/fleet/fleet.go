@@ -17,8 +17,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/nats-io/nats-server/v2/server"
@@ -321,29 +319,6 @@ func (f *Fleet) Stop() {
 	}
 }
 
-// RotateSigningKey is `chronicle operator rotate-signing-key`: the offline
-// trust-root ceremony, dispatched from cmd/chronicle like `up`. It is a
-// custody operation on the fleet dir, not a wire verb — the adapters hold
-// no minting material, so it lives with the composition root.
-func RotateSigningKey(args []string, out io.Writer) error {
-	fs := flag.NewFlagSet("chronicle operator rotate-signing-key", flag.ContinueOnError)
-	fs.SetOutput(out)
-	dir := fs.String("dir", devdir.Default(), "data dir for the local fleet")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	if fs.NArg() != 0 {
-		return fmt.Errorf("operator rotate-signing-key takes no positionals")
-	}
-	newPub, err := mint.RotateOperatorSigningKey(*dir)
-	if err != nil {
-		return err
-	}
-	fmt.Fprintf(out, "operator signing key rotated: %s\n", newPub)
-	fmt.Fprintln(out, "every account re-signed and verified; start the fleet to serve under the new key")
-	return nil
-}
-
 // Run is the `chronicle up` subcommand: parse flags, boot, print, block
 // until ctx ends.
 func Run(ctx context.Context, args []string, out io.Writer) error {
@@ -375,104 +350,6 @@ func Run(ctx context.Context, args []string, out io.Writer) error {
 	fmt.Fprintf(out, "  dir:  %s\n", *dir)
 	fmt.Fprintf(out, "create a tenant:  chronicle tenant create <name> --dir %s\n", *dir)
 	<-ctx.Done()
-	return nil
-}
-
-// nodeSpecs collects repeatable --node flags: <name>=<host>[:client[:cluster]].
-type nodeSpecs []mint.ClusterNode
-
-func (n *nodeSpecs) String() string { return fmt.Sprintf("%d nodes", len(*n)) }
-
-func (n *nodeSpecs) Set(v string) error {
-	name, rest, ok := strings.Cut(v, "=")
-	if !ok || name == "" || rest == "" {
-		return fmt.Errorf("--node wants <name>=<host>[:client-port[:cluster-port]], got %q", v)
-	}
-	node := mint.ClusterNode{Name: name}
-	parts := strings.Split(rest, ":")
-	node.Host = parts[0]
-	if len(parts) > 3 {
-		return fmt.Errorf("--node %q: too many port fields", v)
-	}
-	var err error
-	if len(parts) > 1 {
-		if node.ClientPort, err = strconv.Atoi(parts[1]); err != nil {
-			return fmt.Errorf("--node %q: client port: %w", v, err)
-		}
-	}
-	if len(parts) > 2 {
-		if node.ClusterPort, err = strconv.Atoi(parts[2]); err != nil {
-			return fmt.Errorf("--node %q: cluster port: %w", v, err)
-		}
-	}
-	*n = append(*n, node)
-	return nil
-}
-
-// EmitClusterConfig is `chronicle operator emit-cluster-config`: the
-// stand-up ceremony's rendering step (chronicle-hq/02-DESIGN/09-hosted-
-// environment.md), dispatched from cmd/chronicle like the other custody
-// operations on the fleet dir. Pure rendering — the only writes are the
-// per-node .conf files under --out.
-func EmitClusterConfig(args []string, out io.Writer) error {
-	fs := flag.NewFlagSet("chronicle operator emit-cluster-config", flag.ContinueOnError)
-	fs.SetOutput(out)
-	dir := fs.String("dir", devdir.Default(), "data dir holding the bootstrap material")
-	outDir := fs.String("out", ".", "directory the per-node configs are written to")
-	var nodes nodeSpecs
-	fs.Var(&nodes, "node", "<name>=<host>[:client-port[:cluster-port]] — repeat per node")
-	clientPort := fs.Int("client-port", 0, "client port for every node (default 4222)")
-	clusterPort := fs.Int("cluster-port", 0, "cluster port for every node (default 6222)")
-	clusterName := fs.String("cluster-name", "", "cluster name (default CHRONICLE)")
-	tlsCert := fs.String("tls-cert", "", "target-host path of the client-listener TLS cert")
-	tlsKey := fs.String("tls-key", "", "target-host path of the client-listener TLS key")
-	storeDir := fs.String("store-dir", "", "target-host JetStream dir (default /var/lib/chronicle/jetstream)")
-	resolverDir := fs.String("resolver-dir", "", "target-host resolver dir (default /var/lib/chronicle/resolver)")
-	listenHost := fs.String("listen-host", "", "bind address for both listeners (default 0.0.0.0)")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	if fs.NArg() != 0 {
-		return fmt.Errorf("operator emit-cluster-config takes no positionals")
-	}
-
-	r, err := mint.InitRoot(*dir)
-	if err != nil {
-		return err
-	}
-	// Every emitted node encrypts its store at rest with its own key, born
-	// here the first time the node is named and kept in the root only.
-	for _, n := range nodes {
-		if _, err := r.NodeKey(n.Name); err != nil {
-			return err
-		}
-	}
-	cfgs, err := r.B.EmitClusterConfigs(mint.ClusterConfig{
-		Nodes:       nodes,
-		ClientPort:  *clientPort,
-		ClusterPort: *clusterPort,
-		ClusterName: *clusterName,
-		TLSCert:     *tlsCert,
-		TLSKey:      *tlsKey,
-		StoreDir:    *storeDir,
-		ResolverDir: *resolverDir,
-		ListenHost:  *listenHost,
-	})
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(*outDir, 0o755); err != nil {
-		return fmt.Errorf("create out dir: %w", err)
-	}
-	for _, c := range cfgs {
-		path := filepath.Join(*outDir, c.Name+".conf")
-		if err := os.WriteFile(path, []byte(c.Content), 0o644); err != nil {
-			return fmt.Errorf("write %s: %w", path, err)
-		}
-		fmt.Fprintf(out, "wrote %s\n", path)
-	}
-	fmt.Fprintln(out, "copy each config to its host and run: nats-server -c <name>.conf")
-	fmt.Fprintf(out, "each node's %s is recorded in %s — set it in the node's unit environment; the configs carry no seeds and no keys\n", mint.JetStreamKeyEnv, filepath.Join(r.Dir, "root.json"))
 	return nil
 }
 

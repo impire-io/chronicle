@@ -217,9 +217,35 @@ func bridgeExport() *jwt.Export {
 // upgrade needs no account seed. The resolver preloads the refreshed JWT
 // at every server start.
 func (b *Bootstrap) ensureControlJetStream() error {
-	claims, err := jwt.DecodeAccountClaims(b.ControlAccountJWT)
+	stamped, changed, err := stampControlShapeWith(b.ControlAccountJWT, func() (nkeys.KeyPair, error) {
+		if len(b.OperatorSigningSeed) == 0 {
+			return nil, fmt.Errorf("the control account JWT in %s predates the fleet log and the root holds no signing seed to refresh it; a fresh dev dir is the remedy", b.Dir)
+		}
+		return nkeys.FromSeed(b.OperatorSigningSeed)
+	})
+	if err != nil || !changed {
+		return err
+	}
+	b.ControlAccountJWT = stamped
+	if err := os.WriteFile(filepath.Join(b.Dir, fCtrlAcctJWT), []byte(stamped), plainFileMode); err != nil {
+		return fmt.Errorf("write refreshed control account jwt: %w", err)
+	}
+	return nil
+}
+
+// stampControlShape is the service's shape on the CONTROL account — the
+// fleet log's JetStream limits and the bridge export — applied to whatever
+// JWT the account carries and re-signed under the operator signing key.
+// A JWT that already carries the shape comes back unchanged: the
+// environment's bare account is stamped once, at seal.
+func stampControlShape(token string, oskp nkeys.KeyPair) (string, bool, error) {
+	return stampControlShapeWith(token, func() (nkeys.KeyPair, error) { return oskp, nil })
+}
+
+func stampControlShapeWith(token string, signer func() (nkeys.KeyPair, error)) (string, bool, error) {
+	claims, err := jwt.DecodeAccountClaims(token)
 	if err != nil {
-		return fmt.Errorf("decode control account jwt: %w", err)
+		return "", false, fmt.Errorf("decode control account jwt: %w", err)
 	}
 	hasExport := false
 	for _, e := range claims.Exports {
@@ -228,28 +254,21 @@ func (b *Bootstrap) ensureControlJetStream() error {
 		}
 	}
 	if claims.Limits.JetStreamLimits != (jwt.JetStreamLimits{}) && hasExport {
-		return nil
+		return token, false, nil
 	}
 	claims.Limits.JetStreamLimits = controlJetStreamLimits
 	if !hasExport {
 		claims.Exports.Add(bridgeExport())
 	}
-	if len(b.OperatorSigningSeed) == 0 {
-		return fmt.Errorf("the control account JWT in %s predates the fleet log and the root holds no signing seed to refresh it; a fresh `chronicle operator init` is the remedy", b.Dir)
-	}
-	oskp, err := nkeys.FromSeed(b.OperatorSigningSeed)
+	oskp, err := signer()
 	if err != nil {
-		return fmt.Errorf("operator signing seed: %w", err)
+		return "", false, err
 	}
-	refreshed, err := claims.Encode(oskp)
+	stamped, err := claims.Encode(oskp)
 	if err != nil {
-		return fmt.Errorf("re-encode control account jwt: %w", err)
+		return "", false, fmt.Errorf("re-encode control account jwt: %w", err)
 	}
-	b.ControlAccountJWT = refreshed
-	if err := os.WriteFile(filepath.Join(b.Dir, fCtrlAcctJWT), []byte(refreshed), plainFileMode); err != nil {
-		return fmt.Errorf("write refreshed control account jwt: %w", err)
-	}
-	return nil
+	return stamped, true, nil
 }
 
 func initBootstrap(dir string) (*Bootstrap, error) {

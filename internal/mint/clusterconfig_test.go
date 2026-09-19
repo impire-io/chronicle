@@ -153,11 +153,11 @@ func freePorts(t *testing.T, n int) []int {
 // on the *other* nodes. This is design 09's verified mechanism as a
 // regression test.
 func TestEmittedConfigsFormAClusterThatMintsEverywhere(t *testing.T) {
-	r := testRoot(t)
-	b := r.B
-	bundle, err := mint.ReadBundle(r.BundleDir("instance-1"))
+	// The environment's part: the material born bare, the configs
+	// rendered from its public half, each node's key in its environment.
+	material, b, err := mint.GenerateMaterial()
 	if err != nil {
-		t.Fatalf("bundle: %v", err)
+		t.Fatalf("material: %v", err)
 	}
 	tmp := t.TempDir()
 	ports := freePorts(t, 6)
@@ -208,55 +208,72 @@ func TestEmittedConfigsFormAClusterThatMintsEverywhere(t *testing.T) {
 		}
 	}
 
-	// The driver pushes through node 1 and — by URL — verifies by
-	// connecting to node 3: the mint ceremony itself proves propagation.
+	// The service's part: seal from the material through node 2 — the
+	// first instance issued from the seeds connects, the bare CONTROL
+	// account is stamped with the fleet log's shape and pushed, the AUTH
+	// bucket is born at R3 across the trio. JetStream's meta group elects
+	// a leader a beat after the servers accept connections; the seal
+	// waits for it by trying.
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	var (
+		rep     mint.SealReport
+		bundle  mint.Bundle
+		sealErr error
+	)
+	for deadline := time.Now().Add(25 * time.Second); time.Now().Before(deadline); {
+		sealCtx, sealCancel := context.WithTimeout(ctx, 10*time.Second)
+		rep, bundle, _, sealErr = mint.SealFromMaterial(sealCtx, servers[1].ClientURL(), material, mint.SealOptions{Replicas: 3})
+		sealCancel()
+		if sealErr == nil {
+			break
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+	if sealErr != nil {
+		t.Fatalf("seal from material into the cluster: %v", sealErr)
+	}
+	if rep.Instance != "instance-1" || len(rep.Written) != 5 || len(bundle.SysCreds) == 0 {
+		t.Fatalf("seal report %+v, bundle sys=%d", rep, len(bundle.SysCreds))
+	}
+	// A second seal with the same material writes nothing.
+	again, _, _, err := mint.SealFromMaterial(ctx, servers[0].ClientURL(), material, mint.SealOptions{Replicas: 3})
+	if err != nil || len(again.Written) != 0 || len(again.Matched) != 4 {
+		t.Fatalf("second seal: %+v, %v", again, err)
+	}
+
+	// The stamped CONTROL account serves: the first instance's control
+	// user has JetStream, which the bare account did not grant.
 	sysConn, err := mint.ConnectCreds(servers[0].ClientURL(), bundle.SysCreds, "test-sys")
 	if err != nil {
 		t.Fatalf("connect system user to n1: %v", err)
 	}
 	defer sysConn.Close()
-	// The keys the driver signs with live in the AUTH bucket (design 10):
-	// seal the root into the cluster through node 2, R3 across the trio,
-	// and the driver on node 1 reads them from there.
-	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
-	defer cancel()
 	ctrlConn, err := mint.ConnectCreds(servers[1].ClientURL(), bundle.ControlCreds, "test-control")
 	if err != nil {
 		t.Fatalf("connect control user to n2: %v", err)
 	}
 	defer ctrlConn.Close()
-	// JetStream's meta group elects a leader a beat after the servers
-	// accept connections; the seal's R3 bucket needs it.
 	jsc, err := jetstream.New(ctrlConn)
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
-	var lastErr error
-	for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline); {
-		infoCtx, infoCancel := context.WithTimeout(ctx, 2*time.Second)
-		_, lastErr = jsc.AccountInfo(infoCtx)
-		infoCancel()
-		if lastErr == nil {
-			break
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-	if lastErr != nil {
-		t.Fatalf("jetstream never became ready on the cluster: %v", lastErr)
-	}
-	sealCtx, sealCancel := context.WithTimeout(ctx, 15*time.Second)
-	_, err = r.Seal(sealCtx, ctrlConn, mint.SealOptions{Replicas: 3})
-	sealCancel()
-	if err != nil {
-		t.Fatalf("seal into the cluster: %v", err)
+	if _, err := jsc.AccountInfo(ctx); err != nil {
+		t.Fatalf("the stamped CONTROL account has no JetStream: %v", err)
 	}
 	c, err := mint.OpenCustody(ctx, ctrlConn)
 	if err != nil {
 		t.Fatalf("open custody: %v", err)
 	}
+	// The driver on node 1 reads the keys from the bucket and — by URL —
+	// verifies by connecting to node 3: the mint ceremony itself proves
+	// propagation.
 	d, err := mint.NewJWTDriver(ctx, c, sysConn, servers[2].ClientURL())
 	if err != nil {
 		t.Fatalf("driver: %v", err)
+	}
+	if d.ControlAccountPub != b.ControlAccountPub {
+		t.Fatalf("driver's bridge exporter = %s, want the CONTROL account %s", d.ControlAccountPub, b.ControlAccountPub)
 	}
 	acct, err := d.MintAccount(ctx, "acme")
 	if err != nil {

@@ -11,9 +11,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/nats-io/nats.go/micro"
+	"github.com/nats-io/nkeys"
 
 	"github.com/impire-io/chronicle/client"
 	"github.com/impire-io/chronicle/contract"
@@ -364,4 +366,201 @@ func TestRoleTemplatesHold(t *testing.T) {
 	_, err = executor.PullCreds(sctx, c, "exec-a", "acme", contract.WorkloadNodeName)
 	scancel()
 	refused("cli pulls creds", err)
+}
+
+// TestRotationLiveWithBothKeysTrusted is design 10 § rotation, the two
+// steps as the environment and the service take them: the environment
+// adds the new signing key to the operator JWT and rolls the node; the
+// service's `rotate-signing-key --url --bundle --new-signing-seed` lands
+// the seed and re-signs every account by compare-and-set then push, with
+// a mint interleaved that signs under the new key; the environment removes
+// the old key and rolls again; every credential the install holds still
+// connects. Before the environment's first step, the service's step is
+// refused and the bucket is untouched.
+func TestRotationLiveWithBothKeysTrusted(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	r, err := mint.InitRoot(t.TempDir())
+	if err != nil {
+		t.Fatalf("init root: %v", err)
+	}
+	b := r.B
+	key, err := r.NodeKey("embedded")
+	if err != nil {
+		t.Fatalf("node key: %v", err)
+	}
+	// The environment's node, rolled by restarting it on the same store
+	// under whatever operator JWT the root holds at the time.
+	var url string
+	var stop func()
+	roll := func() {
+		t.Helper()
+		if stop != nil {
+			stop()
+		}
+		srv, err := b.StartServerWithKey(-1, key)
+		if err != nil {
+			t.Fatalf("start node: %v", err)
+		}
+		url = srv.ClientURL()
+		stop = func() {
+			srv.Shutdown()
+			srv.WaitForShutdown()
+		}
+	}
+	roll()
+	defer func() { stop() }()
+	bundle, err := mint.ReadBundle(r.BundleDir("instance-1"))
+	if err != nil {
+		t.Fatalf("bundle: %v", err)
+	}
+	sealConn, err := mint.ConnectCreds(url, bundle.ControlCreds, "seal")
+	if err != nil {
+		t.Fatalf("connect for seal: %v", err)
+	}
+	if _, err := r.Seal(ctx, sealConn, mint.SealOptions{Replicas: 1}); err != nil {
+		t.Fatalf("seal: %v", err)
+	}
+	sealConn.Close()
+
+	// A tenant and a member under the old key.
+	driverAt := func(url string) *mint.JWTDriver {
+		t.Helper()
+		sysConn, err := mint.ConnectCreds(url, bundle.SysCreds, "sys")
+		if err != nil {
+			t.Fatalf("sys: %v", err)
+		}
+		t.Cleanup(sysConn.Close)
+		ctrlConn, err := mint.ConnectCreds(url, bundle.ControlCreds, "control")
+		if err != nil {
+			t.Fatalf("control: %v", err)
+		}
+		t.Cleanup(ctrlConn.Close)
+		c, err := mint.OpenCustody(ctx, ctrlConn)
+		if err != nil {
+			t.Fatalf("custody: %v", err)
+		}
+		d, err := mint.NewJWTDriver(ctx, c, sysConn, url)
+		if err != nil {
+			t.Fatalf("driver: %v", err)
+		}
+		return d
+	}
+	acme, err := driverAt(url).MintAccount(ctx, "acme")
+	if err != nil {
+		t.Fatalf("mint acme: %v", err)
+	}
+	dana, err := mint.IssueMember(acme, "dana")
+	if err != nil {
+		t.Fatalf("issue dana: %v", err)
+	}
+	connects := func(name string, creds []byte) {
+		t.Helper()
+		nc, err := mint.ConnectCreds(url, creds, name)
+		if err != nil {
+			t.Fatalf("%s cannot connect: %v", name, err)
+		}
+		nc.Close()
+	}
+
+	// The new key, not yet trusted: the service's step is refused and
+	// the bucket still names the old key.
+	newKP, err := nkeys.CreateOperator()
+	if err != nil {
+		t.Fatal(err)
+	}
+	newSeed, _ := newKP.Seed()
+	newPub, _ := newKP.PublicKey()
+	seedFile := filepath.Join(t.TempDir(), "new.nk")
+	if err := os.WriteFile(seedFile, newSeed, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rotate := func() error {
+		var out bytes.Buffer
+		return fleet.RotateSigningKey(ctx, []string{"--url", url, "--bundle", r.BundleDir("instance-1"), "--new-signing-seed", seedFile}, &out)
+	}
+	if err := rotate(); err == nil || !strings.Contains(err.Error(), "do not trust") {
+		t.Fatalf("rotation before the environment's step: %v, want a refusal naming the trust", err)
+	}
+	c0, err := mint.OpenCustody(ctx, mustConnect(t, url, bundle.ControlCreds, "check"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if op, _, _ := c0.Operator(ctx); op.PublicKey == newPub {
+		t.Fatal("a refused rotation changed the operator entry")
+	}
+
+	// Step one, the environment's: both keys trusted, the node rolled.
+	oc, err := jwt.DecodeOperatorClaims(b.OperatorJWT)
+	if err != nil {
+		t.Fatal(err)
+	}
+	okp, err := nkeys.FromSeed(b.OperatorSeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldPub := oc.SigningKeys[0]
+	oc.SigningKeys = jwt.StringList{oldPub, newPub}
+	if b.OperatorJWT, err = oc.Encode(okp); err != nil {
+		t.Fatal(err)
+	}
+	roll()
+
+	// Step two, the service's — with a mint interleaved: beta is signed
+	// under whichever key the bucket names, and connects either way.
+	if err := rotate(); err != nil {
+		t.Fatalf("rotation with both keys trusted: %v", err)
+	}
+	beta, err := driverAt(url).MintAccount(ctx, "beta")
+	if err != nil {
+		t.Fatalf("mint mid-roll: %v", err)
+	}
+	erin, err := mint.IssueMember(beta, "erin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c1, err := mint.OpenCustody(ctx, mustConnect(t, url, bundle.ControlCreds, "check-2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if op, _, _ := c1.Operator(ctx); op.PublicKey != newPub {
+		t.Fatalf("the bucket names %s, want the new key %s", op.PublicKey, newPub)
+	}
+	for _, name := range []string{"SYS", "CONTROL", "AUTH"} {
+		rec, _, err := c1.Account(ctx, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ac, _ := jwt.DecodeAccountClaims(rec.JWT)
+		if ac.Issuer != newPub {
+			t.Fatalf("%s is signed by %s, want %s", name, ac.Issuer, newPub)
+		}
+	}
+	connects("dana", dana.File)
+	connects("erin", erin.File)
+
+	// Step three, the environment's: the old key gone, the node rolled;
+	// everything the install holds still connects.
+	oc.SigningKeys = jwt.StringList{newPub}
+	if b.OperatorJWT, err = oc.Encode(okp); err != nil {
+		t.Fatal(err)
+	}
+	roll()
+	connects("dana after", dana.File)
+	connects("erin after", erin.File)
+	connects("instance-1 control", bundle.ControlCreds)
+	connects("instance-1 sys", bundle.SysCreds)
+	if _, err := driverAt(url).MintAccount(ctx, "gamma"); err != nil {
+		t.Fatalf("mint after the roll: %v", err)
+	}
+}
+
+func mustConnect(t *testing.T, url string, creds []byte, name string) *nats.Conn {
+	t.Helper()
+	nc, err := mint.ConnectCreds(url, creds, name)
+	if err != nil {
+		t.Fatalf("%s: %v", name, err)
+	}
+	t.Cleanup(nc.Close)
+	return nc
 }
