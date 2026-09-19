@@ -24,17 +24,10 @@ func TestBridgeStampsTenantsAndRefusesMembers(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	url, b := natstest.StartOperator(t)
-	sysConn, err := mint.ConnectCreds(url, b.SysCreds, "test-sys")
-	if err != nil {
-		t.Fatalf("connect sys: %v", err)
-	}
-	t.Cleanup(sysConn.Close)
-	ctrlConn, err := mint.ConnectCreds(url, b.ControlCreds, "test-control")
-	if err != nil {
-		t.Fatalf("connect control: %v", err)
-	}
-	t.Cleanup(ctrlConn.Close)
+	// The sealed substrate of design 10; the instance's users come from
+	// the root's bundle and the driver's keys from the bucket.
+	url, r := natstest.StartSealedOperator(t)
+	sysConn, ctrlConn, custody := natstest.OpenInstance(t, url, r)
 
 	svc, err := workloads.Start(ctx, ctrlConn, workloads.Config{
 		ScanEvery:     150 * time.Millisecond,
@@ -45,7 +38,10 @@ func TestBridgeStampsTenantsAndRefusesMembers(t *testing.T) {
 	}
 	t.Cleanup(svc.Stop)
 
-	driver := b.Driver(sysConn, url)
+	driver, err := mint.NewJWTDriver(ctx, custody, sysConn, url)
+	if err != nil {
+		t.Fatalf("driver: %v", err)
+	}
 	acct, err := driver.MintAccount(ctx, "acme")
 	if err != nil {
 		t.Fatalf("mint account: %v", err)

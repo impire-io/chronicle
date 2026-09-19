@@ -3,11 +3,13 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/impire-io/chronicle/internal/control"
 	"github.com/impire-io/chronicle/internal/devdir"
@@ -23,11 +25,11 @@ func main() {
 }
 
 func run() error {
-	dir := flag.String("dir", devdir.Default(), "data dir holding the bootstrap material")
-	url := flag.String("url", "", "NATS url (default: the data dir's recorded url)")
+	dir := flag.String("dir", devdir.Default(), "the root holding this instance's bundle")
+	url := flag.String("url", "", "NATS url (default: the root's recorded url)")
 	flag.Parse()
 
-	b, err := mint.LoadOrInitBootstrap(*dir)
+	r, err := mint.LoadRoot(*dir)
 	if err != nil {
 		return err
 	}
@@ -38,23 +40,35 @@ func run() error {
 			return err
 		}
 	}
+	bundle, err := mint.ReadBundle(r.BundleDir("instance-1"))
+	if err != nil {
+		return err
+	}
 
-	sysConn, err := mint.ConnectCreds(target, b.SysCreds, "chronicle-sys")
+	sysConn, err := mint.ConnectCreds(target, bundle.SysCreds, "chronicle-sys")
 	if err != nil {
 		return fmt.Errorf("connect system user: %w", err)
 	}
 	defer sysConn.Close()
-	ctrlConn, err := mint.ConnectCreds(target, b.ControlCreds, "chronicle-control")
+	ctrlConn, err := mint.ConnectCreds(target, bundle.ControlCreds, "chronicle-control")
 	if err != nil {
 		return fmt.Errorf("connect control user: %w", err)
 	}
 	defer ctrlConn.Close()
 
-	svc, err := control.Start(ctrlConn, control.Config{
-		Driver:      b.Driver(sysConn, target),
-		URL:         target,
-		AccountsDir: b.AccountsDir(),
-	})
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	custody, err := mint.OpenCustody(ctx, ctrlConn)
+	if err != nil {
+		cancel()
+		return err
+	}
+	driver, err := mint.NewJWTDriver(ctx, custody, sysConn, target)
+	cancel()
+	if err != nil {
+		return err
+	}
+
+	svc, err := control.Start(ctrlConn, control.Config{Driver: driver, URL: target})
 	if err != nil {
 		return err
 	}

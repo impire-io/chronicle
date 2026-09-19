@@ -171,6 +171,15 @@ func (c *Custody) PutTenant(ctx context.Context, rec TenantRecord, expectedRev u
 	return put(ctx, c.kv, keyTenantPrefix+rec.Name, rec, expectedRev)
 }
 
+// DeleteTenant removes a tenant's entry — a mint that could not push, or
+// a future tenant destroy. Absent is not an error.
+func (c *Custody) DeleteTenant(ctx context.Context, name string) error {
+	if err := c.kv.Delete(ctx, keyTenantPrefix+name); err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
+		return fmt.Errorf("custody: delete tenant %s: %w", name, err)
+	}
+	return nil
+}
+
 // Tenants lists every tenant the bucket holds — control's boot replay and
 // the reconcile walk it.
 func (c *Custody) Tenants(ctx context.Context) ([]string, error) {

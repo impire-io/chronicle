@@ -8,7 +8,6 @@ import (
 
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats-server/v2/server"
-	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
 
 	"github.com/impire-io/chronicle/contract"
@@ -395,11 +394,22 @@ func (b *Bootstrap) ServerOptions(port int) (*server.Options, error) {
 	}, nil
 }
 
-// StartServer runs the embedded server until ready.
+// StartServer runs the embedded server until ready, its store in the clear.
 func (b *Bootstrap) StartServer(port int) (*server.Server, error) {
+	return b.StartServerWithKey(port, "")
+}
+
+// StartServerWithKey runs the embedded server with its JetStream store
+// encrypted at rest under key (design 10 § at rest); an empty key leaves
+// the store in the clear. `up` passes the node key its root holds.
+func (b *Bootstrap) StartServerWithKey(port int, key string) (*server.Server, error) {
 	opts, err := b.ServerOptions(port)
 	if err != nil {
 		return nil, err
+	}
+	if key != "" {
+		opts.JetStreamKey = key
+		opts.JetStreamCipher = server.ChaCha
 	}
 	srv, err := server.NewServer(opts)
 	if err != nil {
@@ -415,20 +425,6 @@ func (b *Bootstrap) StartServer(port int) (*server.Server, error) {
 
 // AccountsDir is where the install keeps per-tenant issuance material.
 func (b *Bootstrap) AccountsDir() string { return b.ensureDir(accountsDir) }
-
-// Driver builds the account-minting driver from this bootstrap's material.
-// Every composition root — the in-process fleet and the standalone
-// chronicle-control binary — must build it here: hand-assembled drivers
-// are how the two drifted on whether a minted tenant carries the
-// fleet-bridge import (chronicle-16).
-func (b *Bootstrap) Driver(sysConn *nats.Conn, url string) *JWTDriver {
-	return &JWTDriver{
-		OperatorSigningSeed: b.OperatorSigningSeed,
-		SysConn:             sysConn,
-		URL:                 url,
-		ControlAccountPub:   b.ControlAccountPub,
-	}
-}
 
 // WriteClientURL records the running server's client URL for the CLI.
 func (b *Bootstrap) WriteClientURL(url string) error {

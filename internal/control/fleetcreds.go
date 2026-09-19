@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
@@ -51,12 +49,12 @@ func (c *control) handleFleetCreds(req micro.Request) {
 		return
 	}
 
-	creds, err := os.ReadFile(filepath.Join(c.cfg.AccountsDir, r.Tenant, "service.creds"))
+	acct, err := c.cfg.Driver.Tenant(ctx, r.Tenant)
 	if err != nil {
 		_ = req.Error("500", fmt.Sprintf("read service creds: %v", err), nil)
 		return
 	}
-	reply, err := json.Marshal(contract.FleetCredsResponse{Creds: creds})
+	reply, err := json.Marshal(contract.FleetCredsResponse{Creds: acct.ServiceCreds})
 	if err != nil {
 		_ = req.Error("500", err.Error(), nil)
 		return

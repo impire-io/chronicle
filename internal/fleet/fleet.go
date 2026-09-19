@@ -38,6 +38,10 @@ import (
 // across restarts, per the workload contract.
 const LocalExecutorID = "local"
 
+// embeddedNode names the embedded server in the root's manifest: its
+// JetStream key lives there, beside the keys of any emitted node.
+const embeddedNode = "embedded"
+
 // Config selects what the fleet runs.
 type Config struct {
 	// Dir is the data dir: bootstrap material, resolver, JetStream store,
@@ -99,13 +103,23 @@ func Up(ctx context.Context, cfg Config) (*Fleet, error) {
 		port = 4222
 	}
 
-	b, err := mint.LoadOrInitBootstrap(dir)
+	// Design 10's first boot, in one process: the root is born or opened,
+	// the embedded server runs encrypted at rest under the root's node
+	// key, the working keys are sealed into the AUTH bucket, and control
+	// dials with the bundle the root issued — the same path a hosted
+	// instance walks, with the ceremonies folded into `up`.
+	r, err := mint.InitRoot(dir)
 	if err != nil {
 		return nil, err
 	}
-	srv, err := b.StartServer(port)
+	b := r.B
+	nodeKey, err := r.NodeKey(embeddedNode)
 	if err != nil {
 		return nil, err
+	}
+	srv, err := b.StartServerWithKey(port, nodeKey)
+	if err != nil {
+		return nil, fmt.Errorf("%w (a dev dir from before design 10 holds an unencrypted store: move %s aside and start again)", err, dir)
 	}
 	f := &Fleet{URL: srv.ClientURL(), srv: srv}
 	if err := b.WriteClientURL(f.URL); err != nil {
@@ -122,12 +136,26 @@ func Up(ctx context.Context, cfg Config) (*Fleet, error) {
 		return nc, nil
 	}
 
-	sysConn, err := connect(b.SysCreds, "chronicle-sys")
+	bundle, err := mint.ReadBundle(r.BundleDir(firstInstance))
 	if err != nil {
 		f.Stop()
 		return nil, err
 	}
-	ctrlConn, err := connect(b.ControlCreds, "chronicle-control")
+	sysConn, err := connect(bundle.SysCreds, "chronicle-sys")
+	if err != nil {
+		f.Stop()
+		return nil, err
+	}
+	ctrlConn, err := connect(bundle.ControlCreds, "chronicle-control")
+	if err != nil {
+		f.Stop()
+		return nil, err
+	}
+	if _, err := r.Seal(ctx, ctrlConn, mint.SealOptions{Replicas: 1}); err != nil {
+		f.Stop()
+		return nil, fmt.Errorf("seal custody: %w", err)
+	}
+	custody, err := mint.OpenCustody(ctx, ctrlConn)
 	if err != nil {
 		f.Stop()
 		return nil, err
@@ -190,33 +218,46 @@ func Up(ctx context.Context, cfg Config) (*Fleet, error) {
 
 	var bridgeCfg *control.BridgeConfig
 	if cfg.GithubClientID != "" {
-		authConn, err := connect(b.BridgeCreds, "chronicle-bridge")
+		authRec, _, err := custody.Auth(ctx)
+		if err != nil {
+			f.Stop()
+			return nil, err
+		}
+		authAcct, _, err := custody.Account(ctx, "AUTH")
+		if err != nil {
+			f.Stop()
+			return nil, err
+		}
+		authConn, err := connect([]byte(authRec.BridgeCreds), "chronicle-bridge")
 		if err != nil {
 			f.Stop()
 			return nil, err
 		}
 		bridgeCfg = &control.BridgeConfig{
 			Conn:               authConn,
-			ResponseSignerSeed: b.AuthAccountSeed,
-			XKeySeed:           b.AuthXKeySeed,
+			ResponseSignerSeed: []byte(authAcct.Seed),
+			XKeySeed:           []byte(authRec.XKeySeed),
 			Validator:          &github.Client{ClientID: cfg.GithubClientID},
 			Logger:             logger,
 		}
 		// The bridge profile is the hand-out that makes `chronicle login`
 		// possible — public material only (0026: the sentinel is public
 		// by design).
-		if err := writeBridgeProfile(cfg.Dir, f.URL, cfg.GithubClientID, b.SentinelCreds); err != nil {
+		if err := writeBridgeProfile(cfg.Dir, f.URL, cfg.GithubClientID, []byte(authRec.SentinelCreds)); err != nil {
 			f.Stop()
 			return nil, err
 		}
 	}
 
-	driver := b.Driver(sysConn, f.URL)
+	driver, err := mint.NewJWTDriver(ctx, custody, sysConn, f.URL)
+	if err != nil {
+		f.Stop()
+		return nil, err
+	}
 	ctrl, err := control.Start(ctrlConn, control.Config{
-		Driver:      driver,
-		URL:         f.URL,
-		AccountsDir: b.AccountsDir(),
-		Bridge:      bridgeCfg,
+		Driver: driver,
+		URL:    f.URL,
+		Bridge: bridgeCfg,
 		OnTenant: func(name string, serviceCreds []byte) error {
 			// The tenant's node exists because the record says so; the
 			// executor pulls the creds itself — the record-verified pull.

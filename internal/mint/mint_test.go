@@ -4,14 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/nats-io/jwt/v2"
+
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
-	"github.com/nats-io/nkeys"
 
 	"github.com/impire-io/chronicle/contract"
 	"github.com/impire-io/chronicle/internal/mint"
@@ -20,17 +22,20 @@ import (
 
 func startDriver(t *testing.T) (url string, d *mint.JWTDriver) {
 	t.Helper()
-	url, b := natstest.StartOperator(t)
-	sysConn, err := mint.ConnectCreds(url, b.SysCreds, "test-sys")
+	url, r := natstest.StartSealedOperator(t)
+	return url, driverOver(t, url, r)
+}
+
+// driverOver builds one control instance's driver over the sealed bucket —
+// call it twice for two instances sharing custody.
+func driverOver(t *testing.T, url string, r *mint.Root) *mint.JWTDriver {
+	t.Helper()
+	sysConn, _, c := natstest.OpenInstance(t, url, r)
+	d, err := mint.NewJWTDriver(context.Background(), c, sysConn, url)
 	if err != nil {
-		t.Fatalf("connect system user: %v", err)
+		t.Fatalf("driver: %v", err)
 	}
-	t.Cleanup(sysConn.Close)
-	return url, &mint.JWTDriver{
-		OperatorSigningSeed: b.OperatorSigningSeed,
-		SysConn:             sysConn,
-		URL:                 url,
-	}
+	return d
 }
 
 func TestMintAccountAndVerifyByConnecting(t *testing.T) {
@@ -256,7 +261,7 @@ func TestRevokeUserEvictsAndBlocks(t *testing.T) {
 	}
 	defer bnc.Close()
 
-	if err := d.RevokeUser(ctx, acct.PublicKey, alice.PublicKey); err != nil {
+	if err := d.RevokeUser(ctx, "acme", alice.PublicKey); err != nil {
 		t.Fatalf("revoke: %v", err)
 	}
 
@@ -306,15 +311,8 @@ func TestRotateScopedSignerEvictsMembersKeepsService(t *testing.T) {
 	}
 	defer anc.Close()
 
-	newScoped, err := nkeys.CreateAccount()
+	newSeed, err := d.RotateScopedSigner(ctx, "acme")
 	if err != nil {
-		t.Fatalf("new scoped key: %v", err)
-	}
-	newScopedPub, err := newScoped.PublicKey()
-	if err != nil {
-		t.Fatalf("scoped public key: %v", err)
-	}
-	if err := d.RotateScopedSigner(ctx, acct.PublicKey, newScopedPub); err != nil {
 		t.Fatalf("rotate: %v", err)
 	}
 
@@ -331,12 +329,12 @@ func TestRotateScopedSignerEvictsMembersKeepsService(t *testing.T) {
 		t.Fatal("service user lost its connection during member rekey")
 	}
 
-	// Creds under the new scoped key work the moment the push returns.
-	newSeed, err := newScoped.Seed()
-	if err != nil {
-		t.Fatalf("scoped seed: %v", err)
+	// Creds under the new scoped key work the moment the push returns —
+	// and custody already holds that key for the next instance to read.
+	rekeyed, err := d.Tenant(ctx, "acme")
+	if err != nil || string(rekeyed.ScopedSeed) != string(newSeed) {
+		t.Fatalf("custody after rekey: %+v, %v", rekeyed, err)
 	}
-	rekeyed := &mint.Account{Name: acct.Name, PublicKey: acct.PublicKey, ScopedSeed: newSeed}
 	alice2, err := mint.IssueMember(rekeyed, "alice")
 	if err != nil {
 		t.Fatalf("re-issue member: %v", err)
@@ -442,5 +440,120 @@ func TestDedupAndBirthGuardAreServerEnforced(t *testing.T) {
 		if !errors.As(err, &apiErr) || apiErr.ErrorCode != jetstream.JSErrCodeStreamWrongLastSequence {
 			t.Fatalf("expected wrong-last-sequence on retried birth, got %v", err)
 		}
+	}
+}
+
+// TestTwoInstancesMutateOneTenantWithoutLosingAnUpdate is decision 0030's
+// point 3 on a real server: two control instances — two drivers over one
+// bucket — revoke different members of one tenant at the same time, many
+// rounds. Every revocation must hold on the wire and in custody; the
+// compare-and-set makes the loser recompute on top of the winner instead
+// of overwriting it.
+func TestTwoInstancesMutateOneTenantWithoutLosingAnUpdate(t *testing.T) {
+	url, r := natstest.StartSealedOperator(t)
+	a := driverOver(t, url, r)
+	b := driverOver(t, url, r)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	acct, err := a.MintAccount(ctx, "acme")
+	if err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+	// Instance B sees the tenant A minted, from custody, at once.
+	if got, err := b.Tenant(ctx, "acme"); err != nil || got.PublicKey != acct.PublicKey {
+		t.Fatalf("instance B does not see the tenant: %+v, %v", got, err)
+	}
+
+	const rounds = 6
+	members := make([]mint.Creds, 0, 2*rounds)
+	for i := 0; i < 2*rounds; i++ {
+		m, err := mint.IssueMember(acct, fmt.Sprintf("m%d", i))
+		if err != nil {
+			t.Fatalf("issue member: %v", err)
+		}
+		members = append(members, m)
+	}
+	for round := 0; round < rounds; round++ {
+		x, y := members[2*round], members[2*round+1]
+		errs := make(chan error, 2)
+		go func() { errs <- a.RevokeUser(ctx, "acme", x.PublicKey) }()
+		go func() { errs <- b.RevokeUser(ctx, "acme", y.PublicKey) }()
+		for i := 0; i < 2; i++ {
+			if err := <-errs; err != nil {
+				t.Fatalf("round %d: revoke: %v", round, err)
+			}
+		}
+	}
+	// Custody's JWT carries every revocation, and the resolver serves
+	// exactly that JWT.
+	rec, _, err := a.Custody.Tenant(ctx, "acme")
+	if err != nil {
+		t.Fatalf("custody: %v", err)
+	}
+	ac, err := jwt.DecodeAccountClaims(rec.JWT)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	for _, m := range members {
+		if !ac.Revocations.IsRevoked(m.PublicKey, time.Now()) {
+			t.Fatalf("member %s lost its revocation to a concurrent writer", m.PublicKey)
+		}
+	}
+	if pushed, err := a.Reconcile(ctx); err != nil || len(pushed) != 0 {
+		t.Fatalf("resolver disagrees with custody after the race: pushed %v, %v", pushed, err)
+	}
+	for _, m := range members {
+		if nc, err := mint.ConnectCreds(url, m.File, "revoked"); err == nil {
+			nc.Close()
+			t.Fatalf("revoked member %s still connects", m.PublicKey)
+		}
+	}
+}
+
+// TestReconcilePushesCustodysJWT: when the resolver falls behind custody —
+// here by a stale JWT pushed straight to the resolver, the shape of an
+// instance that landed its compare-and-set and died before pushing — the
+// next Reconcile puts the canonical JWT back.
+func TestReconcilePushesCustodysJWT(t *testing.T) {
+	url, d := startDriver(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	acct, err := d.MintAccount(ctx, "acme")
+	if err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+	stale, _, err := d.Custody.Tenant(ctx, "acme")
+	if err != nil {
+		t.Fatalf("custody: %v", err)
+	}
+	alice, err := mint.IssueMember(acct, "alice")
+	if err != nil {
+		t.Fatalf("issue member: %v", err)
+	}
+	if err := d.RevokeUser(ctx, "acme", alice.PublicKey); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	// The resolver regresses to the pre-revocation JWT.
+	if _, err := d.SysConn.RequestWithContext(ctx, "$SYS.REQ.CLAIMS.UPDATE", []byte(stale.JWT)); err != nil {
+		t.Fatalf("push stale: %v", err)
+	}
+	nc, err := mint.ConnectCreds(url, alice.File, "alice-regressed")
+	if err != nil {
+		t.Fatalf("the regression did not take (alice should connect against the stale JWT): %v", err)
+	}
+	nc.Close()
+
+	pushed, err := d.Reconcile(ctx)
+	if err != nil || len(pushed) != 1 || pushed[0] != "acme" {
+		t.Fatalf("reconcile pushed %v, %v", pushed, err)
+	}
+	if nc, err := mint.ConnectCreds(url, alice.File, "alice-after"); err == nil {
+		nc.Close()
+		t.Fatal("reconcile did not restore the revocation")
+	}
+	if pushed, err := d.Reconcile(ctx); err != nil || len(pushed) != 0 {
+		t.Fatalf("second reconcile pushed %v, %v", pushed, err)
 	}
 }

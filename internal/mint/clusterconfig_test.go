@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats-server/v2/server"
+	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/impire-io/chronicle/internal/mint"
 )
@@ -198,13 +199,50 @@ func TestEmittedConfigsFormAClusterThatMintsEverywhere(t *testing.T) {
 		t.Fatalf("connect system user to n1: %v", err)
 	}
 	defer sysConn.Close()
-	d := &mint.JWTDriver{
-		OperatorSigningSeed: b.OperatorSigningSeed,
-		SysConn:             sysConn,
-		URL:                 servers[2].ClientURL(),
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	// The keys the driver signs with live in the AUTH bucket (design 10):
+	// seal the root into the cluster through node 2, R3 across the trio,
+	// and the driver on node 1 reads them from there.
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
 	defer cancel()
+	ctrlConn, err := mint.ConnectCreds(servers[1].ClientURL(), b.ControlCreds, "test-control")
+	if err != nil {
+		t.Fatalf("connect control user to n2: %v", err)
+	}
+	defer ctrlConn.Close()
+	// JetStream's meta group elects a leader a beat after the servers
+	// accept connections; the seal's R3 bucket needs it.
+	jsc, err := jetstream.New(ctrlConn)
+	if err != nil {
+		t.Fatalf("jetstream: %v", err)
+	}
+	var lastErr error
+	for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline); {
+		infoCtx, infoCancel := context.WithTimeout(ctx, 2*time.Second)
+		_, lastErr = jsc.AccountInfo(infoCtx)
+		infoCancel()
+		if lastErr == nil {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if lastErr != nil {
+		t.Fatalf("jetstream never became ready on the cluster: %v", lastErr)
+	}
+	root := &mint.Root{Dir: b.Dir, B: b, Manifest: mint.RootManifest{Version: 1, Nodes: map[string]mint.NodeSecrets{}}}
+	sealCtx, sealCancel := context.WithTimeout(ctx, 15*time.Second)
+	_, err = root.Seal(sealCtx, ctrlConn, mint.SealOptions{Replicas: 3})
+	sealCancel()
+	if err != nil {
+		t.Fatalf("seal into the cluster: %v", err)
+	}
+	c, err := mint.OpenCustody(ctx, ctrlConn)
+	if err != nil {
+		t.Fatalf("open custody: %v", err)
+	}
+	d, err := mint.NewJWTDriver(ctx, c, sysConn, servers[2].ClientURL())
+	if err != nil {
+		t.Fatalf("driver: %v", err)
+	}
 	acct, err := d.MintAccount(ctx, "acme")
 	if err != nil {
 		t.Fatalf("mint against the cluster: %v", err)

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/nats-io/jwt/v2"
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
 
 	"github.com/impire-io/chronicle/internal/mint"
@@ -81,7 +82,7 @@ func TestRotateOperatorSigningKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect sys: %v", err)
 	}
-	d := &mint.JWTDriver{OperatorSigningSeed: b.OperatorSigningSeed, SysConn: sysConn, URL: url}
+	d := sealedDriver(ctx, t, dir, b, url, sysConn)
 	acct, err := d.MintAccount(ctx, "acme")
 	if err != nil {
 		t.Fatalf("mint: %v", err)
@@ -163,8 +164,56 @@ func TestRotateOperatorSigningKey(t *testing.T) {
 		t.Fatalf("connect sys after rotation: %v", err)
 	}
 	defer sysConn2.Close()
-	d2 := &mint.JWTDriver{OperatorSigningSeed: b2.OperatorSigningSeed, SysConn: sysConn2, URL: url2}
+	// The directory ceremony rotated the dir, not the bucket: until
+	// increment 5 runs rotation over custody, the test does what that
+	// ceremony will — lands the new signing key in the operator entry at
+	// its revision — and mints under it.
+	ctrlConn2, err := mint.ConnectCreds(url2, b2.ControlCreds, "control")
+	if err != nil {
+		t.Fatalf("connect control after rotation: %v", err)
+	}
+	defer ctrlConn2.Close()
+	c2, err := mint.OpenCustody(ctx, ctrlConn2)
+	if err != nil {
+		t.Fatalf("open custody after rotation: %v", err)
+	}
+	op, rev, err := c2.Operator(ctx)
+	if err != nil {
+		t.Fatalf("operator entry: %v", err)
+	}
+	op.PublicKey, op.SigningSeed = newPub, string(b2.OperatorSigningSeed)
+	if _, err := c2.PutOperator(ctx, op, rev); err != nil {
+		t.Fatalf("land the rotated key in custody: %v", err)
+	}
+	d2, err := mint.NewJWTDriver(ctx, c2, sysConn2, url2)
+	if err != nil {
+		t.Fatalf("driver after rotation: %v", err)
+	}
 	if _, err := d2.MintAccount(ctx, "beta"); err != nil {
 		t.Fatalf("mint under the rotated key: %v", err)
 	}
+}
+
+// sealedDriver seals the dir's material into the server's AUTH bucket and
+// returns a driver over it — the shape every control instance boots into.
+func sealedDriver(ctx context.Context, t *testing.T, dir string, b *mint.Bootstrap, url string, sysConn *nats.Conn) *mint.JWTDriver {
+	t.Helper()
+	ctrlConn, err := mint.ConnectCreds(url, b.ControlCreds, "control")
+	if err != nil {
+		t.Fatalf("connect control: %v", err)
+	}
+	t.Cleanup(ctrlConn.Close)
+	root := &mint.Root{Dir: dir, B: b, Manifest: mint.RootManifest{Version: 1, Nodes: map[string]mint.NodeSecrets{}}}
+	if _, err := root.Seal(ctx, ctrlConn, mint.SealOptions{Replicas: 1}); err != nil {
+		t.Fatalf("seal: %v", err)
+	}
+	c, err := mint.OpenCustody(ctx, ctrlConn)
+	if err != nil {
+		t.Fatalf("open custody: %v", err)
+	}
+	d, err := mint.NewJWTDriver(ctx, c, sysConn, url)
+	if err != nil {
+		t.Fatalf("driver: %v", err)
+	}
+	return d
 }

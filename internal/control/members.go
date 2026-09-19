@@ -5,14 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/nats-io/nats.go/micro"
-	"github.com/nats-io/nkeys"
 
 	"github.com/impire-io/chronicle/client"
 	"github.com/impire-io/chronicle/contract"
@@ -30,34 +27,25 @@ import (
 // API surface at request time, never by key material (decision 0007).
 var memberRoles = []string{contract.RoleAdmin, contract.RoleWriter, contract.RoleReader}
 
-// tenantMaterial is the issuance custody one tenant keeps on disk.
+// tenantMaterial is what one tenant's issuance path needs, read from
+// custody through the driver.
 type tenantMaterial struct {
-	dir          string
 	accountPub   string
 	scopedSeed   []byte
 	serviceCreds []byte
 }
 
-// loadTenant reads accounts/<name>; a missing directory is the caller's
+// loadTenant reads the tenant from custody; absent is the caller's
 // no-such-tenant, anything else is an install problem.
-func (c *control) loadTenant(name string) (tenantMaterial, error) {
-	dir := filepath.Join(c.cfg.AccountsDir, name)
-	pub, err := os.ReadFile(filepath.Join(dir, "account.pub"))
-	if errors.Is(err, os.ErrNotExist) {
+func (c *control) loadTenant(ctx context.Context, name string) (tenantMaterial, error) {
+	acct, err := c.cfg.Driver.Tenant(ctx, name)
+	if errors.Is(err, mint.ErrNoSuchTenant) {
 		return tenantMaterial{}, errNoSuchTenant
 	}
 	if err != nil {
-		return tenantMaterial{}, fmt.Errorf("read account.pub: %w", err)
+		return tenantMaterial{}, err
 	}
-	scoped, err := os.ReadFile(filepath.Join(dir, "scoped.nk"))
-	if err != nil {
-		return tenantMaterial{}, fmt.Errorf("read scoped.nk: %w", err)
-	}
-	svc, err := os.ReadFile(filepath.Join(dir, "service.creds"))
-	if err != nil {
-		return tenantMaterial{}, fmt.Errorf("read service.creds: %w", err)
-	}
-	return tenantMaterial{dir: dir, accountPub: string(pub), scopedSeed: scoped, serviceCreds: svc}, nil
+	return tenantMaterial{accountPub: acct.PublicKey, scopedSeed: acct.ScopedSeed, serviceCreds: acct.ServiceCreds}, nil
 }
 
 var errNoSuchTenant = errors.New("no such tenant")
@@ -114,7 +102,7 @@ func (c *control) handleMemberAdd(req micro.Request) {
 		return
 	}
 
-	tm, err := c.loadTenant(r.Tenant)
+	tm, err := c.loadTenant(ctx, r.Tenant)
 	if errors.Is(err, errNoSuchTenant) {
 		_ = req.Error("no-such-tenant", fmt.Sprintf("tenant %q does not exist", r.Tenant), nil)
 		return
@@ -198,7 +186,7 @@ func (c *control) handleMemberRevoke(req micro.Request) {
 		_ = req.Error("bad-principal-name", fmt.Sprintf("principal %q: must match [a-z0-9-]+", r.Principal), nil)
 		return
 	}
-	tm, err := c.loadTenant(r.Tenant)
+	tm, err := c.loadTenant(ctx, r.Tenant)
 	if errors.Is(err, errNoSuchTenant) {
 		_ = req.Error("no-such-tenant", fmt.Sprintf("tenant %q does not exist", r.Tenant), nil)
 		return
@@ -236,10 +224,7 @@ func (c *control) handleMemberRevoke(req micro.Request) {
 	// Wire first, registry second: a half-failure leaves a dead credential
 	// with a stale record — re-runnable — never a live credential the
 	// registry no longer remembers.
-	c.claimsMu.Lock()
-	err = c.cfg.Driver.RevokeUser(ctx, tm.accountPub, m.PublicKey)
-	c.claimsMu.Unlock()
-	if err != nil {
+	if err := c.cfg.Driver.RevokeUser(ctx, r.Tenant, m.PublicKey); err != nil {
 		c.cfg.Logger.Error("member revoke", "tenant", r.Tenant, "principal", r.Principal, "err", err)
 		_ = req.Error("revoke-failed", err.Error(), nil)
 		return
@@ -265,7 +250,7 @@ func (c *control) handleMemberRekey(req micro.Request) {
 		_ = req.Error("bad-tenant-name", fmt.Sprintf("tenant name %q: must match [a-z0-9-]+", r.Tenant), nil)
 		return
 	}
-	tm, err := c.loadTenant(r.Tenant)
+	tm, err := c.loadTenant(ctx, r.Tenant)
 	if errors.Is(err, errNoSuchTenant) {
 		_ = req.Error("no-such-tenant", fmt.Sprintf("tenant %q does not exist", r.Tenant), nil)
 		return
@@ -317,28 +302,10 @@ func (c *control) rekeyMembers(ctx context.Context, tm tenantMaterial, tenant st
 		members = append(members, member{id: strings.TrimPrefix(key, prefix), role: m.Role})
 	}
 
-	scopedKP, err := nkeys.CreateAccount()
-	if err != nil {
-		return zero, fmt.Errorf("create scoped key: %w", err)
-	}
-	scopedPub, err := scopedKP.PublicKey()
-	if err != nil {
-		return zero, fmt.Errorf("scoped public key: %w", err)
-	}
-	scopedSeed, err := scopedKP.Seed()
-	if err != nil {
-		return zero, fmt.Errorf("scoped seed: %w", err)
-	}
-
-	// Custody before the wire: once the push lands, the old seed issues
-	// nothing — the new one must already be what the install remembers. A
-	// crash between the two is repaired by running the rekey again.
-	if err := os.WriteFile(filepath.Join(tm.dir, "scoped.nk"), scopedSeed, 0o600); err != nil {
-		return zero, fmt.Errorf("persist scoped.nk: %w", err)
-	}
-	c.claimsMu.Lock()
-	err = c.cfg.Driver.RotateScopedSigner(ctx, tm.accountPub, scopedPub)
-	c.claimsMu.Unlock()
+	// Custody before the wire, in one compare-and-set: the driver lands the
+	// new scoped seed and the re-signed JWT together, then pushes. A crash
+	// between the two is repaired by the boot reconcile.
+	scopedSeed, err := c.cfg.Driver.RotateScopedSigner(ctx, tenant)
 	if err != nil {
 		return zero, fmt.Errorf("rotate scoped signer: %w", err)
 	}

@@ -3,8 +3,6 @@ package control_test
 import (
 	"context"
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -14,6 +12,7 @@ import (
 
 	"github.com/impire-io/chronicle/contract"
 	"github.com/impire-io/chronicle/internal/control"
+	"github.com/impire-io/chronicle/internal/mint"
 	"github.com/impire-io/chronicle/internal/natstest"
 )
 
@@ -54,16 +53,22 @@ func TestFleetCredsIsRecordVerified(t *testing.T) {
 	publish(contract.OpTypeSnapshot, `{"state":{"kind":"node","tenant":"t1","replicas":1,"slots":{}}}`, 0)
 	publish(contract.FleetOpAssign, `{"slots":{"0":{"executor":"right"}}}`, 1)
 
-	accounts := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(accounts, "t1"), 0o700); err != nil {
-		t.Fatal(err)
+	// The tenant's service creds live in custody (design 10); a driver
+	// with no system connection reads them and pushes nothing.
+	custody, err := mint.CreateCustody(ctx, nc, 1)
+	if err != nil {
+		t.Fatalf("custody: %v", err)
 	}
 	want := []byte("the tenant service creds")
-	if err := os.WriteFile(filepath.Join(accounts, "t1", "service.creds"), want, 0o600); err != nil {
-		t.Fatal(err)
+	if _, err := custody.PutTenant(ctx, mint.TenantRecord{Name: "t1", PublicKey: "AT1", ServiceCreds: string(want)}, 0); err != nil {
+		t.Fatalf("record tenant: %v", err)
+	}
+	driver, err := mint.NewJWTDriver(ctx, custody, nil, url)
+	if err != nil {
+		t.Fatalf("driver: %v", err)
 	}
 
-	svc, err := control.Start(nc, control.Config{URL: url, AccountsDir: accounts})
+	svc, err := control.Start(nc, control.Config{URL: url, Driver: driver})
 	if err != nil {
 		t.Fatalf("start control: %v", err)
 	}

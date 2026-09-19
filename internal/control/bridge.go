@@ -163,7 +163,7 @@ func (b *bridge) place(ctx context.Context, req *jwt.AuthorizationRequestClaims)
 	if err != nil {
 		return "", fmt.Errorf("validate token: %w", err)
 	}
-	tm, err := b.c.loadTenant(tenant)
+	tm, err := b.c.loadTenant(ctx, tenant)
 	if err != nil {
 		return "", fmt.Errorf("tenant %q: %w", tenant, err)
 	}

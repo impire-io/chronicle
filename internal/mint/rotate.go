@@ -1,6 +1,7 @@
 package mint
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -82,9 +83,14 @@ func RotateOperatorSigningKey(dir string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("re-sign control account: %w", err)
 	}
+	authJWT2, err := resignAccount(b.AuthAccountJWT, oskp2)
+	if err != nil {
+		return "", fmt.Errorf("re-sign auth account: %w", err)
+	}
 	resigned := map[string]string{
 		b.SystemAccountPub:  sysJWT2,
 		b.ControlAccountPub: ctrlJWT2,
+		b.AuthAccountPub:    authJWT2,
 	}
 
 	// The resolver dir is flat <ACCOUNTPUB>.jwt files, indexed from
@@ -131,6 +137,7 @@ func RotateOperatorSigningKey(dir string) (string, error) {
 		{fOperatorJWT, []byte(operatorJWT2), plainFileMode},
 		{fSysAcctJWT, []byte(sysJWT2), plainFileMode},
 		{fCtrlAcctJWT, []byte(ctrlJWT2), plainFileMode},
+		{fAuthAcctJWT, []byte(authJWT2), plainFileMode},
 		// The signing seed goes last: every earlier write is consistent
 		// with either seed on disk, so a crash mid-ceremony is re-runnable.
 		{fOperatorSK, osSeed2, keyFileMode},
@@ -188,15 +195,22 @@ func resignAccount(token string, signer nkeys.KeyPair) (string, error) {
 	return ac.Encode(signer)
 }
 
-// verifyRotated boots the rewritten install and connects with every
-// credential it holds — sys, control, and each tenant's service user. The
-// could-not-succeed-if-broken read: a bad rewrite cannot pass it.
+// verifyRotated boots the rewritten install, brings custody in step with
+// the rewritten directory when the root is sealed, and connects with every
+// credential the install holds — sys, control, and each tenant's service
+// user. The could-not-succeed-if-broken read: a bad rewrite cannot pass it.
 func verifyRotated(dir string) error {
 	b, err := loadBootstrap(dir)
 	if err != nil {
 		return err
 	}
-	srv, err := b.StartServer(-1)
+	key := ""
+	if r, err := LoadRoot(dir); err == nil {
+		if n, ok := r.Manifest.Nodes["embedded"]; ok {
+			key = n.JetStreamKey
+		}
+	}
+	srv, err := b.StartServerWithKey(-1, key)
 	if err != nil {
 		return err
 	}
@@ -208,27 +222,114 @@ func verifyRotated(dir string) error {
 	}()
 	url := srv.ClientURL()
 
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 	creds := map[string][]byte{"sys": b.SysCreds, "control": b.ControlCreds}
-	tenants, err := os.ReadDir(filepath.Join(dir, accountsDir))
-	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("read accounts dir: %w", err)
+	ctrlConn, err := ConnectCreds(url, b.ControlCreds, "rotate-verify-custody")
+	if err != nil {
+		return fmt.Errorf("control cannot connect after rotation: %w", err)
 	}
-	for _, e := range tenants {
-		if !e.IsDir() {
-			continue
+	defer ctrlConn.Close()
+	c, err := OpenCustody(ctx, ctrlConn)
+	switch {
+	case errors.Is(err, ErrNotSealed):
+		// An unsealed directory: nothing but the files to keep in step.
+	case err != nil:
+		return err
+	default:
+		if err := rotateCustody(ctx, c, dir, b); err != nil {
+			return fmt.Errorf("bring custody in step: %w", err)
 		}
-		svc, err := os.ReadFile(filepath.Join(dir, accountsDir, e.Name(), "service.creds"))
+		names, err := c.Tenants(ctx)
 		if err != nil {
-			return fmt.Errorf("tenant %s: read service creds: %w", e.Name(), err)
+			return err
 		}
-		creds["tenant "+e.Name()] = svc
+		for _, name := range names {
+			rec, _, err := c.Tenant(ctx, name)
+			if err != nil {
+				return err
+			}
+			creds["tenant "+name] = []byte(rec.ServiceCreds)
+		}
 	}
-	for name, c := range creds {
-		nc, err := ConnectCreds(url, c, "rotate-verify")
+	for name, cr := range creds {
+		nc, err := ConnectCreds(url, cr, "rotate-verify")
 		if err != nil {
 			return fmt.Errorf("%s cannot connect after rotation: %w", name, err)
 		}
 		nc.Close()
+	}
+	return nil
+}
+
+// rotateCustody lands the rewritten directory's material in the bucket:
+// the new signing key in the operator entry, and every account's freshly
+// signed JWT — read back from the resolver dir the ceremony rewrote — in
+// its record, each by compare-and-set at the revision it was read at. The
+// bucket stays canonical across the directory ceremony; the live, rolling
+// ceremony that replaces this one is design 10 § rotation.
+func rotateCustody(ctx context.Context, c *Custody, dir string, b *Bootstrap) error {
+	opPub, err := PublicKeyOfSeed(b.OperatorSigningSeed)
+	if err != nil {
+		return err
+	}
+	op, rev, err := c.Operator(ctx)
+	if err != nil {
+		return err
+	}
+	if op.SigningSeed != string(b.OperatorSigningSeed) {
+		op.PublicKey, op.SigningSeed = opPub, string(b.OperatorSigningSeed)
+		if _, err := c.PutOperator(ctx, op, rev); err != nil {
+			return fmt.Errorf("operator: %w", err)
+		}
+	}
+	fresh := func(pub string) (string, error) {
+		token, err := os.ReadFile(filepath.Join(dir, resolverDir, pub+".jwt"))
+		if err != nil {
+			return "", fmt.Errorf("re-signed jwt of %s: %w", pub, err)
+		}
+		return string(token), nil
+	}
+	for _, name := range []string{"SYS", "CONTROL", "AUTH"} {
+		rec, rev, err := c.Account(ctx, name)
+		if errors.Is(err, ErrNoRecord) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		token, err := fresh(rec.PublicKey)
+		if err != nil {
+			return err
+		}
+		if token == rec.JWT {
+			continue
+		}
+		rec.JWT = token
+		if _, err := c.PutAccount(ctx, rec, rev); err != nil {
+			return fmt.Errorf("account %s: %w", name, err)
+		}
+	}
+	names, err := c.Tenants(ctx)
+	if err != nil {
+		return err
+	}
+	for _, name := range names {
+		rec, rev, err := c.Tenant(ctx, name)
+		if err != nil {
+			return err
+		}
+		token, err := fresh(rec.PublicKey)
+		if err != nil {
+			return err
+		}
+		if token == rec.JWT {
+			continue
+		}
+		rec.JWT = token
+		if _, err := c.PutTenant(ctx, rec, rev); err != nil {
+			return fmt.Errorf("tenant %s: %w", name, err)
+		}
 	}
 	return nil
 }

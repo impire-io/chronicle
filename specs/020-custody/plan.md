@@ -71,6 +71,34 @@ building, recorded against the spec:
   shred lands with that move, so no intermediate state on this branch
   leaves a working install without its keys.
 
+## Increment 2 — landed on this branch
+
+The driver reads every key it signs with from the bucket and lands every
+mutation there by compare-and-set before it pushes; control reads tenants
+from the driver, replays custody at boot, reconciles the resolver at boot
+and every five minutes, and holds no mutex; `up` walks design 10's first
+boot in one process — root, encrypted embedded server, seal, the bundle's
+users. The two-instance race (two drivers, one bucket, six rounds of
+concurrent revocations) loses nothing; a stale resolver is put back by
+Reconcile. Three calls made while building:
+
+- **The driver issues the service user and records the tenant before it
+  pushes**, so the record exists before the resolver knows the account and
+  a taken name is the compare-and-set's refusal, not a directory check. A
+  mint that cannot push takes its record back.
+- **The directory rotation ceremony keeps a sealed root's bucket in step**
+  (operator entry, every account's fresh JWT) during its verification boot,
+  and now rewrites its own AUTH copy as it did SYS and CONTROL. This is a
+  bridge to increment 5, where rotation runs live over the bucket and the
+  directory ceremony goes.
+- **The shred moves to increment 3** with the fleet users: the CLI, the
+  workload service, and the executor still dial with the root's bootstrap
+  control user until each has a `fleet`-template user of its own.
+
+A warning seen in the fleet tests' output — a member connection exceeding
+its subscription limit during the member lifecycle test — predates this
+work (it prints on main) and is noted, not touched.
+
 ## Order — each step a green `make check`
 
 1. `custody.go` + `root.go`: the store, the templates, init/seal/export

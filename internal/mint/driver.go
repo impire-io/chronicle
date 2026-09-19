@@ -27,27 +27,47 @@ type Account struct {
 	// ScopedSeed is the member-baseline scoped key: every member gets the
 	// same wire-level rights, and no key is ever touched again.
 	ScopedSeed []byte
+	// ServiceCreds is the tenant's service user — issued at mint under the
+	// signing key, held by the fleet for the tenant's node and indexers.
+	ServiceCreds []byte
 }
 
-// Driver mints tenant accounts on one substrate. MintAccount creates the
-// account with explicit JetStream limits, establishes the keys, and
-// verifies by connecting — a successful push does not prove trust.
+// Driver mints tenant accounts on one substrate and keeps their issuance
+// material in shared custody (design 10). MintAccount creates the account
+// with explicit JetStream limits, establishes the keys, records the tenant,
+// and verifies by connecting — a successful push does not prove trust.
 //
-// The two mutation verbs are the onboarding design's revocation row held
-// at the seam: account-claims surgery is driver-specific (the jwt driver
-// edits and re-pushes the account JWT; a vendor driver would call the
-// vendor's API), while everything above the seam speaks in principals and
-// public keys.
+// The mutation verbs are the onboarding design's revocation row held at
+// the seam: account-claims surgery is driver-specific (the jwt driver edits
+// the canonical JWT in custody by compare-and-set and re-pushes it; a vendor
+// driver would call the vendor's API), while everything above the seam
+// speaks in tenant names and public keys. Every instance of control holds a
+// driver over the same custody, so none of these verbs assumes it is alone.
 type Driver interface {
 	MintAccount(ctx context.Context, name string) (*Account, error)
+	// Tenant reads one tenant's material; ErrNoSuchTenant when absent.
+	Tenant(ctx context.Context, name string) (*Account, error)
+	// Tenants lists every tenant in custody.
+	Tenants(ctx context.Context) ([]string, error)
 	// RevokeUser invalidates one user credential: new connections are
 	// refused and live ones are evicted.
-	RevokeUser(ctx context.Context, accountPub, userPub string) error
-	// RotateScopedSigner replaces the account's member-issuing scoped key
-	// with newScopedPub, evicting every user the old key signed. The plain
-	// signing key — and the service user it signed — stays untouched.
-	RotateScopedSigner(ctx context.Context, accountPub, newScopedPub string) error
+	RevokeUser(ctx context.Context, tenant, userPub string) error
+	// RotateScopedSigner replaces the tenant's member-issuing scoped key,
+	// evicting every user the old key signed, and returns the new seed so
+	// the caller re-issues members. The plain signing key — and the
+	// service user it signed — stays untouched.
+	RotateScopedSigner(ctx context.Context, tenant string) ([]byte, error)
+	// Reconcile pushes every account whose canonical JWT in custody differs
+	// from what the resolver serves — the boot-time and periodic repair of
+	// a push that never landed. It returns the accounts it pushed.
+	Reconcile(ctx context.Context) ([]string, error)
 }
+
+// ErrNoSuchTenant says custody holds no tenant of that name.
+var ErrNoSuchTenant = fmt.Errorf("no such tenant")
+
+// ErrTenantExists says a mint found the name taken.
+var ErrTenantExists = fmt.Errorf("tenant already exists")
 
 // Creds is an issued user: the decorated .creds content and the user's
 // public key (the membership registry records it).
