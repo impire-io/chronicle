@@ -8,27 +8,34 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/impire-io/chronicle/contract"
 	"github.com/impire-io/chronicle/internal/mint"
 )
 
-// controlSubstrate boots a bootstrap server and connects its control user.
-func controlSubstrate(t *testing.T) (string, *mint.Bootstrap, *nats.Conn) {
+// controlSubstrate boots a root's server and connects the first instance's
+// control user — the only user a root holds.
+func controlSubstrate(t *testing.T) (string, *mint.Root, *nats.Conn) {
 	t.Helper()
-	b := testBootstrap(t)
-	srv, err := b.StartServer(-1)
+	r := testRoot(t)
+	srv, err := r.B.StartServer(-1)
 	if err != nil {
 		t.Fatalf("substrate: %v", err)
 	}
 	t.Cleanup(srv.Shutdown)
-	nc, err := mint.ConnectCreds(srv.ClientURL(), b.ControlCreds, "test-control")
+	bundle, err := mint.ReadBundle(r.BundleDir("instance-1"))
+	if err != nil {
+		t.Fatalf("bundle: %v", err)
+	}
+	nc, err := mint.ConnectCreds(srv.ClientURL(), bundle.ControlCreds, "test-control")
 	if err != nil {
 		t.Fatalf("connect control: %v", err)
 	}
 	t.Cleanup(nc.Close)
-	return srv.ClientURL(), b, nc
+	return srv.ClientURL(), r, nc
 }
 
 // TestCustodyRoundTripAndRevisionGuard is design 10's bucket on a real
@@ -122,14 +129,16 @@ func TestCustodyRoundTripAndRevisionGuard(t *testing.T) {
 	}
 }
 
-// TestFleetTemplateFencesTheBucket is the fence on a real operator-mode
-// server: a user carrying FleetTemplate can neither open, read, write, nor
-// watch the AUTH bucket, while its other JetStream work succeeds; a user
-// carrying ControlInstanceTemplate reads it.
-func TestFleetTemplateFencesTheBucket(t *testing.T) {
+// TestRoleTemplatesFenceTheBucket is the bucket half of the fence on a
+// real operator-mode server: a user under the executor, workloads, or cli
+// template can neither open, read, write, nor watch the AUTH bucket; the
+// workloads user's own JetStream work — its META bucket — succeeds; and a
+// control instance reads. The rest of each role's allow-list is the fleet
+// package's to verify against running services.
+func TestRoleTemplatesFenceTheBucket(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	url, b, ctrlConn := controlSubstrate(t)
+	url, r, ctrlConn := controlSubstrate(t)
 
 	c, err := mint.CreateCustody(ctx, ctrlConn, 1)
 	if err != nil {
@@ -139,62 +148,65 @@ func TestFleetTemplateFencesTheBucket(t *testing.T) {
 		t.Fatalf("put operator: %v", err)
 	}
 
-	fleet, err := b.IssueControlUser("executor-test", mint.FleetTemplate())
-	if err != nil {
-		t.Fatalf("issue fleet user: %v", err)
-	}
-	fnc, err := mint.ConnectCreds(url, fleet.File, "fleet-test")
-	if err != nil {
-		t.Fatalf("connect fleet user: %v", err)
-	}
-	defer fnc.Close()
-
 	// Every denied request is dropped by the server with an async
 	// permission violation; the caller sees only a timeout. Short
 	// deadlines keep the refusals cheap.
 	short := func() (context.Context, context.CancelFunc) { return context.WithTimeout(ctx, 2*time.Second) }
-
-	sctx, scancel := short()
-	_, err = mint.OpenCustody(sctx, fnc)
-	scancel()
-	if err == nil {
-		t.Fatal("fleet user opened the bucket")
+	fenced := func(name string, limits jwt.UserPermissionLimits) *nats.Conn {
+		t.Helper()
+		user, err := r.B.IssueControlUser(name, limits)
+		if err != nil {
+			t.Fatalf("issue %s: %v", name, err)
+		}
+		nc, err := mint.ConnectCreds(url, user.File, name)
+		if err != nil {
+			t.Fatalf("connect %s: %v", name, err)
+		}
+		t.Cleanup(nc.Close)
+		sctx, scancel := short()
+		_, err = mint.OpenCustody(sctx, nc)
+		scancel()
+		if err == nil {
+			t.Fatalf("%s opened the bucket", name)
+		}
+		if _, err := nc.Request("$JS.API.DIRECT.GET.KV_AUTH.$KV.AUTH.operator", nil, 2*time.Second); err == nil {
+			t.Fatalf("%s read the operator entry by direct get", name)
+		}
+		if _, err := nc.Request("$KV.AUTH.operator", []byte(`{"forged":true}`), 2*time.Second); err == nil {
+			t.Fatalf("%s wrote the operator entry", name)
+		}
+		return nc
 	}
-	if _, err := fnc.Request("$JS.API.DIRECT.GET.KV_AUTH.$KV.AUTH.operator", nil, 2*time.Second); err == nil {
-		t.Fatal("fleet user read the operator entry by direct get")
-	}
-	fjs, err := jetstream.New(fnc)
-	if err != nil {
-		t.Fatalf("fleet jetstream: %v", err)
-	}
-	sctx, scancel = short()
-	_, err = fjs.Publish(sctx, "$KV.AUTH.operator", []byte(`{"forged":true}`))
-	scancel()
-	if err == nil {
-		t.Fatal("fleet user wrote the operator entry")
-	}
-	sctx, scancel = short()
-	_, err = fjs.OrderedConsumer(sctx, "KV_AUTH", jetstream.OrderedConsumerConfig{})
-	scancel()
-	if err == nil {
-		t.Fatal("fleet user opened a consumer on the bucket's stream")
-	}
+	fenced("exec-test", mint.ExecutorTemplate("exec-test"))
+	fenced("cli-test", mint.CLITemplate())
+	wl := fenced("workloads-test", mint.WorkloadsTemplate())
 	if got, _, err := c.Operator(ctx); err != nil || got.SigningSeed != "SOTEST" {
-		t.Fatalf("operator after the fleet user's attempts = %+v, %v", got, err)
+		t.Fatalf("operator after the fenced users' attempts = %+v, %v", got, err)
 	}
 
-	// The fence is around one bucket, not a cage: the fleet user's own
-	// JetStream work succeeds.
-	scratch, err := fjs.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "FLEET_SCRATCH"})
+	// The fence is around one bucket, not a cage: the workload service's
+	// own JetStream work — its META bucket in the control account — is
+	// untouched, while a consumer on the bucket's stream is refused.
+	wjs, err := jetstream.New(wl)
 	if err != nil {
-		t.Fatalf("fleet user could not create its own bucket: %v", err)
+		t.Fatalf("workloads jetstream: %v", err)
 	}
-	if _, err := scratch.Put(ctx, "k", []byte("v")); err != nil {
-		t.Fatalf("fleet user could not write its own bucket: %v", err)
+	meta, err := wjs.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: contract.MetaBucket})
+	if err != nil {
+		t.Fatalf("workloads user could not create its META bucket: %v", err)
+	}
+	if _, err := meta.Put(ctx, "k", []byte("v")); err != nil {
+		t.Fatalf("workloads user could not write its META bucket: %v", err)
+	}
+	sctx, scancel := short()
+	_, err = wjs.OrderedConsumer(sctx, "KV_AUTH", jetstream.OrderedConsumerConfig{})
+	scancel()
+	if err == nil {
+		t.Fatal("workloads user opened a consumer on the bucket's stream")
 	}
 
 	// And a control instance reads.
-	inst, err := b.IssueControlUser("instance-test", mint.ControlInstanceTemplate())
+	inst, err := r.B.IssueControlUser("instance-test", mint.ControlInstanceTemplate())
 	if err != nil {
 		t.Fatalf("issue instance user: %v", err)
 	}

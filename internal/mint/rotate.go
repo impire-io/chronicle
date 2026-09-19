@@ -160,16 +160,13 @@ func RotateOperatorSigningKey(dir string) (string, error) {
 }
 
 // ceremonyCreds is what the directory ceremony dials with: the root's
-// control-instance bundle once one exists — after seal it is all the root
-// holds — and the bootstrap users before any bundle was issued.
+// control-instance bundle — the only users a root ever holds.
 func ceremonyCreds(r *Root) (sys, ctrl []byte, err error) {
-	if _, bundle, err := r.ControlBundle(""); err == nil {
-		return bundle.SysCreds, bundle.ControlCreds, nil
+	_, bundle, err := r.ControlBundle("")
+	if err != nil {
+		return nil, nil, err
 	}
-	if len(r.B.SysCreds) > 0 && len(r.B.ControlCreds) > 0 {
-		return r.B.SysCreds, r.B.ControlCreds, nil
-	}
-	return nil, nil, fmt.Errorf("%s holds no credentials to run the ceremony with: no control-instance bundle and no bootstrap users", r.Dir)
+	return bundle.SysCreds, bundle.ControlCreds, nil
 }
 
 // requireStopped refuses the ceremony while the fleet answers: the running

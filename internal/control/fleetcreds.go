@@ -21,9 +21,10 @@ import (
 // including a liveness steal — revokes naturally: the old executor's pull
 // no longer verifies.
 //
-// The executor field is caller-asserted for now, the same trust tier as
-// Op-Author inside an account; cryptographic caller identity on this
-// endpoint is the multi-host increment's named verify item (0014).
+// The caller is the subject: an executor's credential may publish on its
+// own CREDS subject only (design 10 § the fence, 0032), so the executor
+// the server let through is the one the record is checked against, and a
+// payload naming another is refused before the record is read.
 
 func (c *control) handleFleetCreds(req micro.Request) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -34,6 +35,12 @@ func (c *control) handleFleetCreds(req micro.Request) {
 		_ = req.Error("bad-request", err.Error(), nil)
 		return
 	}
+	caller := contract.FleetCaller(req.Subject())
+	if r.Executor != "" && r.Executor != caller {
+		_ = req.Error("caller-mismatch", fmt.Sprintf("the request names executor %s but arrived as %s", r.Executor, caller), nil)
+		return
+	}
+	r.Executor = caller
 	if r.Executor == "" || r.Tenant == "" || r.Workload == "" {
 		_ = req.Error("bad-request", "executor, tenant, and workload are all required", nil)
 		return

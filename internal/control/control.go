@@ -99,7 +99,7 @@ func Start(nc *nats.Conn, cfg Config) (micro.Service, error) {
 		return nil, fmt.Errorf("add tenant-mint endpoint: %w", err)
 	}
 	if err := svc.AddEndpoint("fleet-creds", micro.HandlerFunc(c.handleFleetCreds),
-		micro.WithEndpointSubject(contract.FleetCredsSubject)); err != nil {
+		micro.WithEndpointSubject(contract.FleetCredsSubject("*"))); err != nil {
 		_ = svc.Stop()
 		return nil, fmt.Errorf("add fleet-creds endpoint: %w", err)
 	}

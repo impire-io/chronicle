@@ -28,23 +28,6 @@ func StartJetStream(t *testing.T) (url string) {
 	return srv.ClientURL()
 }
 
-// StartOperator runs an in-process operator-mode server with a freshly
-// generated bootstrap in a per-test temp dir — the substrate the jwt
-// driver mints against. The server is shut down when the test ends.
-func StartOperator(t *testing.T) (url string, b *mint.Bootstrap) {
-	t.Helper()
-	b, err := mint.LoadOrInitBootstrap(t.TempDir())
-	if err != nil {
-		t.Fatalf("bootstrap: %v", err)
-	}
-	srv, err := b.StartServer(-1)
-	if err != nil {
-		t.Fatalf("operator server: %v", err)
-	}
-	t.Cleanup(srv.Shutdown)
-	return srv.ClientURL(), b
-}
-
 // StartSealedOperator is design 10's first boot in a test: a root born in a
 // temp dir, the embedded server encrypted at rest with the root's node key,
 // the working keys sealed into the AUTH bucket over the first instance's

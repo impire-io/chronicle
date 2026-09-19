@@ -49,7 +49,7 @@ func (d *JWTDriver) AddInstance(ctx context.Context, name string, t Template) (B
 		if _, taken := rec.Users[name]; taken {
 			return false, fmt.Errorf("%w: %s", ErrInstanceExists, name)
 		}
-		creds, err := issueAccountUser([]byte(rec.Seed), rec.PublicKey, name, t.Limits())
+		creds, err := issueAccountUser([]byte(rec.Seed), rec.PublicKey, name, t.Limits(name))
 		if err != nil {
 			return false, err
 		}

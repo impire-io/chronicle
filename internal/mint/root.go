@@ -148,22 +148,17 @@ func (r *Root) NodeKey(name string) (string, error) {
 func (r *Root) BundleDir(name string) string { return filepath.Join(r.Dir, dBundles, name) }
 
 // Bundle is an instance's credentials — the one secret a host holds
-// (design 10 § instances). A control instance carries both users; a fleet
-// instance (a workload service, an executor, the operator's CLI) carries
-// the CONTROL user alone, under the fleet template.
+// (design 10 § instances). A control instance carries both users; every
+// other role (an executor, a workload service, the operator's CLI)
+// carries the CONTROL user alone, under its template.
 type Bundle struct {
 	ControlCreds []byte
 	SysCreds     []byte
 }
 
-// Template says which fence the bundle was issued under, read from its
-// shape: a SYS user is what only a control instance holds.
-func (b Bundle) Template() Template {
-	if len(b.SysCreds) > 0 {
-		return TemplateControlInstance
-	}
-	return TemplateFleet
-}
+// IsControlInstance reads the bundle's shape: a SYS user is what only a
+// control instance holds.
+func (b Bundle) IsControlInstance() bool { return len(b.SysCreds) > 0 }
 
 // IssueBundle issues one control instance's credentials from the root's
 // own seeds — a CONTROL user under the control-instance template and a
@@ -242,7 +237,7 @@ func (r *Root) ControlBundle(except string) (name string, b Bundle, err error) {
 			continue
 		}
 		b, err := ReadBundle(r.BundleDir(candidate))
-		if err != nil || b.Template() != TemplateControlInstance {
+		if err != nil || !b.IsControlInstance() {
 			continue
 		}
 		return candidate, b, nil
@@ -269,6 +264,23 @@ func ReadBundle(dir string) (Bundle, error) {
 		return Bundle{}, fmt.Errorf("bundle %s: %w", dir, err)
 	}
 	return Bundle{ControlCreds: ctrl, SysCreds: sys}, nil
+}
+
+// InstanceOf is the instance name a credential was issued under: the user
+// JWT's name, which the executor template binds its subjects to.
+func InstanceOf(creds []byte) (string, error) {
+	token, err := jwt.ParseDecoratedJWT(creds)
+	if err != nil {
+		return "", fmt.Errorf("parse creds: %w", err)
+	}
+	uc, err := jwt.DecodeUserClaims(token)
+	if err != nil {
+		return "", fmt.Errorf("decode creds: %w", err)
+	}
+	if uc.Name == "" {
+		return "", fmt.Errorf("the credential names no instance")
+	}
+	return uc.Name, nil
 }
 
 // userPublicKey is the subject of the user JWT a creds file decorates.

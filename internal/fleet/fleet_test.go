@@ -717,16 +717,29 @@ func TestUpFleetUsersAreFenced(t *testing.T) {
 	}()
 
 	bundles := map[string][]byte{}
-	for _, name := range []string{"workloads", "executor-local", "cli"} {
+	for _, name := range []string{"workloads", fleet.LocalExecutorID, "cli"} {
 		b, err := mint.ReadBundle(filepath.Join(dir, "bundles", name))
-		if err != nil || b.Template() != mint.TemplateFleet {
+		if err != nil || b.IsControlInstance() {
 			t.Fatalf("bundle %s: %+v, %v", name, b, err)
+		}
+		if issued, err := mint.InstanceOf(b.ControlCreds); err != nil || issued != name {
+			t.Fatalf("bundle %s was issued for %q, %v", name, issued, err)
 		}
 		bundles[name] = b.ControlCreds
 		assertFenced(t, f.URL, b.ControlCreds, name)
 	}
+	// The roles hold: the embedded executor's credential cannot mint.
+	if ec, err := client.ConnectControlCreds(f.URL, bundles[fleet.LocalExecutorID]); err == nil {
+		mctx, mcancel := context.WithTimeout(ctx, 3*time.Second)
+		_, err := ec.MintTenant(mctx, "rogue", "")
+		mcancel()
+		ec.Close()
+		if err == nil {
+			t.Fatal("the executor's credential minted a tenant")
+		}
+	}
 	first, err := mint.ReadBundle(filepath.Join(dir, "bundles", "instance-1"))
-	if err != nil || first.Template() != mint.TemplateControlInstance {
+	if err != nil || !first.IsControlInstance() {
 		t.Fatalf("instance-1's bundle: %v", err)
 	}
 	inc, err := mint.ConnectCreds(f.URL, first.ControlCreds, "instance-1-reads")
@@ -740,7 +753,7 @@ func TestUpFleetUsersAreFenced(t *testing.T) {
 
 	// The dev dir keeps what the offline root keeps: identity, node keys,
 	// bundles, exports — no working key, no bootstrap user.
-	for _, file := range []string{"operator-signing.nk", "sys-account.nk", "control-account.nk", "control.creds", "sys.creds", "bridge.creds"} {
+	for _, file := range []string{"operator-signing.nk", "sys-account.nk", "control-account.nk", "bridge.creds"} {
 		if _, err := os.Stat(filepath.Join(dir, file)); !os.IsNotExist(err) {
 			t.Fatalf("up left %s in the dev dir (%v)", file, err)
 		}

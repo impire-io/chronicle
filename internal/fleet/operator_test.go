@@ -3,6 +3,7 @@ package fleet_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -11,12 +12,17 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
+	"github.com/nats-io/nats.go/micro"
 
 	"github.com/impire-io/chronicle/client"
+	"github.com/impire-io/chronicle/contract"
 	"github.com/impire-io/chronicle/internal/control"
+	"github.com/impire-io/chronicle/internal/executor"
 	"github.com/impire-io/chronicle/internal/fleet"
 	"github.com/impire-io/chronicle/internal/mint"
 	"github.com/impire-io/chronicle/internal/natstest"
+	"github.com/impire-io/chronicle/internal/workloads"
 )
 
 // TestInstanceAddAndRemove is design 10 § instances on a real server: the
@@ -52,7 +58,7 @@ func TestInstanceAddAndRemove(t *testing.T) {
 		t.Fatalf("bundle dir %s: %v, mode %v", bundleDir, err, info.Mode())
 	}
 	b2, err := mint.ReadBundle(bundleDir)
-	if err != nil || len(b2.SysCreds) == 0 || b2.Template() != mint.TemplateControlInstance {
+	if err != nil || !b2.IsControlInstance() {
 		t.Fatalf("instance-2's bundle: %+v, %v", b2, err)
 	}
 	if _, err := run("add", "instance-2"); !errors.Is(err, mint.ErrInstanceExists) {
@@ -102,27 +108,41 @@ func TestInstanceAddAndRemove(t *testing.T) {
 	}
 	dana.Close()
 
-	// A fleet instance: one file, every verb, never the bucket.
-	if out, err := run("add", "worker-1", "--template", "fleet"); err != nil {
+	// An executor instance: one file, its own subjects, never the bucket,
+	// never a verb.
+	if out, err := run("add", "worker-1", "--template", "executor"); err != nil {
 		t.Fatalf("add worker-1: %v\n%s", err, out)
 	}
 	if _, err := os.Stat(filepath.Join(r.BundleDir("worker-1"), "sys.creds")); !os.IsNotExist(err) {
-		t.Fatalf("a fleet bundle holds a SYS user (%v)", err)
+		t.Fatalf("an executor bundle holds a SYS user (%v)", err)
 	}
 	w, err := mint.ReadBundle(r.BundleDir("worker-1"))
-	if err != nil || w.Template() != mint.TemplateFleet {
+	if err != nil || w.IsControlInstance() {
 		t.Fatalf("worker-1's bundle: %+v, %v", w, err)
 	}
+	if issued, err := mint.InstanceOf(w.ControlCreds); err != nil || issued != "worker-1" {
+		t.Fatalf("worker-1's credential names %q, %v", issued, err)
+	}
 	assertFenced(t, url, w.ControlCreds, "worker-1")
-	wc, err := client.ConnectControlCreds(url, w.ControlCreds)
+	wnc, err := mint.ConnectCreds(url, w.ControlCreds, "worker-1")
 	if err != nil {
-		t.Fatalf("fleet user connects: %v", err)
+		t.Fatalf("executor user connects: %v", err)
 	}
-	if _, err := wc.MintTenant(ctx, "beta", ""); err != nil {
+	// Its own creds pull reaches control (nothing is assigned, so the
+	// record refuses); a verb does not.
+	if _, err := executor.PullCreds(ctx, wnc, "worker-1", "acme", contract.WorkloadNodeName); err == nil || !strings.Contains(err.Error(), "not-assigned") {
+		t.Fatalf("the executor's own creds pull did not reach control: %v", err)
+	}
+	wnc.Close()
+	if wc, err := client.ConnectControlCreds(url, w.ControlCreds); err == nil {
+		mctx, mcancel := context.WithTimeout(ctx, 3*time.Second)
+		_, err := wc.MintTenant(mctx, "beta", "")
+		mcancel()
 		wc.Close()
-		t.Fatalf("the fleet user cannot reach control's verbs: %v", err)
+		if err == nil {
+			t.Fatal("an executor's credential reached the mint verb")
+		}
 	}
-	wc.Close()
 
 	// Removal is revocation: the live instance is evicted, the bundle is
 	// refused, the name is free again.
@@ -158,7 +178,7 @@ func TestInstanceAddAndRemove(t *testing.T) {
 	}
 	if nc, err := mint.ConnectCreds(url, w.ControlCreds, "worker-1-again"); err == nil {
 		nc.Close()
-		t.Fatal("a removed fleet user still connects")
+		t.Fatal("a removed executor still connects")
 	}
 
 	// The ceremony never removes the instance it runs as: instance-1 goes
@@ -205,4 +225,143 @@ func waitDisconnected(t *testing.T, nc *nats.Conn, who string) {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+}
+
+// TestRoleTemplatesHold is the fence per role against running services
+// (design 10 § the fence, 0032): each role's own work succeeds and what
+// its row forbids is refused — an executor registers, reports and pulls
+// creds on its own subjects only and reaches no verb and no stream; the
+// workload service runs the fleet log and cannot mint or pull creds; the
+// CLI mints and cannot touch JetStream; a payload naming another executor
+// is refused by the serving side.
+func TestRoleTemplatesHold(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	url, r := natstest.StartSealedOperator(t)
+	sysConn, ctrlConn, custody := natstest.OpenInstance(t, url, r)
+	driver, err := mint.NewJWTDriver(ctx, custody, sysConn, url)
+	if err != nil {
+		t.Fatalf("driver: %v", err)
+	}
+	svc, err := control.Start(ctrlConn, control.Config{Driver: driver, URL: url})
+	if err != nil {
+		t.Fatalf("control: %v", err)
+	}
+	defer func() { _ = svc.Stop() }()
+
+	instance := func(name string, tpl mint.Template) *nats.Conn {
+		t.Helper()
+		b, err := driver.AddInstance(ctx, name, tpl)
+		if err != nil {
+			t.Fatalf("add %s: %v", name, err)
+		}
+		nc, err := mint.ConnectCreds(url, b.ControlCreds, name)
+		if err != nil {
+			t.Fatalf("connect %s: %v", name, err)
+		}
+		t.Cleanup(nc.Close)
+		return nc
+	}
+	short := func() (context.Context, context.CancelFunc) { return context.WithTimeout(ctx, 2*time.Second) }
+	refused := func(name string, err error) {
+		t.Helper()
+		if err == nil {
+			t.Fatalf("%s: the fence let this through", name)
+		}
+	}
+	mintAs := func(nc *nats.Conn, tenant string) error {
+		sctx, scancel := short()
+		defer scancel()
+		data, _ := json.Marshal(client.TenantMintRequest{Name: tenant})
+		msg, err := nc.RequestWithContext(sctx, client.TenantMintSubject, data)
+		if err != nil {
+			return err
+		}
+		if code := msg.Header.Get(micro.ErrorCodeHeader); code != "" {
+			return errors.New(code)
+		}
+		return nil
+	}
+	jetstreamAs := func(nc *nats.Conn) error {
+		js, err := jetstream.New(nc)
+		if err != nil {
+			return err
+		}
+		sctx, scancel := short()
+		defer scancel()
+		_, err = js.AccountInfo(sctx)
+		return err
+	}
+
+	// The workload service, under its own role, runs the fleet log.
+	wl := instance("wl-1", mint.TemplateWorkloads)
+	wsvc, err := workloads.Start(ctx, wl, workloads.Config{ScanEvery: 150 * time.Millisecond, AuctionWindow: 80 * time.Millisecond})
+	if err != nil {
+		t.Fatalf("workloads under its template: %v", err)
+	}
+	t.Cleanup(wsvc.Stop)
+	// Control dispatches, as it does at every mint; the service under its
+	// template serves. The service itself never publishes a dispatch.
+	if _, err := workloads.Dispatch(ctx, ctrlConn, contract.FleetDispatchRequest{Tenant: "acme", Workload: contract.WorkloadNodeName, Kind: contract.WorkloadKindNode}); err != nil {
+		t.Fatalf("the workload service under its template does not serve dispatch: %v", err)
+	}
+	sctx, scancel := short()
+	_, err = workloads.Dispatch(sctx, wl, contract.FleetDispatchRequest{Tenant: "beta", Workload: contract.WorkloadNodeName, Kind: contract.WorkloadKindNode})
+	scancel()
+	refused("workloads dispatches", err)
+	refused("workloads mints", mintAs(wl, "rogue-wl"))
+	sctx, scancel = short()
+	_, err = executor.PullCreds(sctx, wl, "exec-a", "acme", contract.WorkloadNodeName)
+	scancel()
+	refused("workloads pulls creds", err)
+
+	// Executors: each on its own subjects, nothing else.
+	a := instance("exec-a", mint.TemplateExecutor)
+	instance("exec-b", mint.TemplateExecutor)
+	if _, err := workloads.Register(ctx, a, contract.FleetRegisterRequest{Executor: "exec-a", Backend: "test"}); err != nil {
+		t.Fatalf("exec-a cannot register as itself: %v", err)
+	}
+	sctx, scancel = short()
+	_, err = workloads.Register(sctx, a, contract.FleetRegisterRequest{Executor: "exec-b", Backend: "test"})
+	scancel()
+	refused("exec-a registers as exec-b", err)
+	if _, err := workloads.Report(ctx, a, contract.FleetReportRequest{Executor: "exec-a", Tenant: "acme", Workload: contract.WorkloadNodeName, Slot: "0", Reason: contract.ReleaseFailing}); err != nil {
+		t.Fatalf("exec-a cannot report as itself: %v", err)
+	}
+	// Its own creds pull reaches control — the record refuses, since the
+	// auction has not placed anything on exec-a — and a pull naming
+	// another executor is refused before the record, on the subject or
+	// in the payload.
+	if _, err := executor.PullCreds(ctx, a, "exec-a", "acme", contract.WorkloadNodeName); err == nil || !strings.Contains(err.Error(), "not-assigned") {
+		t.Fatalf("exec-a's own pull: %v, want not-assigned", err)
+	}
+	sctx, scancel = short()
+	_, err = executor.PullCreds(sctx, a, "exec-b", "acme", contract.WorkloadNodeName)
+	scancel()
+	refused("exec-a pulls on exec-b's subject", err)
+	forged, _ := json.Marshal(contract.FleetCredsRequest{Executor: "exec-b", Tenant: "acme", Workload: contract.WorkloadNodeName})
+	msg, err := a.RequestWithContext(ctx, contract.FleetCredsSubject("exec-a"), forged)
+	if err != nil {
+		t.Fatalf("forged pull: %v", err)
+	}
+	if code := msg.Header.Get(micro.ErrorCodeHeader); code != "caller-mismatch" {
+		t.Fatalf("forged pull answered with %q, want caller-mismatch", code)
+	}
+	refused("exec-a mints", mintAs(a, "rogue-exec"))
+	refused("exec-a reaches JetStream", jetstreamAs(a))
+	sctx, scancel = short()
+	_, err = a.RequestWithContext(sctx, contract.FleetDispatchSubject, []byte(`{}`))
+	scancel()
+	refused("exec-a dispatches", err)
+
+	// The CLI: the verbs and nothing on JetStream.
+	c := instance("cli-1", mint.TemplateCLI)
+	if err := mintAs(c, "acme-cli"); err != nil {
+		t.Fatalf("the cli cannot mint: %v", err)
+	}
+	refused("cli reaches JetStream", jetstreamAs(c))
+	sctx, scancel = short()
+	_, err = executor.PullCreds(sctx, c, "exec-a", "acme", contract.WorkloadNodeName)
+	scancel()
+	refused("cli pulls creds", err)
 }

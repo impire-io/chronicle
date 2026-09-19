@@ -29,12 +29,12 @@ func StopWorkload(ctx context.Context, nc *nats.Conn, r contract.FleetStopReques
 
 // Register puts an executor on the roster.
 func Register(ctx context.Context, nc *nats.Conn, r contract.FleetRegisterRequest) (contract.FleetRegisterResponse, error) {
-	return roundTrip[contract.FleetRegisterResponse](ctx, nc, contract.FleetRegisterSubject, r)
+	return roundTrip[contract.FleetRegisterResponse](ctx, nc, contract.FleetRegisterSubject(r.Executor), r)
 }
 
 // Report releases a slot the reporting executor can no longer carry.
 func Report(ctx context.Context, nc *nats.Conn, r contract.FleetReportRequest) (contract.FleetReportResponse, error) {
-	return roundTrip[contract.FleetReportResponse](ctx, nc, contract.FleetReportSubject, r)
+	return roundTrip[contract.FleetReportResponse](ctx, nc, contract.FleetReportSubject(r.Executor), r)
 }
 
 func roundTrip[Resp any, Req any](ctx context.Context, nc *nats.Conn, subject string, req Req) (Resp, error) {

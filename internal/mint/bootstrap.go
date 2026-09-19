@@ -32,16 +32,15 @@ type Bootstrap struct {
 
 	SystemAccountPub string
 	SystemAccountJWT string
-	SysCreds         []byte
-	// SystemAccountSeed and ControlAccountSeed issue further users of the
-	// two accounts — instance bundles and fleet users (design 10). Empty
-	// on installs bootstrapped before they were persisted; those cannot
-	// issue instances and need a fresh init.
+	// SystemAccountSeed and ControlAccountSeed issue the users of the two
+	// accounts — every one an instance under a role's template (design
+	// 10, 0032); no user is minted at birth. Empty once seal moved them
+	// into the bucket, and on installs bootstrapped before they were
+	// persisted; those cannot issue instances and need a fresh init.
 	SystemAccountSeed []byte
 
 	ControlAccountPub  string
 	ControlAccountJWT  string
-	ControlCreds       []byte
 	ControlAccountSeed []byte
 
 	// The AUTH account of decision 0026 — the callout bridge's trigger
@@ -65,11 +64,9 @@ const (
 	fSysAcctJWT   = "sys-account.jwt"
 	fSysAcctPub   = "sys-account.pub"
 	fSysAcctNK    = "sys-account.nk"
-	fSysCreds     = "sys.creds"
 	fCtrlAcctJWT  = "control-account.jwt"
 	fCtrlAcctPub  = "control-account.pub"
 	fCtrlAcctNK   = "control-account.nk"
-	fCtrlCreds    = "control.creds"
 	resolverDir   = "resolver"
 	jetstreamDir  = "jetstream"
 	accountsDir   = "accounts"
@@ -124,8 +121,6 @@ func loadBootstrap(dir string) (*Bootstrap, error) {
 	b.OperatorSigningSeed = optional(fOperatorSK)
 	b.SystemAccountSeed = optional(fSysAcctNK)
 	b.ControlAccountSeed = optional(fCtrlAcctNK)
-	b.SysCreds = optional(fSysCreds)
-	b.ControlCreds = optional(fCtrlCreds)
 	if err := b.ensureControlJetStream(); err != nil {
 		return nil, err
 	}
@@ -152,11 +147,11 @@ func (b *Bootstrap) OperatorSigningKeys() ([]string, error) {
 }
 
 // workingSecretFiles is what seal shreds from the root once the bucket
-// holds it: the seeds the bucket now keeps and the bootstrap users issued
-// from them before any bundle existed. What survives is the operator
-// identity, the node keys, the bundles, and public material.
+// holds it: the seeds the bucket now keeps, and the AUTH account's users
+// until the fold moves them. What survives is the operator identity, the
+// node keys, the bundles, and public material.
 var workingSecretFiles = []string{
-	fOperatorSK, fSysAcctNK, fCtrlAcctNK, fSysCreds, fCtrlCreds,
+	fOperatorSK, fSysAcctNK, fCtrlAcctNK,
 	fAuthAcctNK, fAuthXKeyNK, fBridgeCreds, fSentinelCreds,
 }
 
@@ -307,15 +302,6 @@ func initBootstrap(dir string) (*Bootstrap, error) {
 		return nil, fmt.Errorf("encode control account jwt: %w", err)
 	}
 
-	sysCreds, _, err := issueDirect(sakp, sapub, "sys")
-	if err != nil {
-		return nil, fmt.Errorf("system user: %w", err)
-	}
-	ctrlCreds, _, err := issueDirect(cakp, capub, "control")
-	if err != nil {
-		return nil, fmt.Errorf("control user: %w", err)
-	}
-
 	oSeed, err := okp.Seed()
 	if err != nil {
 		return nil, fmt.Errorf("operator seed: %w", err)
@@ -344,11 +330,9 @@ func initBootstrap(dir string) (*Bootstrap, error) {
 		{fSysAcctJWT, []byte(sysJWT), plainFileMode},
 		{fSysAcctPub, []byte(sapub), plainFileMode},
 		{fSysAcctNK, saSeed, keyFileMode},
-		{fSysCreds, sysCreds, keyFileMode},
 		{fCtrlAcctJWT, []byte(controlJWT), plainFileMode},
 		{fCtrlAcctPub, []byte(capub), plainFileMode},
 		{fCtrlAcctNK, caSeed, keyFileMode},
-		{fCtrlCreds, ctrlCreds, keyFileMode},
 	}
 	for _, f := range files {
 		if err := os.WriteFile(filepath.Join(dir, f.name), f.data, f.mode); err != nil {
@@ -363,11 +347,9 @@ func initBootstrap(dir string) (*Bootstrap, error) {
 		OperatorSigningSeed: osSeed,
 		SystemAccountPub:    sapub,
 		SystemAccountJWT:    sysJWT,
-		SysCreds:            sysCreds,
 		SystemAccountSeed:   saSeed,
 		ControlAccountPub:   capub,
 		ControlAccountJWT:   controlJWT,
-		ControlCreds:        ctrlCreds,
 		ControlAccountSeed:  caSeed,
 	}
 	if err := b.ensureAuthAccount(); err != nil {
@@ -384,8 +366,7 @@ func issueDirect(akp nkeys.KeyPair, apub, name string) ([]byte, string, error) {
 }
 
 // issueDirectWith is issueDirect with a permission template — the fence of
-// design 10: `fleet` users carry FleetTemplate, control instances carry
-// ControlInstanceTemplate.
+// design 10: every SYS and CONTROL user carries its role's template.
 func issueDirectWith(akp nkeys.KeyPair, apub, name string, limits jwt.UserPermissionLimits) ([]byte, string, error) {
 	ukp, upub, err := newKey(nkeys.CreateUser)
 	if err != nil {
@@ -506,8 +487,8 @@ func (b *Bootstrap) ensureDir(name string) string {
 var ErrNoAccountSeeds = fmt.Errorf("this install keeps no SYS/CONTROL account seeds (bootstrapped before design 10); a fresh `chronicle operator init` is the remedy")
 
 // IssueControlUser issues a user of the CONTROL account under the given
-// permission template — a control instance (ControlInstanceTemplate) or a
-// fleet user (FleetTemplate).
+// permission template — one of the four roles' — from the root's own
+// seed, before seal.
 func (b *Bootstrap) IssueControlUser(name string, limits jwt.UserPermissionLimits) (Creds, error) {
 	return issueAccountUser(b.ControlAccountSeed, b.ControlAccountPub, name, limits)
 }

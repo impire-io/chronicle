@@ -102,7 +102,7 @@ func Instance(ctx context.Context, args []string, out io.Writer) error {
 	fs.SetOutput(out)
 	dir := fs.String("dir", devdir.Default(), "the offline root (the data dir)")
 	url := fs.String("url", "", "the cluster's client url (default: the root's recorded url)")
-	template := fs.String("template", string(mint.TemplateControlInstance), "add: control-instance (a chronicle-control peer) or fleet (a workload service, an executor, a CLI)")
+	template := fs.String("template", string(mint.TemplateControlInstance), "add: the instance's role — control-instance (a chronicle-control peer), executor (one host; the name is its --id), workloads (a workload service), cli (an operator's CLI)")
 	pos, err := parseInterleaved(fs, args[1:])
 	if err != nil {
 		return err
@@ -153,11 +153,16 @@ func Instance(ctx context.Context, args []string, out io.Writer) error {
 	}
 	fmt.Fprintf(out, "instance %s added (%s)\n", name, t)
 	fmt.Fprintf(out, "  bundle: %s\n", path)
+	creds := filepath.Join(path, devdir.ControlCredsFile)
 	switch t {
 	case mint.TemplateControlInstance:
 		fmt.Fprintf(out, "copy the bundle to its host and run: chronicle-control --url %s --bundle <dir>\n", conns.url)
-	case mint.TemplateFleet:
-		fmt.Fprintf(out, "copy %s to its host: chronicle-executor --url %s --creds <file> --id %s, or the workload service's --creds\n", filepath.Join(path, devdir.ControlCredsFile), conns.url, name)
+	case mint.TemplateExecutor:
+		fmt.Fprintf(out, "copy %s to its host and run: chronicle-executor --url %s --creds <file> --id %s\n", creds, conns.url, name)
+	case mint.TemplateWorkloads:
+		fmt.Fprintf(out, "copy %s to its host: the workload service's --creds\n", creds)
+	case mint.TemplateCLI:
+		fmt.Fprintf(out, "%s is the CLI's control-plane credential\n", creds)
 	}
 	return nil
 }
@@ -227,8 +232,8 @@ func (c *ceremonyConns) close() {
 }
 
 // openRoot loads the root and connects as one of its control instances —
-// the first bundle it issued, skipping `except` — falling back to the
-// bootstrap users on a root that predates bundles and is not yet sealed.
+// the first bundle it issued, skipping `except`. A root holds no other
+// user.
 func openRoot(dir, url, name, except string) (*mint.Root, *ceremonyConns, error) {
 	r, err := mint.LoadRoot(dir)
 	if err != nil {
@@ -242,18 +247,16 @@ func openRoot(dir, url, name, except string) (*mint.Root, *ceremonyConns, error)
 		}
 		target = recorded
 	}
-	sysCreds, ctrlCreds := r.B.SysCreds, r.B.ControlCreds
-	if _, bundle, err := r.ControlBundle(except); err == nil {
-		sysCreds, ctrlCreds = bundle.SysCreds, bundle.ControlCreds
-	} else if len(sysCreds) == 0 || len(ctrlCreds) == 0 {
+	_, bundle, err := r.ControlBundle(except)
+	if err != nil {
 		return nil, nil, err
 	}
 	conns := &ceremonyConns{url: target}
-	conns.sys, err = mint.ConnectCreds(target, sysCreds, name+"-sys")
+	conns.sys, err = mint.ConnectCreds(target, bundle.SysCreds, name+"-sys")
 	if err != nil {
 		return nil, nil, fmt.Errorf("connect %s as the system user: %w", target, err)
 	}
-	conns.ctrl, err = mint.ConnectCreds(target, ctrlCreds, name)
+	conns.ctrl, err = mint.ConnectCreds(target, bundle.ControlCreds, name)
 	if err != nil {
 		conns.close()
 		return nil, nil, fmt.Errorf("connect %s as the control user: %w", target, err)

@@ -141,7 +141,7 @@ func PullCreds(ctx context.Context, nc *nats.Conn, executorID, tenant, workload 
 	}
 	reqCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	msg, err := nc.RequestWithContext(reqCtx, contract.FleetCredsSubject, data)
+	msg, err := nc.RequestWithContext(reqCtx, contract.FleetCredsSubject(executorID), data)
 	if err != nil {
 		return nil, err
 	}

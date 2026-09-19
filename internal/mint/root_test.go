@@ -117,7 +117,7 @@ func TestInitRootSealsAndExports(t *testing.T) {
 
 	// Seal shredded the working keys: the bucket is the only place they
 	// live now. The identity, the node keys, and the bundle stay.
-	for _, f := range []string{"operator-signing.nk", "sys-account.nk", "control-account.nk", "sys.creds", "control.creds",
+	for _, f := range []string{"operator-signing.nk", "sys-account.nk", "control-account.nk",
 		"auth-account.nk", "auth-xkey.nk", "bridge.creds", "sentinel.creds"} {
 		if _, err := os.Stat(filepath.Join(dir, f)); !os.IsNotExist(err) {
 			t.Fatalf("seal left %s in the root (%v)", f, err)

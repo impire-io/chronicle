@@ -159,6 +159,43 @@ on a sealed root re-shreds. Calls made while building:
   the fresh seed once the bucket holds it — still the bridge to
   increment 5.
 
+## Increment 4 — landed on this branch
+
+The fence by role, as 0032 fixed it. Four allow-list templates in the mint
+seam — `control-instance`, `executor(<id>)`, `workloads`, `cli` — and
+`instance add --template <role>` issuing under them; `REGISTER`, `REPORT`
+and `CREDS` carry the executor token, the workload service serves
+`REGISTER.*` and `REPORT.*` and control serves `CREDS.*`, each reading the
+caller from the subject; `init` mints no bootstrap pair, so a root's only
+users are its bundles and the ceremonies dial with nothing else; `up`'s
+members are instances under their roles. On real operator-mode servers:
+each role's own work succeeds and its row's "never" is refused — an
+executor registers, reports and pulls creds on its own subjects, and
+cannot register as another, pull on another's subject, mint, dispatch, or
+reach JetStream; a forged payload is refused with `caller-mismatch`; the
+workload service runs the fleet log, serves dispatch and the bridge
+report, and cannot mint, dispatch, or pull creds; the CLI mints and cannot
+touch JetStream; every `up` member is fenced and named by its bundle. Calls
+made while building:
+
+- **The executor's ID is its credential's instance name.** `chronicle-
+  executor` reads it from `--creds` and `--id` may only agree — the server
+  lets the credential speak on that name's subjects and no other, so the
+  ID is not a choice. `up`'s embedded executor is the instance `local`.
+- **An absent payload name takes the subject's; a different one is
+  refused.** The request types keep their `executor` field for the
+  record's sake; the subject is what the fence binds.
+- **The workloads role serves the bridge report too.** The node's index
+  report arrives on `CHRONX.FLEET.REPORT.<tenant>` in the control account
+  and the workload service answers it — one of "its own endpoints" that
+  design 10's table names without spelling; the allow-list spells it.
+- **The bucket half of the fence stays a mint test; the roles are a fleet
+  test.** `TestRoleTemplatesFenceTheBucket` checks each template against
+  the bucket on a bare server; `TestRoleTemplatesHold` runs control and the
+  workload service under their credentials and drives every role's row.
+- **The late-executor boot test from spec 019 is not on this branch** — it
+  is PR #23's — and lands with the standalone plane in increment 5.
+
 ## Reshaped by 0031 and 0032 — before increment 4
 
 The review of increment 3 asked whether a `fleet`-template credential was a
@@ -178,7 +215,7 @@ nothing else should land on the wrong side of it.
 1. ~~`custody.go` + `root.go`~~ — landed.
 2. ~~The driver and control read the store~~ — landed.
 3. ~~`instance add|remove`; the `fleet` template; the shred~~ — landed.
-4. **The fence by role** (chronicle-22): the four templates as allow-lists,
+4. ~~**The fence by role** (chronicle-22)~~ — landed: the four templates as allow-lists,
    the `executor` one parameterized by name; `REGISTER`, `REPORT` and
    `CREDS` take the executor token — workloads serves `REGISTER.*` and
    `REPORT.*`, control serves `CREDS.*`, each reading the caller from the

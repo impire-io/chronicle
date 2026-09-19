@@ -42,12 +42,10 @@ const LocalExecutorID = "local"
 // JetStream key lives there, beside the keys of any emitted node.
 const embeddedNode = "embedded"
 
-// The fleet instances `up` issues for its own members, named as their
-// bundles under the dev dir.
-const (
-	workloadsInstance = "workloads"
-	executorInstance  = "executor-" + LocalExecutorID
-)
+// workloadsInstance names the workload service `up` runs — its bundle
+// under the dev dir. The embedded executor's instance is LocalExecutorID:
+// an executor's instance name is its ID (design 10 § the fence).
+const workloadsInstance = "workloads"
 
 // Config selects what the fleet runs.
 type Config struct {
@@ -171,34 +169,34 @@ func Up(ctx context.Context, cfg Config) (*Fleet, error) {
 		f.Stop()
 		return nil, err
 	}
-	// The fleet's members hold fleet-template users of their own (design
-	// 10 § the fence): the workload service, the embedded executor, and
-	// the operator's CLI, each a bundle under the dev dir — issued over
-	// the bucket the first time, reused on every boot after.
-	fleetBundle := func(name string) ([]byte, error) {
+	// The fleet's members hold users of their own role (design 10 § the
+	// fence): the workload service, the embedded executor, and the
+	// operator's CLI, each an instance with a bundle under the dev dir —
+	// issued over the bucket the first time, reused on every boot after.
+	member := func(name string, t mint.Template) ([]byte, error) {
 		if bundle, err := mint.ReadBundle(r.BundleDir(name)); err == nil {
 			return bundle.ControlCreds, nil
 		}
-		bundle, err := driver.AddInstance(ctx, name, mint.TemplateFleet)
+		bundle, err := driver.AddInstance(ctx, name, t)
 		if err != nil {
-			return nil, fmt.Errorf("issue fleet user %s: %w", name, err)
+			return nil, fmt.Errorf("issue %s user %s: %w", t, name, err)
 		}
 		if _, err := r.WriteBundle(name, bundle); err != nil {
 			return nil, err
 		}
 		return bundle.ControlCreds, nil
 	}
-	wlCreds, err := fleetBundle(workloadsInstance)
+	wlCreds, err := member(workloadsInstance, mint.TemplateWorkloads)
 	if err != nil {
 		f.Stop()
 		return nil, err
 	}
-	exCreds, err := fleetBundle(executorInstance)
+	exCreds, err := member(LocalExecutorID, mint.TemplateExecutor)
 	if err != nil {
 		f.Stop()
 		return nil, err
 	}
-	if _, err := fleetBundle(devdir.CLIBundle); err != nil {
+	if _, err := member(devdir.CLIBundle, mint.TemplateCLI); err != nil {
 		f.Stop()
 		return nil, err
 	}

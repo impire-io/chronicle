@@ -115,18 +115,43 @@ const (
 )
 
 // The control-plane fleet subjects, under the cross-account CHRON.CTRL.>
-// surface. DISPATCH, STOP, REGISTER and REPORT are chronicle-workloads'
-// queue-grouped endpoints; CREDS is chronicle-control's; AUCTION is a plain
-// subscription in every executor — deliberately not a queue group, every
-// executor must hear the scatter; DELEGATE/STATUS/DESTROY are per-executor.
+// surface. DISPATCH and STOP are chronicle-workloads' queue-grouped
+// endpoints; AUCTION is a plain subscription in every executor —
+// deliberately not a queue group, every executor must hear the scatter.
+// Every subject an executor speaks or serves carries its name: REGISTER
+// and REPORT (chronicle-workloads') and CREDS (chronicle-control's) on
+// publish, DELEGATE/STATUS/DESTROY on subscribe. The serving side reads
+// the caller from the subject, and the executor's credential may publish
+// on its own three only — the permission is the identity (chronicle-hq
+// 02-DESIGN/10-custody.md § the fence, decision 0032).
 const (
 	FleetDispatchSubject = "CHRON.CTRL.FLEET.DISPATCH"
 	FleetStopSubject     = "CHRON.CTRL.FLEET.STOP"
-	FleetRegisterSubject = "CHRON.CTRL.FLEET.REGISTER"
-	FleetReportSubject   = "CHRON.CTRL.FLEET.REPORT"
-	FleetCredsSubject    = "CHRON.CTRL.FLEET.CREDS"
 	FleetAuctionSubject  = "CHRON.CTRL.FLEET.AUCTION"
 )
+
+// FleetRegisterSubject is one executor's roster request; the serving
+// instance subscribes FleetRegisterSubject("*").
+func FleetRegisterSubject(executor string) string {
+	return "CHRON.CTRL.FLEET.REGISTER." + executor
+}
+
+// FleetReportSubject is one executor's custody report.
+func FleetReportSubject(executor string) string {
+	return "CHRON.CTRL.FLEET.REPORT." + executor
+}
+
+// FleetCredsSubject is one executor's record-verified creds pull.
+func FleetCredsSubject(executor string) string {
+	return "CHRON.CTRL.FLEET.CREDS." + executor
+}
+
+// FleetCaller is the executor a per-executor subject names — its last
+// token. What the server let through on this subject is the caller's
+// identity; a payload naming anyone else is refused by the serving side.
+func FleetCaller(subject string) string {
+	return subject[strings.LastIndex(subject, ".")+1:]
+}
 
 // FleetDelegateSubject is one executor's delegation endpoint.
 func FleetDelegateSubject(executor string) string {
@@ -282,6 +307,8 @@ type FleetDestroyResponse struct {
 // verifies the assignment against STATE_FLEET, falling back to folding the
 // workload's subject from the log's tail when the bucket trails the assign.
 type FleetCredsRequest struct {
+	// Executor is the caller — it must match the subject the request
+	// travels on, which the executor's credential fixes.
 	Executor string `json:"executor"`
 	Tenant   string `json:"tenant"`
 	Workload string `json:"workload"`

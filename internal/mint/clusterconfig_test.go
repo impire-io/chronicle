@@ -16,6 +16,17 @@ import (
 	"github.com/impire-io/chronicle/internal/mint"
 )
 
+// testRoot births a root — the material, the manifest, the first
+// instance's bundle — in a temp dir.
+func testRoot(t *testing.T) *mint.Root {
+	t.Helper()
+	r, err := mint.InitRoot(t.TempDir())
+	if err != nil {
+		t.Fatalf("init root: %v", err)
+	}
+	return r
+}
+
 func testBootstrap(t *testing.T) *mint.Bootstrap {
 	t.Helper()
 	b, err := mint.LoadOrInitBootstrap(t.TempDir())
@@ -142,7 +153,12 @@ func freePorts(t *testing.T, n int) []int {
 // on the *other* nodes. This is design 09's verified mechanism as a
 // regression test.
 func TestEmittedConfigsFormAClusterThatMintsEverywhere(t *testing.T) {
-	b := testBootstrap(t)
+	r := testRoot(t)
+	b := r.B
+	bundle, err := mint.ReadBundle(r.BundleDir("instance-1"))
+	if err != nil {
+		t.Fatalf("bundle: %v", err)
+	}
 	tmp := t.TempDir()
 	ports := freePorts(t, 6)
 	// The emitted configs read their JetStream key from the environment;
@@ -194,7 +210,7 @@ func TestEmittedConfigsFormAClusterThatMintsEverywhere(t *testing.T) {
 
 	// The driver pushes through node 1 and — by URL — verifies by
 	// connecting to node 3: the mint ceremony itself proves propagation.
-	sysConn, err := mint.ConnectCreds(servers[0].ClientURL(), b.SysCreds, "test-sys")
+	sysConn, err := mint.ConnectCreds(servers[0].ClientURL(), bundle.SysCreds, "test-sys")
 	if err != nil {
 		t.Fatalf("connect system user to n1: %v", err)
 	}
@@ -204,7 +220,7 @@ func TestEmittedConfigsFormAClusterThatMintsEverywhere(t *testing.T) {
 	// and the driver on node 1 reads them from there.
 	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
 	defer cancel()
-	ctrlConn, err := mint.ConnectCreds(servers[1].ClientURL(), b.ControlCreds, "test-control")
+	ctrlConn, err := mint.ConnectCreds(servers[1].ClientURL(), bundle.ControlCreds, "test-control")
 	if err != nil {
 		t.Fatalf("connect control user to n2: %v", err)
 	}
@@ -228,9 +244,8 @@ func TestEmittedConfigsFormAClusterThatMintsEverywhere(t *testing.T) {
 	if lastErr != nil {
 		t.Fatalf("jetstream never became ready on the cluster: %v", lastErr)
 	}
-	root := &mint.Root{Dir: b.Dir, B: b, Manifest: mint.RootManifest{Version: 1, Nodes: map[string]mint.NodeSecrets{}}}
 	sealCtx, sealCancel := context.WithTimeout(ctx, 15*time.Second)
-	_, err = root.Seal(sealCtx, ctrlConn, mint.SealOptions{Replicas: 3})
+	_, err = r.Seal(sealCtx, ctrlConn, mint.SealOptions{Replicas: 3})
 	sealCancel()
 	if err != nil {
 		t.Fatalf("seal into the cluster: %v", err)

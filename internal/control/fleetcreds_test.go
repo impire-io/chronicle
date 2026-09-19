@@ -74,10 +74,14 @@ func TestFleetCredsIsRecordVerified(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = svc.Stop() })
 
-	pull := func(executor string) ([]byte, string) {
+	// The request travels on the caller's own subject; the payload may
+	// restate the caller and nothing else (the fence binds the subject to
+	// the credential — design 10, 0032; here the server is open and the
+	// binding is the endpoint's to enforce).
+	pullAs := func(subjectExecutor, payloadExecutor string) ([]byte, string) {
 		t.Helper()
-		data, _ := json.Marshal(contract.FleetCredsRequest{Executor: executor, Tenant: "t1", Workload: contract.WorkloadNodeName})
-		msg, err := nc.RequestWithContext(ctx, contract.FleetCredsSubject, data)
+		data, _ := json.Marshal(contract.FleetCredsRequest{Executor: payloadExecutor, Tenant: "t1", Workload: contract.WorkloadNodeName})
+		msg, err := nc.RequestWithContext(ctx, contract.FleetCredsSubject(subjectExecutor), data)
 		if err != nil {
 			t.Fatalf("creds request: %v", err)
 		}
@@ -91,12 +95,23 @@ func TestFleetCredsIsRecordVerified(t *testing.T) {
 		return resp.Creds, ""
 	}
 
+	pull := func(executor string) ([]byte, string) { return pullAs(executor, executor) }
+
 	creds, code := pull("right")
 	if code != "" || string(creds) != string(want) {
 		t.Fatalf("assigned pull refused: code=%q creds=%q", code, creds)
 	}
 	if _, code := pull("wrong"); code != "not-assigned" {
 		t.Fatalf("unassigned pull answered: code=%q", code)
+	}
+	// The caller is the subject: a payload naming the assigned executor
+	// from another's subject is refused before the record is read, and
+	// an empty payload name takes the subject's.
+	if _, code := pullAs("wrong", "right"); code != "caller-mismatch" {
+		t.Fatalf("mismatched pull: code=%q, want caller-mismatch", code)
+	}
+	if creds, code := pullAs("right", ""); code != "" || string(creds) != string(want) {
+		t.Fatalf("pull with the caller from the subject alone: code=%q creds=%q", code, creds)
 	}
 
 	// A stop revokes naturally: the record no longer verifies anyone.
