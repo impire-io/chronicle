@@ -80,7 +80,7 @@ one tenant, on any NATS the operator already has.
 - The node's `member add|revoke` verbs (design 11 § membership, without
   custody) — a follow-up on the tracker; the quick start has its one
   admin, and a bring-your-own-NATS account is seeded with one.
-- The relicensing of this repository — its own decision record, after
-  this lands (decision 0031).
+- The license: it stays the Sustainable Use License (chronicle-hq
+  decision 0033, closing the question 0031 deferred).
 - The managed service's own shape and release — `chronicle-service`'s
   first content, landing after this.

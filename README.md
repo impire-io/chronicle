@@ -197,6 +197,11 @@ see [CONTRIBUTING.md](CONTRIBUTING.md).
 ## License
 
 [Sustainable Use License](LICENSE) — free for internal business,
-non-commercial, and personal use. The relicensing of this tenant plane to
-OSI-approved terms is its own decision record in `chronicle-hq`, made now
-that the repository holds only what will be relicensed (decision 0031).
+non-commercial, and personal use; the fair-code posture every impire
+product carries (chronicle-hq decisions
+[0017](../chronicle-hq/03-DECISIONS/0017-release-flow.md) and
+[0033](../chronicle-hq/03-DECISIONS/0033-the-public-repo-stays-under-the-sustainable-use-license.md)).
+"Open" in the split's sense names the boundary — everything that runs
+inside one tenant, published here — not an OSI license. Contributions
+are under the Developer Certificate of Origin
+([CONTRIBUTING.md](CONTRIBUTING.md)).
