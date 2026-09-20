@@ -185,8 +185,8 @@ func Start(ctx context.Context, nc *nats.Conn, cfg Config) (*Service, error) {
 	}{
 		{"fleet-dispatch", contract.FleetDispatchSubject, s.handleDispatch},
 		{"fleet-stop", contract.FleetStopSubject, s.handleStop},
-		{"fleet-register", contract.FleetRegisterSubject, s.handleRegister},
-		{"fleet-report", contract.FleetReportSubject, s.handleReport},
+		{"fleet-register", contract.FleetRegisterSubject("*"), s.handleRegister},
+		{"fleet-report", contract.FleetReportSubject("*"), s.handleReport},
 		{"fleet-bridge", contract.FleetBridgeExport, s.handleBridgeReport},
 	}
 	for _, e := range endpoints {
@@ -442,6 +442,9 @@ func (s *service) handleRegister(req micro.Request) {
 		_ = req.Error("bad-request", err.Error(), nil)
 		return
 	}
+	if !callerIs(req, &r.Executor) {
+		return
+	}
 	if err := contract.ValidateExecutorName(r.Executor); err != nil {
 		_ = req.Error("bad-executor", err.Error(), nil)
 		return
@@ -483,6 +486,9 @@ func (s *service) handleReport(req micro.Request) {
 	var r contract.FleetReportRequest
 	if err := json.Unmarshal(req.Data(), &r); err != nil {
 		_ = req.Error("bad-request", err.Error(), nil)
+		return
+	}
+	if !callerIs(req, &r.Executor) {
 		return
 	}
 	thing := contract.FleetWorkloadThing(r.Tenant, r.Workload)
@@ -621,4 +627,19 @@ func indexWorkloadKind(indexKind string) (string, bool) {
 		return contract.WorkloadKindIndexSemantic, true
 	}
 	return "", false
+}
+
+// callerIs binds a per-executor request to the subject it arrived on: the
+// executor's credential may publish on its own subjects only, so the
+// subject's last token is the caller the server vouched for. An absent
+// payload name takes it; a different one is refused, and the request
+// stops here.
+func callerIs(req micro.Request, executor *string) bool {
+	caller := contract.FleetCaller(req.Subject())
+	if *executor != "" && *executor != caller {
+		_ = req.Error("caller-mismatch", fmt.Sprintf("the request names executor %s but arrived as %s", *executor, caller), nil)
+		return false
+	}
+	*executor = caller
+	return true
 }

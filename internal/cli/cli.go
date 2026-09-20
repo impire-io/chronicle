@@ -136,8 +136,16 @@ func usage(out io.Writer) error {
 
 run a fleet
   chronicle up [--dir D] [--port N]
-  chronicle operator rotate-signing-key [--dir D]        the trust root, fleet stopped
-  chronicle operator emit-cluster-config --node <name>=<host>[:cp[:kp]] ... [--dir D] [--out P]
+  chronicle operator seal --url U --replicas N --signing-seed F --sys-seed F --control-seed F [--out DIR]
+                                                         the environment's seeds become the AUTH bucket and the first instance
+  chronicle operator instance add <name> --template control-instance|executor|workloads|cli (--bundle B --url U | --dir D)
+                                                         issue an instance's users over the bucket; write its bundle
+  chronicle operator instance remove <name> (--bundle B --url U | --dir D)
+                                                         revoke an instance's users; a lost host is a revocation
+  chronicle operator export (--bundle B --url U | --dir D) [--out F]
+                                                         a dated export of the bucket for the environment to keep
+  chronicle operator rotate-signing-key --bundle B --url U --new-signing-seed F
+                                                         the service's step of the rotation; --dir D alone is the dev shape
 
 own its tenants (fleet dir)
   chronicle tenant create <name> [--admin P] [--out F]   mints and selects the admin's context

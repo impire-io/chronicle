@@ -1,9 +1,11 @@
-// Package fleet composes `chronicle up`: the bootstrap NATS, control, one
-// chronicle-workloads instance, and one embedded executor on the
-// in-process backend — the fleet shape without the fleet ceremony
-// (chronicle-hq/02-DESIGN/06-scheduler.md § both forms, and the local
-// one). Same log, same auction (one bidder), same guard as any fleet; no
-// scheduler-shaped special case.
+// Package fleet is the composition root: `chronicle up` — the embedded
+// NATS, control, one workload-service instance, and one embedded executor
+// on the in-process backend, the fleet shape without the fleet ceremony
+// (chronicle-hq/02-DESIGN/06-scheduler.md § both forms) — and
+// `chronicle-control`, one control instance standing over a substrate the
+// operator runs (02-DESIGN/09-hosted-environment.md, 10-custody.md). One
+// composition of control, both roots; no scheduler-shaped special case in
+// either.
 package fleet
 
 import (
@@ -15,8 +17,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/nats-io/nats-server/v2/server"
@@ -24,10 +24,8 @@ import (
 	"github.com/nats-io/nats.go/micro"
 
 	"github.com/impire-io/chronicle/contract"
-	"github.com/impire-io/chronicle/internal/control"
 	"github.com/impire-io/chronicle/internal/devdir"
 	"github.com/impire-io/chronicle/internal/executor"
-	"github.com/impire-io/chronicle/internal/identity/github"
 	"github.com/impire-io/chronicle/internal/index/semantic"
 	"github.com/impire-io/chronicle/internal/mint"
 	"github.com/impire-io/chronicle/internal/version"
@@ -37,6 +35,15 @@ import (
 // LocalExecutorID is the embedded executor's durable identity — stable
 // across restarts, per the workload contract.
 const LocalExecutorID = "local"
+
+// embeddedNode names the embedded server in the root's manifest: its
+// JetStream key lives there, beside the keys of any emitted node.
+const embeddedNode = "embedded"
+
+// workloadsInstance names the workload service `up` runs — its bundle
+// under the dev dir. The embedded executor's instance is LocalExecutorID:
+// an executor's instance name is its ID (design 10 § the fence).
+const workloadsInstance = "workloads"
 
 // Config selects what the fleet runs.
 type Config struct {
@@ -99,16 +106,25 @@ func Up(ctx context.Context, cfg Config) (*Fleet, error) {
 		port = 4222
 	}
 
-	b, err := mint.LoadOrInitBootstrap(dir)
+	// Design 10's first boot, in one process: the root is born or opened,
+	// the embedded server runs encrypted at rest under the root's node
+	// key, the working keys are sealed into the AUTH bucket, and control
+	// dials with the bundle the root issued — the same path a hosted
+	// instance walks, with the ceremonies folded into `up`.
+	r, err := mint.InitRoot(dir)
 	if err != nil {
 		return nil, err
 	}
-	srv, err := b.StartServer(port)
+	nodeKey, err := r.NodeKey(embeddedNode)
 	if err != nil {
 		return nil, err
+	}
+	srv, err := r.B.StartServerWithKey(port, nodeKey)
+	if err != nil {
+		return nil, fmt.Errorf("%w (a dev dir from before design 10 holds an unencrypted store: move %s aside and start again)", err, dir)
 	}
 	f := &Fleet{URL: srv.ClientURL(), srv: srv}
-	if err := b.WriteClientURL(f.URL); err != nil {
+	if err := r.B.WriteClientURL(f.URL); err != nil {
 		f.Stop()
 		return nil, err
 	}
@@ -122,25 +138,72 @@ func Up(ctx context.Context, cfg Config) (*Fleet, error) {
 		return nc, nil
 	}
 
-	sysConn, err := connect(b.SysCreds, "chronicle-sys")
+	bundle, err := mint.ReadBundle(r.BundleDir(firstInstance))
 	if err != nil {
 		f.Stop()
 		return nil, err
 	}
-	ctrlConn, err := connect(b.ControlCreds, "chronicle-control")
+	sysConn, err := connect(bundle.SysCreds, "chronicle-sys")
 	if err != nil {
 		f.Stop()
 		return nil, err
 	}
-	// In the embedded composition every control-plane component shares the
-	// bootstrap control user on its own connection; per-component users
-	// are custody the multi-host increment makes real.
-	wlConn, err := connect(b.ControlCreds, "chronicle-workloads")
+	ctrlConn, err := connect(bundle.ControlCreds, "chronicle-control")
 	if err != nil {
 		f.Stop()
 		return nil, err
 	}
-	exConn, err := connect(b.ControlCreds, "chronicle-executor-"+LocalExecutorID)
+	if _, err := r.Seal(ctx, sysConn, ctrlConn, mint.SealOptions{Replicas: 1}); err != nil {
+		f.Stop()
+		return nil, fmt.Errorf("seal custody: %w", err)
+	}
+	custody, err := mint.OpenCustody(ctx, ctrlConn)
+	if err != nil {
+		f.Stop()
+		return nil, err
+	}
+	driver, err := mint.NewJWTDriver(ctx, custody, sysConn, f.URL)
+	if err != nil {
+		f.Stop()
+		return nil, err
+	}
+	// The fleet's members hold users of their own role (design 10 § the
+	// fence): the workload service, the embedded executor, and the
+	// operator's CLI, each an instance with a bundle under the dev dir —
+	// issued over the bucket the first time, reused on every boot after.
+	member := func(name string, t mint.Template) ([]byte, error) {
+		if bundle, err := mint.ReadBundle(r.BundleDir(name)); err == nil {
+			return bundle.ControlCreds, nil
+		}
+		bundle, err := driver.AddInstance(ctx, name, t)
+		if err != nil {
+			return nil, fmt.Errorf("issue %s user %s: %w", t, name, err)
+		}
+		if _, err := r.WriteBundle(name, bundle); err != nil {
+			return nil, err
+		}
+		return bundle.ControlCreds, nil
+	}
+	wlCreds, err := member(workloadsInstance, mint.TemplateWorkloads)
+	if err != nil {
+		f.Stop()
+		return nil, err
+	}
+	exCreds, err := member(LocalExecutorID, mint.TemplateExecutor)
+	if err != nil {
+		f.Stop()
+		return nil, err
+	}
+	if _, err := member(devdir.CLIBundle, mint.TemplateCLI); err != nil {
+		f.Stop()
+		return nil, err
+	}
+	wlConn, err := connect(wlCreds, "chronicle-workloads")
+	if err != nil {
+		f.Stop()
+		return nil, err
+	}
+	exConn, err := connect(exCreds, "chronicle-executor-"+LocalExecutorID)
 	if err != nil {
 		f.Stop()
 		return nil, err
@@ -188,53 +251,16 @@ func Up(ctx context.Context, cfg Config) (*Fleet, error) {
 	}
 	f.ex = ex
 
-	var bridgeCfg *control.BridgeConfig
-	if cfg.GithubClientID != "" {
-		authConn, err := connect(b.BridgeCreds, "chronicle-bridge")
-		if err != nil {
-			f.Stop()
-			return nil, err
-		}
-		bridgeCfg = &control.BridgeConfig{
-			Conn:               authConn,
-			ResponseSignerSeed: b.AuthAccountSeed,
-			XKeySeed:           b.AuthXKeySeed,
-			Validator:          &github.Client{ClientID: cfg.GithubClientID},
-			Logger:             logger,
-		}
-		// The bridge profile is the hand-out that makes `chronicle login`
-		// possible — public material only (0026: the sentinel is public
-		// by design).
-		if err := writeBridgeProfile(cfg.Dir, f.URL, cfg.GithubClientID, b.SentinelCreds); err != nil {
-			f.Stop()
-			return nil, err
-		}
-	}
-
-	driver := b.Driver(sysConn, f.URL)
-	ctrl, err := control.Start(ctrlConn, control.Config{
-		Driver:      driver,
-		URL:         f.URL,
-		AccountsDir: b.AccountsDir(),
-		Bridge:      bridgeCfg,
-		OnTenant: func(name string, serviceCreds []byte) error {
-			// The tenant's node exists because the record says so; the
-			// executor pulls the creds itself — the record-verified pull.
-			dispatchCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
-			defer cancel()
-			if _, err := workloads.Dispatch(dispatchCtx, ctrlConn, contract.FleetDispatchRequest{
-				Tenant:   name,
-				Workload: contract.WorkloadNodeName,
-				Kind:     contract.WorkloadKindNode,
-			}); err != nil {
-				return err
-			}
-			// Placement is asynchronous, but the mint's promise is not: a
-			// minted tenant answers verbs (onboarding § verify by
-			// connecting). Wait until the placed node serves.
-			return waitForNode(dispatchCtx, f.URL, name, serviceCreds)
-		},
-		Logger: logger,
+	// Control last: its boot replay dispatches every tenant in custody,
+	// and the workload service and the executor must be serving by then.
+	ctrl, err := startControl(ctx, controlInputs{
+		url:            f.URL,
+		ctrlConn:       ctrlConn,
+		custody:        custody,
+		driver:         driver,
+		githubClientID: cfg.GithubClientID,
+		bridgeProfile:  filepath.Join(dir, bridgeProfileFile),
+		logger:         logger,
 	})
 	if err != nil {
 		f.Stop()
@@ -292,29 +318,6 @@ func (f *Fleet) Stop() {
 	}
 }
 
-// RotateSigningKey is `chronicle operator rotate-signing-key`: the offline
-// trust-root ceremony, dispatched from cmd/chronicle like `up`. It is a
-// custody operation on the fleet dir, not a wire verb — the adapters hold
-// no minting material, so it lives with the composition root.
-func RotateSigningKey(args []string, out io.Writer) error {
-	fs := flag.NewFlagSet("chronicle operator rotate-signing-key", flag.ContinueOnError)
-	fs.SetOutput(out)
-	dir := fs.String("dir", devdir.Default(), "data dir for the local fleet")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	if fs.NArg() != 0 {
-		return fmt.Errorf("operator rotate-signing-key takes no positionals")
-	}
-	newPub, err := mint.RotateOperatorSigningKey(*dir)
-	if err != nil {
-		return err
-	}
-	fmt.Fprintf(out, "operator signing key rotated: %s\n", newPub)
-	fmt.Fprintln(out, "every account re-signed and verified; start the fleet to serve under the new key")
-	return nil
-}
-
 // Run is the `chronicle up` subcommand: parse flags, boot, print, block
 // until ctx ends.
 func Run(ctx context.Context, args []string, out io.Writer) error {
@@ -349,107 +352,12 @@ func Run(ctx context.Context, args []string, out io.Writer) error {
 	return nil
 }
 
-// nodeSpecs collects repeatable --node flags: <name>=<host>[:client[:cluster]].
-type nodeSpecs []mint.ClusterNode
-
-func (n *nodeSpecs) String() string { return fmt.Sprintf("%d nodes", len(*n)) }
-
-func (n *nodeSpecs) Set(v string) error {
-	name, rest, ok := strings.Cut(v, "=")
-	if !ok || name == "" || rest == "" {
-		return fmt.Errorf("--node wants <name>=<host>[:client-port[:cluster-port]], got %q", v)
-	}
-	node := mint.ClusterNode{Name: name}
-	parts := strings.Split(rest, ":")
-	node.Host = parts[0]
-	if len(parts) > 3 {
-		return fmt.Errorf("--node %q: too many port fields", v)
-	}
-	var err error
-	if len(parts) > 1 {
-		if node.ClientPort, err = strconv.Atoi(parts[1]); err != nil {
-			return fmt.Errorf("--node %q: client port: %w", v, err)
-		}
-	}
-	if len(parts) > 2 {
-		if node.ClusterPort, err = strconv.Atoi(parts[2]); err != nil {
-			return fmt.Errorf("--node %q: cluster port: %w", v, err)
-		}
-	}
-	*n = append(*n, node)
-	return nil
-}
-
-// EmitClusterConfig is `chronicle operator emit-cluster-config`: the
-// stand-up ceremony's rendering step (chronicle-hq/02-DESIGN/09-hosted-
-// environment.md), dispatched from cmd/chronicle like the other custody
-// operations on the fleet dir. Pure rendering — the only writes are the
-// per-node .conf files under --out.
-func EmitClusterConfig(args []string, out io.Writer) error {
-	fs := flag.NewFlagSet("chronicle operator emit-cluster-config", flag.ContinueOnError)
-	fs.SetOutput(out)
-	dir := fs.String("dir", devdir.Default(), "data dir holding the bootstrap material")
-	outDir := fs.String("out", ".", "directory the per-node configs are written to")
-	var nodes nodeSpecs
-	fs.Var(&nodes, "node", "<name>=<host>[:client-port[:cluster-port]] — repeat per node")
-	clientPort := fs.Int("client-port", 0, "client port for every node (default 4222)")
-	clusterPort := fs.Int("cluster-port", 0, "cluster port for every node (default 6222)")
-	clusterName := fs.String("cluster-name", "", "cluster name (default CHRONICLE)")
-	tlsCert := fs.String("tls-cert", "", "target-host path of the client-listener TLS cert")
-	tlsKey := fs.String("tls-key", "", "target-host path of the client-listener TLS key")
-	storeDir := fs.String("store-dir", "", "target-host JetStream dir (default /var/lib/chronicle/jetstream)")
-	resolverDir := fs.String("resolver-dir", "", "target-host resolver dir (default /var/lib/chronicle/resolver)")
-	listenHost := fs.String("listen-host", "", "bind address for both listeners (default 0.0.0.0)")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	if fs.NArg() != 0 {
-		return fmt.Errorf("operator emit-cluster-config takes no positionals")
-	}
-
-	b, err := mint.LoadOrInitBootstrap(*dir)
-	if err != nil {
-		return err
-	}
-	cfgs, err := b.EmitClusterConfigs(mint.ClusterConfig{
-		Nodes:       nodes,
-		ClientPort:  *clientPort,
-		ClusterPort: *clusterPort,
-		ClusterName: *clusterName,
-		TLSCert:     *tlsCert,
-		TLSKey:      *tlsKey,
-		StoreDir:    *storeDir,
-		ResolverDir: *resolverDir,
-		ListenHost:  *listenHost,
-	})
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(*outDir, 0o755); err != nil {
-		return fmt.Errorf("create out dir: %w", err)
-	}
-	for _, c := range cfgs {
-		path := filepath.Join(*outDir, c.Name+".conf")
-		if err := os.WriteFile(path, []byte(c.Content), 0o644); err != nil {
-			return fmt.Errorf("write %s: %w", path, err)
-		}
-		fmt.Fprintf(out, "wrote %s\n", path)
-	}
-	fmt.Fprintln(out, "copy each config to its host and run: nats-server -c <name>.conf")
-	fmt.Fprintln(out, "the configs carry no seeds; the bootstrap dir stays the custody")
-	return nil
-}
-
-func writeBridgeProfile(dir, url, clientID string, sentinel []byte) error {
-	if dir == "" {
-		dir = devdir.Default()
-	}
+func writeBridgeProfile(path, url, clientID string, sentinel []byte) error {
 	p := contract.BridgeProfile{URL: url, GithubClientID: clientID, Sentinel: string(sentinel)}
 	data, err := json.MarshalIndent(p, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode bridge profile: %w", err)
 	}
-	path := filepath.Join(dir, "bridge.json")
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		return fmt.Errorf("write bridge profile: %w", err)
 	}

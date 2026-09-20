@@ -3,8 +3,6 @@ package control_test
 import (
 	"context"
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -14,6 +12,7 @@ import (
 
 	"github.com/impire-io/chronicle/contract"
 	"github.com/impire-io/chronicle/internal/control"
+	"github.com/impire-io/chronicle/internal/mint"
 	"github.com/impire-io/chronicle/internal/natstest"
 )
 
@@ -54,25 +53,35 @@ func TestFleetCredsIsRecordVerified(t *testing.T) {
 	publish(contract.OpTypeSnapshot, `{"state":{"kind":"node","tenant":"t1","replicas":1,"slots":{}}}`, 0)
 	publish(contract.FleetOpAssign, `{"slots":{"0":{"executor":"right"}}}`, 1)
 
-	accounts := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(accounts, "t1"), 0o700); err != nil {
-		t.Fatal(err)
+	// The tenant's service creds live in custody (design 10); a driver
+	// with no system connection reads them and pushes nothing.
+	custody, err := mint.CreateCustody(ctx, nc, 1)
+	if err != nil {
+		t.Fatalf("custody: %v", err)
 	}
 	want := []byte("the tenant service creds")
-	if err := os.WriteFile(filepath.Join(accounts, "t1", "service.creds"), want, 0o600); err != nil {
-		t.Fatal(err)
+	if _, err := custody.PutTenant(ctx, mint.TenantRecord{Name: "t1", PublicKey: "AT1", ServiceCreds: string(want)}, 0); err != nil {
+		t.Fatalf("record tenant: %v", err)
+	}
+	driver, err := mint.NewJWTDriver(ctx, custody, nil, url)
+	if err != nil {
+		t.Fatalf("driver: %v", err)
 	}
 
-	svc, err := control.Start(nc, control.Config{URL: url, AccountsDir: accounts})
+	svc, err := control.Start(nc, control.Config{URL: url, Driver: driver})
 	if err != nil {
 		t.Fatalf("start control: %v", err)
 	}
 	t.Cleanup(func() { _ = svc.Stop() })
 
-	pull := func(executor string) ([]byte, string) {
+	// The request travels on the caller's own subject; the payload may
+	// restate the caller and nothing else (the fence binds the subject to
+	// the credential — design 10, 0032; here the server is open and the
+	// binding is the endpoint's to enforce).
+	pullAs := func(subjectExecutor, payloadExecutor string) ([]byte, string) {
 		t.Helper()
-		data, _ := json.Marshal(contract.FleetCredsRequest{Executor: executor, Tenant: "t1", Workload: contract.WorkloadNodeName})
-		msg, err := nc.RequestWithContext(ctx, contract.FleetCredsSubject, data)
+		data, _ := json.Marshal(contract.FleetCredsRequest{Executor: payloadExecutor, Tenant: "t1", Workload: contract.WorkloadNodeName})
+		msg, err := nc.RequestWithContext(ctx, contract.FleetCredsSubject(subjectExecutor), data)
 		if err != nil {
 			t.Fatalf("creds request: %v", err)
 		}
@@ -86,12 +95,23 @@ func TestFleetCredsIsRecordVerified(t *testing.T) {
 		return resp.Creds, ""
 	}
 
+	pull := func(executor string) ([]byte, string) { return pullAs(executor, executor) }
+
 	creds, code := pull("right")
 	if code != "" || string(creds) != string(want) {
 		t.Fatalf("assigned pull refused: code=%q creds=%q", code, creds)
 	}
 	if _, code := pull("wrong"); code != "not-assigned" {
 		t.Fatalf("unassigned pull answered: code=%q", code)
+	}
+	// The caller is the subject: a payload naming the assigned executor
+	// from another's subject is refused before the record is read, and
+	// an empty payload name takes the subject's.
+	if _, code := pullAs("wrong", "right"); code != "caller-mismatch" {
+		t.Fatalf("mismatched pull: code=%q, want caller-mismatch", code)
+	}
+	if creds, code := pullAs("right", ""); code != "" || string(creds) != string(want) {
+		t.Fatalf("pull with the caller from the subject alone: code=%q creds=%q", code, creds)
 	}
 
 	// A stop revokes naturally: the record no longer verifies anyone.

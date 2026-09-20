@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/nats-io/jwt/v2"
-	"github.com/nats-io/nkeys"
+	"github.com/nats-io/nats.go"
 
 	"github.com/impire-io/chronicle/internal/mint"
 )
@@ -62,10 +62,11 @@ func TestRotateOperatorSigningKey(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	b, err := mint.LoadOrInitBootstrap(dir)
+	r, err := mint.InitRoot(dir)
 	if err != nil {
-		t.Fatalf("init bootstrap: %v", err)
+		t.Fatalf("init root: %v", err)
 	}
+	b := r.B
 	srv, err := b.StartServer(-1)
 	if err != nil {
 		t.Fatalf("start server: %v", err)
@@ -74,32 +75,28 @@ func TestRotateOperatorSigningKey(t *testing.T) {
 	if err := b.WriteClientURL(url); err != nil {
 		t.Fatalf("write client url: %v", err)
 	}
+	bundle, err := mint.ReadBundle(r.BundleDir("instance-1"))
+	if err != nil {
+		t.Fatalf("bundle: %v", err)
+	}
 
-	// A tenant minted under the old signing key, with the on-disk custody
-	// the rotation's verification pass walks.
-	sysConn, err := mint.ConnectCreds(url, b.SysCreds, "sys")
+	// A tenant minted under the old signing key, its material in the
+	// sealed bucket the rotation's verification pass walks.
+	sysConn, err := mint.ConnectCreds(url, bundle.SysCreds, "sys")
 	if err != nil {
 		t.Fatalf("connect sys: %v", err)
 	}
-	d := &mint.JWTDriver{OperatorSigningSeed: b.OperatorSigningSeed, SysConn: sysConn, URL: url}
+	d := sealedDriver(ctx, t, r, bundle, url, sysConn)
 	acct, err := d.MintAccount(ctx, "acme")
 	if err != nil {
 		t.Fatalf("mint: %v", err)
-	}
-	svc, err := mint.IssueServiceUser(acct, "chronicle-node")
-	if err != nil {
-		t.Fatalf("issue service: %v", err)
 	}
 	member, err := mint.IssueMember(acct, "dana")
 	if err != nil {
 		t.Fatalf("issue member: %v", err)
 	}
-	tenantDir := filepath.Join(b.AccountsDir(), "acme")
-	if err := os.MkdirAll(tenantDir, 0o700); err != nil {
-		t.Fatalf("tenant dir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(tenantDir, "service.creds"), svc.File, 0o600); err != nil {
-		t.Fatalf("write service creds: %v", err)
+	if r2, err := mint.LoadRoot(dir); err != nil || r2.B.HasWorkingKeys() {
+		t.Fatalf("the sealed root still holds working keys (%v)", err)
 	}
 
 	// The ceremony refuses a running fleet.
@@ -111,11 +108,7 @@ func TestRotateOperatorSigningKey(t *testing.T) {
 	srv.Shutdown()
 	srv.WaitForShutdown()
 
-	oldSigning, err := nkeys.FromSeed(b.OperatorSigningSeed)
-	if err != nil {
-		t.Fatalf("old signing seed: %v", err)
-	}
-	oldPub, err := oldSigning.PublicKey()
+	oldPub, err := mint.PublicKeyOfSeed(b.OperatorSigningSeed)
 	if err != nil {
 		t.Fatalf("old signing pub: %v", err)
 	}
@@ -127,22 +120,28 @@ func TestRotateOperatorSigningKey(t *testing.T) {
 		t.Fatal("rotation returned the old signing key")
 	}
 
-	// The rewritten operator JWT trusts only the new key.
-	b2, err := mint.LoadOrInitBootstrap(dir)
+	// The rewritten operator JWT trusts only the new key, and the root
+	// holds no working seed: the ceremony landed the new one in the bucket
+	// and shredded it again.
+	r2, err := mint.LoadRoot(dir)
 	if err != nil {
-		t.Fatalf("reload bootstrap: %v", err)
+		t.Fatalf("reload root: %v", err)
 	}
-	oc, err := jwt.DecodeOperatorClaims(b2.OperatorJWT)
+	oc, err := jwt.DecodeOperatorClaims(r2.B.OperatorJWT)
 	if err != nil {
 		t.Fatalf("decode operator jwt: %v", err)
 	}
 	if !oc.SigningKeys.Contains(newPub) || oc.SigningKeys.Contains(oldPub) {
 		t.Fatalf("operator signing keys not rotated: %v", oc.SigningKeys)
 	}
+	if r2.B.HasWorkingKeys() {
+		t.Fatal("rotation left a working seed in the sealed root")
+	}
 
 	// The fleet comes back up trusting the new key: pre-rotation user
-	// creds still connect, and a fresh mint under the new key succeeds.
-	srv2, err := b2.StartServer(-1)
+	// creds still connect, the bucket names the new key, and a fresh mint
+	// under it succeeds.
+	srv2, err := r2.B.StartServer(-1)
 	if err != nil {
 		t.Fatalf("restart server: %v", err)
 	}
@@ -158,13 +157,53 @@ func TestRotateOperatorSigningKey(t *testing.T) {
 	}
 	mnc.Close()
 
-	sysConn2, err := mint.ConnectCreds(url2, b2.SysCreds, "sys")
+	sysConn2, err := mint.ConnectCreds(url2, bundle.SysCreds, "sys")
 	if err != nil {
 		t.Fatalf("connect sys after rotation: %v", err)
 	}
 	defer sysConn2.Close()
-	d2 := &mint.JWTDriver{OperatorSigningSeed: b2.OperatorSigningSeed, SysConn: sysConn2, URL: url2}
+	ctrlConn2, err := mint.ConnectCreds(url2, bundle.ControlCreds, "control")
+	if err != nil {
+		t.Fatalf("connect control after rotation: %v", err)
+	}
+	defer ctrlConn2.Close()
+	c2, err := mint.OpenCustody(ctx, ctrlConn2)
+	if err != nil {
+		t.Fatalf("open custody after rotation: %v", err)
+	}
+	op, _, err := c2.Operator(ctx)
+	if err != nil || op.PublicKey != newPub {
+		t.Fatalf("operator entry after rotation = %+v, %v; want %s", op, err, newPub)
+	}
+	d2, err := mint.NewJWTDriver(ctx, c2, sysConn2, url2)
+	if err != nil {
+		t.Fatalf("driver after rotation: %v", err)
+	}
 	if _, err := d2.MintAccount(ctx, "beta"); err != nil {
 		t.Fatalf("mint under the rotated key: %v", err)
 	}
+}
+
+// sealedDriver seals the root's material into the server's AUTH bucket
+// and returns a driver over it — the shape every control instance boots
+// into.
+func sealedDriver(ctx context.Context, t *testing.T, r *mint.Root, bundle mint.Bundle, url string, sysConn *nats.Conn) *mint.JWTDriver {
+	t.Helper()
+	ctrlConn, err := mint.ConnectCreds(url, bundle.ControlCreds, "control")
+	if err != nil {
+		t.Fatalf("connect control: %v", err)
+	}
+	t.Cleanup(ctrlConn.Close)
+	if _, err := r.Seal(ctx, sysConn, ctrlConn, mint.SealOptions{Replicas: 1}); err != nil {
+		t.Fatalf("seal: %v", err)
+	}
+	c, err := mint.OpenCustody(ctx, ctrlConn)
+	if err != nil {
+		t.Fatalf("open custody: %v", err)
+	}
+	d, err := mint.NewJWTDriver(ctx, c, sysConn, url)
+	if err != nil {
+		t.Fatalf("driver: %v", err)
+	}
+	return d
 }

@@ -2,8 +2,6 @@ package control_test
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -47,36 +45,37 @@ func TestBridgePlacesGithubIdentities(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	url, b := natstest.StartOperator(t)
-
-	sysConn, err := mint.ConnectCreds(url, b.SysCreds, "test-sys")
+	// The sealed substrate of design 10: the bridge's material comes from
+	// custody, the way every control instance reads it.
+	url, r := natstest.StartSealedOperator(t)
+	sysConn, ctrlConn, custody := natstest.OpenInstance(t, url, r)
+	driver, err := mint.NewJWTDriver(ctx, custody, sysConn, url)
 	if err != nil {
-		t.Fatalf("connect sys: %v", err)
+		t.Fatalf("driver: %v", err)
 	}
-	t.Cleanup(sysConn.Close)
-	ctrlConn, err := mint.ConnectCreds(url, b.ControlCreds, "test-control")
+	// CONTROL is the auth account (0030 point 6): the bridge answers on
+	// the instance's own connection and signs with CONTROL's key; the
+	// sentinel comes from custody's auth entry.
+	authRec, _, err := custody.Auth(ctx)
 	if err != nil {
-		t.Fatalf("connect control: %v", err)
+		t.Fatalf("auth record: %v", err)
 	}
-	t.Cleanup(ctrlConn.Close)
-	authConn, err := mint.ConnectCreds(url, b.BridgeCreds, "test-bridge")
+	ctrlAcct, _, err := custody.Account(ctx, "CONTROL")
 	if err != nil {
-		t.Fatalf("connect bridge user: %v", err)
+		t.Fatalf("CONTROL account record: %v", err)
 	}
-	t.Cleanup(authConn.Close)
+	sentinel := []byte(authRec.SentinelCreds)
 
 	validator := &fakeValidator{tokens: map[string]github.Identity{
 		"gh-erin": {ID: 12345, Login: "erin"},
 	}}
-	accountsDir := t.TempDir()
 	svc, err := control.Start(ctrlConn, control.Config{
-		Driver:      b.Driver(sysConn, url),
-		URL:         url,
-		AccountsDir: accountsDir,
+		Driver: driver,
+		URL:    url,
 		Bridge: &control.BridgeConfig{
-			Conn:               authConn,
-			ResponseSignerSeed: b.AuthAccountSeed,
-			XKeySeed:           b.AuthXKeySeed,
+			Conn:               ctrlConn,
+			ResponseSignerSeed: []byte(ctrlAcct.Seed),
+			XKeySeed:           []byte(authRec.XKeySeed),
 			Validator:          validator,
 		},
 	})
@@ -97,14 +96,14 @@ func TestBridgePlacesGithubIdentities(t *testing.T) {
 
 	// The tenant's own service user listens where the member baseline may
 	// publish — placement lands in the same account or nowhere. The creds
-	// come off the accounts dir control persists them to; the test stands
-	// in for the executor's record-verified pull, whose fleet log this
-	// test deliberately does not run.
-	tenantSvcCreds, err := os.ReadFile(filepath.Join(accountsDir, "acme", "service.creds"))
+	// come from custody, where the mint recorded them; the test stands in
+	// for the executor's record-verified pull, whose fleet log this test
+	// deliberately does not run.
+	tenant, err := driver.Tenant(ctx, "acme")
 	if err != nil {
-		t.Fatalf("read tenant service creds: %v", err)
+		t.Fatalf("read tenant from custody: %v", err)
 	}
-	svcConn, err := mint.ConnectCreds(url, tenantSvcCreds, "test-tenant-svc")
+	svcConn, err := mint.ConnectCreds(url, tenant.ServiceCreds, "test-tenant-svc")
 	if err != nil {
 		t.Fatalf("connect tenant service: %v", err)
 	}
@@ -118,7 +117,7 @@ func TestBridgePlacesGithubIdentities(t *testing.T) {
 	}
 
 	// The bridge dial: sentinel + tenant:token, placed as erin.
-	c, err := client.ConnectBridge(url, b.SentinelCreds, "acme", "gh-erin")
+	c, err := client.ConnectBridge(url, sentinel, "acme", "gh-erin")
 	if err != nil {
 		t.Fatalf("bridge connect: %v", err)
 	}
@@ -147,7 +146,7 @@ func TestBridgePlacesGithubIdentities(t *testing.T) {
 		{"malformed token", "acme", ""},
 	}
 	for _, tc := range refusals {
-		if _, err := client.ConnectBridge(url, b.SentinelCreds, tc.tenant, tc.token); err == nil {
+		if _, err := client.ConnectBridge(url, sentinel, tc.tenant, tc.token); err == nil {
 			t.Errorf("%s: connect must refuse", tc.name)
 		} else if !strings.Contains(strings.ToLower(err.Error()), "auth") && tc.token != "" {
 			t.Errorf("%s: want an authentication error, got %v", tc.name, err)
@@ -158,7 +157,7 @@ func TestBridgePlacesGithubIdentities(t *testing.T) {
 	validator.mu.Lock()
 	validator.tokens["gh-frank"] = github.Identity{ID: 999, Login: "frank"}
 	validator.mu.Unlock()
-	if _, err := client.ConnectBridge(url, b.SentinelCreds, "acme", "gh-frank"); err == nil {
+	if _, err := client.ConnectBridge(url, sentinel, "acme", "gh-frank"); err == nil {
 		t.Error("unbound identity must refuse")
 	}
 }

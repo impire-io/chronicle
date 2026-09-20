@@ -9,130 +9,111 @@ import (
 	"github.com/nats-io/nkeys"
 )
 
-// The AUTH account of decision 0026 (02-DESIGN/08-browser-identity.md):
-// the third bootstrap account, whose only job is triggering the callout
-// bridge. Its external-authorization config names control's bridge user,
-// allows placement into any account (the source-verified "*" wildcard —
-// the mint never re-pushes AUTH), and declares an xkey so requests travel
-// encrypted. Existing bootstrap dirs gain it on load, the
-// ensureControlJetStream way.
+// The callout on CONTROL (chronicle-hq/02-DESIGN/10-custody.md § the AUTH
+// account folds into CONTROL, decision 0030 point 6): CONTROL is the auth
+// account. Its JWT carries the external-authorization config — every
+// account allowed, the xkey requests are sealed to — and lists every user
+// chronicle issued, which bypass callout; the sentinel is the one CONTROL
+// user that is not listed, and is therefore always gated. The bridge
+// answers on a control instance's own connection and signs with CONTROL's
+// account key. Chronicle's platform accounts are SYS, which is NATS's,
+// and CONTROL.
 
-const (
-	fAuthAcctJWT   = "auth-account.jwt"
-	fAuthAcctPub   = "auth-account.pub"
-	fAuthAcctNK    = "auth-account.nk"
-	fAuthXKeyNK    = "auth-xkey.nk"
-	fBridgeCreds   = "bridge.creds"
-	fSentinelCreds = "sentinel.creds"
-)
+// fAuthXKeyNK is the dev root's curve seed before seal; the bucket's
+// `auth` entry holds it after.
+const fAuthXKeyNK = "auth-xkey.nk"
 
-// ensureAuthAccount loads the AUTH material, generating and persisting it
-// when absent. Called from both the init and load paths; needs only the
-// operator signing seed, which every bootstrap holds.
-func (b *Bootstrap) ensureAuthAccount() error {
-	if _, err := os.Stat(filepath.Join(b.Dir, fAuthAcctJWT)); err == nil {
-		return b.loadAuthAccount()
-	}
-
-	akp, apub, err := newKey(nkeys.CreateAccount)
-	if err != nil {
-		return fmt.Errorf("auth account key: %w", err)
+// ensureXKey births the dev root's callout xkey at init.
+func (b *Bootstrap) ensureXKey() error {
+	if _, err := os.Stat(filepath.Join(b.Dir, fAuthXKeyNK)); err == nil {
+		return b.loadXKey()
 	}
 	xkp, err := nkeys.CreateCurveKeys()
 	if err != nil {
-		return fmt.Errorf("auth xkey: %w", err)
+		return fmt.Errorf("callout xkey: %w", err)
 	}
-	xpub, err := xkp.PublicKey()
+	seed, err := xkp.Seed()
 	if err != nil {
-		return fmt.Errorf("auth xkey public: %w", err)
+		return fmt.Errorf("callout xkey seed: %w", err)
 	}
-	xseed, err := xkp.Seed()
-	if err != nil {
-		return fmt.Errorf("auth xkey seed: %w", err)
+	if err := os.WriteFile(filepath.Join(b.Dir, fAuthXKeyNK), seed, keyFileMode); err != nil {
+		return fmt.Errorf("write %s: %w", fAuthXKeyNK, err)
 	}
-	aseed, err := akp.Seed()
-	if err != nil {
-		return fmt.Errorf("auth account seed: %w", err)
-	}
-
-	// The bridge user bypasses callout (auth_users) — control connects
-	// with it to answer requests. The sentinel triggers callout — it is
-	// public by design, worthless without a valid identity behind it.
-	bridgeCreds, bridgePub, err := issueDirect(akp, apub, "chronicle-bridge")
-	if err != nil {
-		return fmt.Errorf("bridge user: %w", err)
-	}
-	sentinelCreds, _, err := issueDirect(akp, apub, "sentinel")
-	if err != nil {
-		return fmt.Errorf("sentinel user: %w", err)
-	}
-
-	ac := jwt.NewAccountClaims(apub)
-	ac.Name = "AUTH"
-	ac.Authorization = jwt.ExternalAuthorization{
-		AuthUsers:       jwt.StringList{bridgePub},
-		AllowedAccounts: jwt.StringList{jwt.AnyAccount},
-		XKey:            xpub,
-	}
-	oskp, err := nkeys.FromSeed(b.OperatorSigningSeed)
-	if err != nil {
-		return fmt.Errorf("operator signing seed: %w", err)
-	}
-	authJWT, err := ac.Encode(oskp)
-	if err != nil {
-		return fmt.Errorf("encode auth account jwt: %w", err)
-	}
-
-	files := []struct {
-		name string
-		data []byte
-		mode os.FileMode
-	}{
-		{fAuthAcctJWT, []byte(authJWT), plainFileMode},
-		{fAuthAcctPub, []byte(apub), plainFileMode},
-		{fAuthAcctNK, aseed, keyFileMode},
-		{fAuthXKeyNK, xseed, keyFileMode},
-		{fBridgeCreds, bridgeCreds, keyFileMode},
-		{fSentinelCreds, sentinelCreds, plainFileMode},
-	}
-	for _, f := range files {
-		if err := os.WriteFile(filepath.Join(b.Dir, f.name), f.data, f.mode); err != nil {
-			return fmt.Errorf("write %s: %w", f.name, err)
-		}
-	}
-
-	b.AuthAccountPub = apub
-	b.AuthAccountJWT = authJWT
-	b.AuthAccountSeed = aseed
-	b.AuthXKeySeed = xseed
-	b.BridgeCreds = bridgeCreds
-	b.SentinelCreds = sentinelCreds
+	b.AuthXKeySeed = seed
 	return nil
 }
 
-func (b *Bootstrap) loadAuthAccount() error {
-	var firstErr error
-	read := func(name string) []byte {
-		p, err := os.ReadFile(filepath.Join(b.Dir, name))
-		if err != nil && firstErr == nil {
-			firstErr = err
+// loadXKey reads the dev root's xkey — present until seal shreds it.
+func (b *Bootstrap) loadXKey() error {
+	seed, err := os.ReadFile(filepath.Join(b.Dir, fAuthXKeyNK))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
 		}
-		return p
+		return fmt.Errorf("read %s: %w", fAuthXKeyNK, err)
 	}
-	authJWT := read(fAuthAcctJWT)
-	authPub := read(fAuthAcctPub)
-	authSeed := read(fAuthAcctNK)
-	xSeed := read(fAuthXKeyNK)
-	bridgeCreds := read(fBridgeCreds)
-	sentinelCreds := read(fSentinelCreds)
-	if firstErr != nil {
-		return fmt.Errorf("auth account material incomplete in %s: %w", b.Dir, firstErr)
-	}
-	b.AuthAccountJWT = string(authJWT)
-	b.AuthAccountPub = string(authPub)
-	b.AuthAccountSeed = authSeed
-	b.AuthXKeySeed = xSeed
-	b.BridgeCreds = bridgeCreds
-	b.SentinelCreds = sentinelCreds
+	b.AuthXKeySeed = seed
 	return nil
+}
+
+// newXKey is a fresh callout xkey — the material seal's, born at seal.
+func newXKey() ([]byte, error) {
+	xkp, err := nkeys.CreateCurveKeys()
+	if err != nil {
+		return nil, fmt.Errorf("callout xkey: %w", err)
+	}
+	return xkp.Seed()
+}
+
+// stampCallout puts the external-authorization config on CONTROL's JWT:
+// the xkey, every account allowed, and the given users listed as
+// bypassing callout, joining any already listed. A JWT that carries all
+// of it comes back unchanged.
+func stampCallout(token string, oskp nkeys.KeyPair, xkeySeed []byte, authUsers []string) (string, bool, error) {
+	xkp, err := nkeys.FromCurveSeed(xkeySeed)
+	if err != nil {
+		return "", false, fmt.Errorf("callout xkey seed: %w", err)
+	}
+	xpub, err := xkp.PublicKey()
+	if err != nil {
+		return "", false, err
+	}
+	ac, err := jwt.DecodeAccountClaims(token)
+	if err != nil {
+		return "", false, fmt.Errorf("decode control account jwt: %w", err)
+	}
+	changed := false
+	if ac.Authorization.XKey != xpub {
+		ac.Authorization.XKey = xpub
+		changed = true
+	}
+	if !ac.Authorization.AllowedAccounts.Contains(jwt.AnyAccount) {
+		ac.Authorization.AllowedAccounts = jwt.StringList{jwt.AnyAccount}
+		changed = true
+	}
+	for _, u := range authUsers {
+		if !ac.Authorization.AuthUsers.Contains(u) {
+			ac.Authorization.AuthUsers.Add(u)
+			changed = true
+		}
+	}
+	if !changed {
+		return token, false, nil
+	}
+	stamped, err := ac.Encode(oskp)
+	if err != nil {
+		return "", false, fmt.Errorf("re-encode control account jwt: %w", err)
+	}
+	return stamped, true, nil
+}
+
+// issueSentinel mints the sentinel: a CONTROL user that is never listed
+// in auth_users, so every connection with it is routed through callout.
+// Public by design (0026) — worthless without a valid identity behind it.
+func issueSentinel(controlSeed []byte, controlPub string) ([]byte, error) {
+	creds, err := issueAccountUser(controlSeed, controlPub, "sentinel", jwt.UserPermissionLimits{})
+	if err != nil {
+		return nil, fmt.Errorf("sentinel: %w", err)
+	}
+	return creds.File, nil
 }

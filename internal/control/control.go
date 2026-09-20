@@ -12,8 +12,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"regexp"
 	"sync"
 	"time"
@@ -46,15 +44,16 @@ type Config struct {
 	// URL is the client URL tenants connect to; META provisioning and the
 	// verify-by-connect read dial it.
 	URL string
-	// AccountsDir is where per-tenant issuance material lands: the account
-	// signing keys live with the issuance path, the service creds with the
-	// fleet. Admin creds are handed back, never kept.
-	AccountsDir string
 	// OnTenant, when set, is told about every tenant that exists — at mint
-	// and for each already on disk at start — so the composition root can
-	// run a node for it. The error fails the mint: a tenant without a node
-	// would answer no verbs.
+	// and for each in custody at start — so the composition root can run a
+	// node for it. The error fails the mint: a tenant without a node would
+	// answer no verbs.
 	OnTenant func(name string, serviceCreds []byte) error
+	// ReconcileEvery is how often this instance compares custody's account
+	// JWTs with the resolver's and pushes the differences (design 10 § the
+	// bucket) — the repair of a push that never landed. Zero means
+	// DefaultReconcileEvery.
+	ReconcileEvery time.Duration
 	// Bridge, when set, serves the browser identity bridge (decision
 	// 0026) beside the control endpoints. Nil means no bridge — an
 	// install without a GitHub App simply has none.
@@ -63,12 +62,22 @@ type Config struct {
 	Logger *slog.Logger
 }
 
-// Start replays the accounts dir through OnTenant (the restart path) and
-// registers the chronicle-control micro service. Stopping the returned
-// service is the caller's job.
+// DefaultReconcileEvery keeps the resolver honest without chatter.
+const DefaultReconcileEvery = 5 * time.Minute
+
+// Start reconciles the resolver against custody, replays custody's tenants
+// through OnTenant (the restart path), registers the chronicle-control
+// micro service, and keeps reconciling on a timer. Stopping the returned
+// service is the caller's job; it stops the timer too.
 func Start(nc *nats.Conn, cfg Config) (micro.Service, error) {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
+	}
+	if cfg.Driver == nil {
+		return nil, fmt.Errorf("control needs a driver")
+	}
+	if cfg.ReconcileEvery == 0 {
+		cfg.ReconcileEvery = DefaultReconcileEvery
 	}
 	js, err := jetstream.New(nc)
 	if err != nil {
@@ -90,7 +99,7 @@ func Start(nc *nats.Conn, cfg Config) (micro.Service, error) {
 		return nil, fmt.Errorf("add tenant-mint endpoint: %w", err)
 	}
 	if err := svc.AddEndpoint("fleet-creds", micro.HandlerFunc(c.handleFleetCreds),
-		micro.WithEndpointSubject(contract.FleetCredsSubject)); err != nil {
+		micro.WithEndpointSubject(contract.FleetCredsSubject("*"))); err != nil {
 		_ = svc.Stop()
 		return nil, fmt.Errorf("add fleet-creds endpoint: %w", err)
 	}
@@ -124,32 +133,76 @@ func Start(nc *nats.Conn, cfg Config) (micro.Service, error) {
 		}
 	}
 
+	// The boot reconcile: whatever custody says an account's JWT is, the
+	// resolver serves — repairing any push a dead instance never made.
+	bootCtx, bootCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer bootCancel()
+	c.reconcile(bootCtx)
+
 	// The restart replay runs with the endpoints already serving: placing a
 	// tenant's node goes through the dispatch surface and the creds pull,
 	// and the creds pull lands right here — a replay before registration
 	// would wait on an endpoint that cannot appear until the replay ends.
 	if cfg.OnTenant != nil {
-		entries, err := os.ReadDir(cfg.AccountsDir)
-		if err != nil && !errors.Is(err, os.ErrNotExist) {
+		names, err := cfg.Driver.Tenants(bootCtx)
+		if err != nil {
 			_ = svc.Stop()
-			return nil, fmt.Errorf("read accounts dir: %w", err)
+			return nil, fmt.Errorf("list tenants: %w", err)
 		}
-		for _, e := range entries {
-			if !e.IsDir() {
-				continue
-			}
-			creds, err := os.ReadFile(filepath.Join(cfg.AccountsDir, e.Name(), "service.creds"))
+		for _, name := range names {
+			acct, err := cfg.Driver.Tenant(bootCtx, name)
 			if err != nil {
 				_ = svc.Stop()
-				return nil, fmt.Errorf("tenant %s: read service creds: %w", e.Name(), err)
+				return nil, fmt.Errorf("tenant %s: %w", name, err)
 			}
-			if err := cfg.OnTenant(e.Name(), creds); err != nil {
+			if err := cfg.OnTenant(name, acct.ServiceCreds); err != nil {
 				_ = svc.Stop()
-				return nil, fmt.Errorf("tenant %s: %w", e.Name(), err)
+				return nil, fmt.Errorf("tenant %s: %w", name, err)
 			}
 		}
 	}
-	return svc, nil
+
+	c.done = make(chan struct{})
+	go c.reconcileLoop()
+	return &stopping{Service: svc, done: c.done}, nil
+}
+
+// stopping is the returned service: stopping it ends the reconcile loop
+// before the endpoints go.
+type stopping struct {
+	micro.Service
+	done chan struct{}
+	once sync.Once
+}
+
+func (s *stopping) Stop() error {
+	s.once.Do(func() { close(s.done) })
+	return s.Service.Stop()
+}
+
+func (c *control) reconcileLoop() {
+	t := time.NewTicker(c.cfg.ReconcileEvery)
+	defer t.Stop()
+	for {
+		select {
+		case <-c.done:
+			return
+		case <-t.C:
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			c.reconcile(ctx)
+			cancel()
+		}
+	}
+}
+
+func (c *control) reconcile(ctx context.Context) {
+	pushed, err := c.cfg.Driver.Reconcile(ctx)
+	if err != nil {
+		c.cfg.Logger.Warn("control: reconcile", "err", err)
+	}
+	if len(pushed) > 0 {
+		c.cfg.Logger.Info("control: reconciled the resolver from custody", "accounts", pushed)
+	}
 }
 
 type control struct {
@@ -157,11 +210,11 @@ type control struct {
 	// js is the control account's JetStream view — the fleet log and
 	// STATE_FLEET live there, and the creds pull verifies against them.
 	js jetstream.JetStream
-	// claimsMu serializes account-claims mutations: revoke and rekey each
-	// read-modify-write the account JWT through the driver, and the micro
-	// endpoints run concurrently — an unguarded interleave loses one
-	// side's edit.
-	claimsMu sync.Mutex
+	// done ends the reconcile loop when the service stops. Claims
+	// mutations need no lock here: the driver lands each one in custody
+	// by compare-and-set, which guards across instances, not just within
+	// this one.
+	done chan struct{}
 }
 
 func (c *control) handleMint(req micro.Request) {
@@ -186,14 +239,12 @@ func (c *control) handleMint(req micro.Request) {
 		return
 	}
 
-	dir := filepath.Join(c.cfg.AccountsDir, r.Name)
-	if _, err := os.Stat(dir); err == nil {
-		_ = req.Error("tenant-exists", fmt.Sprintf("tenant %q already exists", r.Name), nil)
-		return
-	}
-
-	resp, err := c.mintTenant(ctx, r.Name, admin, dir)
+	resp, err := c.mintTenant(ctx, r.Name, admin)
 	if err != nil {
+		if errors.Is(err, mint.ErrTenantExists) {
+			_ = req.Error("tenant-exists", fmt.Sprintf("tenant %q already exists", r.Name), nil)
+			return
+		}
 		c.cfg.Logger.Error("mint tenant", "tenant", r.Name, "err", err)
 		_ = req.Error("mint-failed", err.Error(), nil)
 		return
@@ -209,37 +260,30 @@ func (c *control) handleMint(req micro.Request) {
 // mintTenant is the one flow of the onboarding design, driver-agnostic
 // above the seam: mint the account, establish the keys, provision META and
 // seed the registry, verify by connecting, mint the first principal.
-func (c *control) mintTenant(ctx context.Context, name, admin, dir string) (client.TenantMintResponse, error) {
+func (c *control) mintTenant(ctx context.Context, name, admin string) (client.TenantMintResponse, error) {
 	var zero client.TenantMintResponse
 
+	// The driver records the tenant — keys, service creds, canonical JWT
+	// — in custody before it pushes; a taken name comes back as
+	// ErrTenantExists from the compare-and-set, whichever instance took it.
 	acct, err := c.cfg.Driver.MintAccount(ctx, name)
 	if err != nil {
 		return zero, fmt.Errorf("mint account: %w", err)
 	}
 
-	svcCreds, err := mint.IssueServiceUser(acct, "chronicle-node")
-	if err != nil {
-		return zero, fmt.Errorf("issue service user: %w", err)
-	}
+	// The admin creds go back to the caller — the only copy; the registry
+	// keeps the public key, never the secret.
 	adminCreds, err := mint.IssueMember(acct, admin)
 	if err != nil {
 		return zero, fmt.Errorf("issue admin: %w", err)
 	}
 
-	if err := c.provisionMeta(ctx, svcCreds.File, admin, adminCreds.PublicKey); err != nil {
+	if err := c.provisionMeta(ctx, acct.ServiceCreds, admin, adminCreds.PublicKey); err != nil {
 		return zero, fmt.Errorf("provision META: %w", err)
 	}
 
-	// Persist the issuance material: the signing keys live with the
-	// issuance path, the service creds with the fleet. The admin creds go
-	// back to the caller — the only copy; the registry keeps the public
-	// key, never the secret.
-	if err := c.persist(dir, acct, svcCreds.File); err != nil {
-		return zero, fmt.Errorf("persist tenant material: %w", err)
-	}
-
 	if c.cfg.OnTenant != nil {
-		if err := c.cfg.OnTenant(name, svcCreds.File); err != nil {
+		if err := c.cfg.OnTenant(name, acct.ServiceCreds); err != nil {
 			return zero, fmt.Errorf("start tenant workloads: %w", err)
 		}
 	}
@@ -278,28 +322,6 @@ func (c *control) provisionMeta(ctx context.Context, svcCreds []byte, admin, adm
 	}
 	if _, err := meta.Put(ctx, contract.MetaMember(admin), membership); err != nil {
 		return fmt.Errorf("seed membership: %w", err)
-	}
-	return nil
-}
-
-func (c *control) persist(dir string, acct *mint.Account, svcCreds []byte) error {
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	files := []struct {
-		name string
-		data []byte
-		mode os.FileMode
-	}{
-		{"account.pub", []byte(acct.PublicKey), 0o644},
-		{"signing.nk", acct.SigningSeed, 0o600},
-		{"scoped.nk", acct.ScopedSeed, 0o600},
-		{"service.creds", svcCreds, 0o600},
-	}
-	for _, f := range files {
-		if err := os.WriteFile(filepath.Join(dir, f.name), f.data, f.mode); err != nil {
-			return fmt.Errorf("write %s: %w", f.name, err)
-		}
 	}
 	return nil
 }
