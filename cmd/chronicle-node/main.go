@@ -1,5 +1,8 @@
 // Command chronicle-node runs one tenant's node: fold, state buckets, and
-// the CHRON.API.> verbs, connected as that tenant's service user only.
+// the CHRON.API.> verbs, connected to the tenant's account on the
+// operator's own NATS — with a creds file, or an nkey seed. The first
+// run of a fresh account seeds the registry with its admin (--admin);
+// after that, membership is the registry's.
 package main
 
 import (
@@ -11,9 +14,12 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/nats-io/nats.go/jetstream"
+
 	"github.com/impire-io/chronicle/client"
-	"github.com/impire-io/chronicle/internal/node"
 	"github.com/impire-io/chronicle/internal/version"
+	"github.com/impire-io/chronicle/node"
+	"github.com/impire-io/chronicle/registry"
 )
 
 func main() {
@@ -25,13 +31,23 @@ func main() {
 
 func run() error {
 	url := flag.String("url", "nats://127.0.0.1:4222", "NATS url")
-	creds := flag.String("creds", "", "the tenant's service-user credentials (required)")
+	creds := flag.String("creds", "", "the tenant's service-user credentials (.creds)")
+	nkey := flag.String("nkey", "", "the tenant's service user as an nkey seed file (instead of --creds)")
+	admin := flag.String("admin", "", "seed the registry with this admin principal when the account has none yet")
 	flag.Parse()
-	if *creds == "" {
-		return fmt.Errorf("--creds is required")
+	if (*creds == "") == (*nkey == "") {
+		return fmt.Errorf("exactly one of --creds and --nkey is required")
 	}
 
-	c, err := client.ConnectFile(*url, *creds)
+	var (
+		c   *client.Client
+		err error
+	)
+	if *creds != "" {
+		c, err = client.ConnectFile(*url, *creds)
+	} else {
+		c, err = client.ConnectNkeyFile(*url, *nkey, "chronicle-node")
+	}
 	if err != nil {
 		return err
 	}
@@ -39,6 +55,15 @@ func run() error {
 
 	startCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
+	if *admin != "" {
+		js, err := jetstream.New(c.Conn())
+		if err != nil {
+			return fmt.Errorf("jetstream: %w", err)
+		}
+		if _, err := registry.Seed(startCtx, js, *admin); err != nil {
+			return err
+		}
+	}
 	n, err := node.Start(startCtx, c.Conn(), node.Config{})
 	if err != nil {
 		return err

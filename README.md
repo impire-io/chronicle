@@ -1,25 +1,33 @@
 # chronicle
 
-Chronicle is ops-logs as a product: every tenant gets append-only event
-logs whose folded state, declared indexes (search, graph, semantic), and
-scheduled workloads run as a fleet of NATS micro services. There is no web
-UI yet and no side door: a CLI over the one client surface, tenants as
-NATS accounts, and a local fleet that bootstraps its own NATS server — no
-NATS expertise required to start.
+Chronicle is ops-logs as a product: append-only event logs whose folded
+state and declared indexes (search, graph, semantic) run as NATS micro
+services — for one tenant, on any NATS you already have. There is no web
+UI and no side door: a CLI over the one client surface, a node that folds
+your logs, one process per declared index, and a quick start that embeds
+its own server for the five-minute path.
 
-This repo exists by decision
+This repository is the **open tenant plane** of chronicle (chronicle-hq
+design
+[`11-the-two-forms.md`](../chronicle-hq/02-DESIGN/11-the-two-forms.md),
+decision
+[0031](../chronicle-hq/03-DECISIONS/0031-open-is-one-tenant-the-service-is-managed.md)):
+everything that runs, or is used, inside one tenant. Creating tenants for
+strangers, placing their workloads across hosts, running them in microVMs,
+and logging humans in are the managed service at chronicle.impire.io,
+built on this code in its own repositories. The repo exists by decision
 [0010](../chronicle-hq/03-DECISIONS/0010-chronicle-repo.md) of
-[`chronicle-hq`](https://github.com/impire-io/chronicle-hq) — the source of
-truth for mission, research, designs, and decisions. Capabilities land here
-through the build handoff
-([playbook 04](../chronicle-hq/00-META/process/04-build-handoff.md)), not by
-invention in this repo. Agents start at [AGENTS.md](AGENTS.md).
+[`chronicle-hq`](https://github.com/impire-io/chronicle-hq) — the source
+of truth for mission, research, designs, and decisions. Capabilities land
+here through the build handoff
+([playbook 04](../chronicle-hq/00-META/process/04-build-handoff.md)), not
+by invention in this repo. Agents start at [AGENTS.md](AGENTS.md).
 
 ## Getting started
 
-**1. Get the binaries.** One brew install gets the whole fleet —
-`chronicle` (the CLI, which also runs the local fleet) and the standalone
-service binaries:
+**1. Get the binaries.** One brew install gets the open set — `chronicle`
+(the CLI, which also runs the quick start), `chronicle-node`, and
+`chronicle-workload`:
 
 ```sh
 brew install impire-io/tap/chronicle
@@ -36,32 +44,23 @@ go install github.com/impire-io/chronicle/cmd/chronicle@latest
 (`go install` builds report version `0.0.0-dev`; the released binaries
 carry the tag's version — `chronicle version` says which you have.)
 
-**2. Run the fleet.**
+**2. Run the quick start.**
 
 ```sh
 chronicle up
 ```
 
-That single process is the whole thing: it bootstraps its own
-operator-mode NATS server with JetStream (encrypted at rest), seals its
-working keys into the `AUTH` bucket, and runs the control plane, the
-workload service, a node, and an embedded executor — each on a credential
-of its own role. Nothing to install or configure first — the dev dir
-`~/.chronicle/dev` (change with `--dir`) keeps what an operator's offline
-root keeps: the operator identity, the node key, the credential bundles,
-and the data; the server listens on 4222 (`--port`, `-1` picks a free
-one), and it runs in the foreground until interrupted.
+One process: an embedded NATS server with JetStream, one account, one
+user whose key lives under `~/.chronicle/dev` (change with `--dir`), the
+node, and every index you declare — placed in the same process the moment
+the node reports it. No operator, no JWTs, no ceremony; it listens on 4222
+(`--port`, `-1` picks a free one) and runs in the foreground until
+interrupted. It is a development convenience and says so: production is
+your own NATS (below).
 
-**3. Mint a tenant and work with it** — in another terminal:
-
-```sh
-chronicle tenant create acme          # mints the account, writes acme-admin.creds,
-                                      # saves and selects the acme-admin context
-```
-
-The mint leaves you connected: a *context* (the connection and your
-working log) is saved and selected, so nothing after it needs flags.
-Explicit `--creds`/`--url`/`--log` always win when you want them. Then:
+**3. Work with things** — in another terminal. The quick start's one user
+is the tenant's admin, and every sentence finds it through the data dir,
+so nothing needs a flag:
 
 ```sh
 chronicle log create orders           # creates and selects the working log
@@ -93,9 +92,9 @@ fully merge-covered things compact:
 chronicle rollup invoice.invoice-1
 ```
 
-**4. Declare indexes.** An index is declared on a log and built by the
-fleet; search is the default kind, and one `query` verb serves every
-kind — the index's declaration shapes the arguments:
+**4. Declare indexes.** An index is declared on a log and served by a
+process of its kind; search is the default kind, and one `query` verb
+serves every kind — the index's declaration shapes the arguments:
 
 ```sh
 chronicle index declare text
@@ -109,83 +108,66 @@ carry the shapes) and queried through the same verb — text for semantic,
 `--from` (and `--depth` to walk) for graph. `chronicle log list`,
 `chronicle index list`, `chronicle type list`, and `chronicle things`
 say what exists. Run `chronicle` with no arguments for the full verb
-list, sectioned by plane.
+list.
 
 **Optional: the semantic kind.** Semantic indexes need an
-OpenAI-API-compatible `/embeddings` provider and stay unscheduled unless
-one is configured — everything else works without it. A local server such
-as [Ollama](https://ollama.com) works:
+OpenAI-API-compatible `/embeddings` provider and stay declared but
+unserved unless one is configured — everything else works without it. A
+local server such as [Ollama](https://ollama.com) works:
 
 ```sh
 export CHRONICLE_EMBEDDING_API_KEY=...   # whatever the provider expects
 chronicle up --embedding-url http://localhost:11434/v1 --embedding-model nomic-embed-text
 ```
 
-The key reaches sandboxed workloads as a mounted file, never as
-environment (decision
-[0016](../chronicle-hq/03-DECISIONS/0016-the-semantic-kind.md)).
+## Bring your own NATS
 
-**Optional: the microsandbox backend.** By default workloads run in-process.
-To run each placement in its own microVM instead, install the
-[microsandbox](https://github.com/microsandbox/microsandbox) CLI (`msb`,
-pinned at **0.6.8**) and hand `up` the linux guest workload for your
-architecture — the `chronicle-workload_<version>_linux_arm64` or
-`..._linux_amd64` artifact from the release page (guests are linux in the
-host's architecture, no matter the host OS), or build both with
-`make workload-linux`:
+Any NATS in any auth mode — a plain server with accounts in its config, an
+operator-mode estate, a Synadia plan of any size. Chronicle asks for three
+things: **one account**, **JetStream** on it, and users in it. Then:
 
-```sh
-chronicle up --backend microsandbox --workload-binary ./chronicle-workload_0.1.0_linux_arm64
-```
+- **The node and the indexers are your processes.** `chronicle-node
+  --url U --creds F` (or `--nkey F`) with a user that has full rights in
+  the account; on the account's first run add `--admin <principal>` to
+  seed the membership registry with its admin. One `chronicle-workload
+  --kind index-search --log L --index I` (graph, semantic) per declared
+  index, as many instances of each as you want, under whatever
+  supervises processes for you already. A declaration without a running
+  process stays honestly unserved.
+- **A member is a user with the baseline's rights**, which you grant
+  however your server takes permissions — a `permissions` block in a
+  config file, a scoped signing key in `nsc`, a Synadia team policy:
 
-## The multi-host fleet
+  | | Allow |
+  |---|---|
+  | publish | `CHRON.>`, `$SYS.REQ.USER.INFO`, `$JS.API.CONSUMER.>`, `$JS.API.STREAM.INFO.>`, `$JS.API.STREAM.NAMES`, `$JS.API.STREAM.MSG.GET.>`, `$JS.API.DIRECT.GET.>` |
+  | subscribe | `CHRON.>`, `_INBOX.>` |
 
-`chronicle up` is the getting-started and single-host shape. The same
-fleet composes from the standalone binaries when you want the pieces
-scheduled individually — n control instances, n workload-service
-instances, per-tenant nodes, and one executor per host, bidding for
-placements over the shared roster. Every member holds one credential of
-its own role, issued over the `AUTH` bucket
-([`chronicle-hq/02-DESIGN/10-custody.md`](../chronicle-hq/02-DESIGN/10-custody.md)):
+  Membership and roles live in the tenant's `META` bucket and the node
+  enforces them; the principal a client acts as is the creds file's JWT
+  name, or stated beside an nkey. Save it once and speak through it:
 
-```sh
-# once, from the environment's seeds, against the running cluster
-chronicle operator seal --url <nats-url> --replicas 3 \
-  --signing-seed operator-signing.nk --sys-seed sys.nk --control-seed control.nk
-# every further member, by role, from any control instance's bundle
-chronicle operator instance add control-2 --template control-instance --bundle <dir> --url <nats-url>
-chronicle operator instance add host-1    --template executor         --bundle <dir> --url <nats-url>
-chronicle operator instance add wl-1      --template workloads        --bundle <dir> --url <nats-url>
+  ```sh
+  chronicle context save prod --url tls://nats.example.com:4222 --creds dana.creds
+  chronicle context save prod --url tls://nats.example.com:4222 --nkey dana.nk --principal dana
+  chronicle context select prod
+  ```
 
-chronicle-control   --url <nats-url> --bundle <bundle-dir> [--node-replicas 2]
-chronicle-workloads --url <nats-url> --creds <control.creds>
-chronicle-node      --url <nats-url> --creds <tenant-service-creds>
-chronicle-executor  --url <nats-url> --creds <control.creds> \
-  --backend inprocess|microsandbox [--workload-binary <path>]
-```
-
-The cluster itself — the operator identity, the node configs, the keys at
-rest, the units — is the environment's, not the product's (decision
-[0031](../chronicle-hq/03-DECISIONS/0031-open-is-one-tenant-the-service-is-managed.md)).
-The fleet design
-([`04-fleet.md`](../chronicle-hq/02-DESIGN/04-fleet.md)), the scheduler
-design ([`06-scheduler.md`](../chronicle-hq/02-DESIGN/06-scheduler.md)),
-and the custody design carry the shape; all binaries ship in every release
-archive (decision
-[0017](../chronicle-hq/03-DECISIONS/0017-release-flow.md)).
+What this form cannot do, by construction: create a second tenant, place
+a workload on another host, run anything in a microVM, log a human in
+with GitHub, invite anyone. Those are the managed service.
 
 ## Layout
 
 | Path | What it is |
 |---|---|
-| `cmd/chronicle` | The CLI, and — through `chronicle up` — the whole local fleet in one process (thin main; logic in `internal/cli` and `internal/fleet`). |
-| `cmd/chronicle-control` | One control instance, standalone: tenant minting, JWT issuance, the identity bridge, over the `AUTH` bucket (thin main; wiring in `internal/fleet`, logic in `internal/control` and `internal/mint`). |
-| `cmd/chronicle-workloads` | The workload service, standalone: the fleet log, the dispatch surface, the auctions (thin main; logic in `internal/workloads`; decision [0029](../chronicle-hq/03-DECISIONS/0029-the-workload-service-is-its-own-binary.md)). |
-| `cmd/chronicle-node` | One tenant's node, standalone: the fold, state, and API verbs (thin main; logic in `internal/node`). |
-| `cmd/chronicle-executor` | The per-host executor: joins the roster, bids, runs placements on its backend (thin main; logic in `internal/executor`). |
-| `cmd/chronicle-workload` | The one binary a placement runs — node or index kind — and the guest half of the microsandbox backend (thin main; logic in `internal/workloads`). |
-| `contract` | The wire contract: subjects, headers, stream/bucket names, META grammar. |
-| `client` | The public Go client package — the one way callers talk to the fleet. |
+| `cmd/chronicle` | The CLI, and — through `chronicle up` — the quick start in one process (thin main; logic in `cli` and `up`). |
+| `cmd/chronicle-node` | One tenant's node, standalone: the fold, state, and API verbs (thin main; logic in `node`). |
+| `cmd/chronicle-workload` | The placement binary: a node or an index kind as one process, whoever starts it — your unit, the quick start, or the managed executor's guest (thin main). |
+| `contract` | The tenant wire contract: subjects, headers, stream/bucket names, META grammar, the placement kinds and the node's index report. |
+| `client` | The public Go client package — the one way callers talk to a tenant, on any NATS in any auth mode. |
+| `node`, `index/*`, `foldcore`, `registry` | The node, the three index kinds and their shared projection, the fold judgment, the membership registry. Public so the managed service composes them; the dependency runs one way. |
+| `cli`, `up`, `devdir`, `guestnet` | The tenant sentences (with the seam a build adds verbs through), the quick start, its data-dir conventions, a guest's way to its host. |
 | `specs/` | The spec-kit increments this repo was built through. |
 
 ## Build & run from source
@@ -199,14 +181,27 @@ make build   # all binaries land in bin/
 
 Pushing a `v*` tag builds and publishes a GitHub release via goreleaser
 ([release workflow](.github/workflows/release.yml)): one archive per
-platform carrying the six binaries, plus the standalone linux guest
+platform carrying the three binaries, plus the standalone linux guest
 workloads (amd64 and arm64), with the tag's version stamped into every
-binary (decision
-[0017](../chronicle-hq/03-DECISIONS/0017-release-flow.md)). CI runs the
-same gate as `make check` on every push and pull request. Rehearse locally
-with `make snapshot`.
+binary (decisions
+[0017](../chronicle-hq/03-DECISIONS/0017-release-flow.md) and
+[0031](../chronicle-hq/03-DECISIONS/0031-open-is-one-tenant-the-service-is-managed.md)).
+CI runs the same gate as `make check` on every push and pull request.
+Rehearse locally with `make snapshot`.
+
+## Contributing
+
+Under the Developer Certificate of Origin — every commit signed off —
+see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
 [Sustainable Use License](LICENSE) — free for internal business,
-non-commercial, and personal use.
+non-commercial, and personal use; the fair-code posture every impire
+product carries (chronicle-hq decisions
+[0017](../chronicle-hq/03-DECISIONS/0017-release-flow.md) and
+[0033](../chronicle-hq/03-DECISIONS/0033-the-public-repo-stays-under-the-sustainable-use-license.md)).
+"Open" in the split's sense names the boundary — everything that runs
+inside one tenant, published here — not an OSI license. Contributions
+are under the Developer Certificate of Origin
+([CONTRIBUTING.md](CONTRIBUTING.md)).

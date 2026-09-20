@@ -12,11 +12,11 @@ import (
 	"github.com/impire-io/chronicle/contract"
 )
 
-// The control-plane verb subjects. The designs fix only the CHRON.API.>
-// root; the concrete verbs are protocol tokens, uppercase per the case
-// rule. They are served in-account by chronicle-node with registry role
-// checks. CHRON.CTRL.> is the cross-account control surface — not tenant
-// wire contract — served by chronicle-control in its own account.
+// The API verb subjects. The designs fix only the CHRON.API.> root; the
+// concrete verbs are protocol tokens, uppercase per the case rule. They
+// are served in-account by chronicle-node with registry role checks. The
+// managed service's CHRON.CTRL.> surface is not tenant wire contract and
+// lives with the service (chronicle-service).
 const (
 	LogCreateSubject    = "CHRON.API.LOG.CREATE"
 	TypeDefineSubject   = "CHRON.API.TYPE.DEFINE"
@@ -24,10 +24,6 @@ const (
 	IndexDeclareSubject = "CHRON.API.INDEX.DECLARE"
 	IndexDeleteSubject  = "CHRON.API.INDEX.DELETE"
 	PingSubject         = "CHRON.API.PING"
-	TenantMintSubject   = "CHRON.CTRL.TENANT.MINT"
-	MemberAddSubject    = "CHRON.CTRL.MEMBER.ADD"
-	MemberRevokeSubject = "CHRON.CTRL.MEMBER.REVOKE"
-	MemberRekeySubject  = "CHRON.CTRL.MEMBER.REKEY"
 )
 
 // IndexQuerySubject is the endpoint one index serves, in-account —
@@ -162,78 +158,6 @@ type About struct {
 	Version string `json:"version"`
 }
 
-// TenantMintRequest asks chronicle-control for a tenant: mint the account,
-// provision META, seed the identity registry, mint the first admin
-// principal.
-type TenantMintRequest struct {
-	Name string `json:"name"`
-	// Admin is the first principal's ID; "admin" when empty.
-	Admin string `json:"admin,omitempty"`
-}
-
-// TenantMintResponse hands back the account and the first admin's .creds —
-// the only copy; chronicle keeps the registry, not the secret.
-type TenantMintResponse struct {
-	Account    string `json:"account"`
-	Admin      string `json:"admin"`
-	AdminCreds []byte `json:"admin_creds"`
-}
-
-// MemberAddRequest mints a principal into an existing tenant: a user under
-// the tenant's scoped key, a registry entry with the given role. The verb
-// chronicle-15 was missing — before it, replacing a burned admin meant
-// destroying the install.
-type MemberAddRequest struct {
-	Tenant    string `json:"tenant"`
-	Principal string `json:"principal"`
-	// Role is one of admin, writer, reader; "writer" when empty.
-	Role string `json:"role,omitempty"`
-	// GithubID optionally binds the membership to a GitHub identity for
-	// the browser bridge (decision 0026) — the numeric user ID.
-	GithubID int64 `json:"github_id,omitempty"`
-}
-
-// MemberAddResponse hands back the new member's .creds — the only copy;
-// chronicle keeps the registry, not the secret.
-type MemberAddResponse struct {
-	Principal string `json:"principal"`
-	Role      string `json:"role"`
-	Creds     []byte `json:"creds"`
-}
-
-// MemberRevokeRequest invalidates one principal's credential: the account
-// JWT's revocation list kills the wire — new connections refused, live
-// ones evicted — and the membership record leaves the registry. The
-// principal record stays: it is the durable identity past records
-// attribute to, and a re-added member is the same principal.
-type MemberRevokeRequest struct {
-	Tenant    string `json:"tenant"`
-	Principal string `json:"principal"`
-}
-
-// MemberRevokeResponse names the revoked user key.
-type MemberRevokeResponse struct {
-	Principal string `json:"principal"`
-	PublicKey string `json:"public_key"`
-}
-
-// MemberRekeyRequest is the coarse kill switch: assume every member
-// credential is burned. The tenant's member-issuing scoped key is
-// replaced — one push evicts every member at once, while the service user
-// (issued under the plain signing key) rides through — and every member is
-// re-issued under the new key.
-type MemberRekeyRequest struct {
-	Tenant string `json:"tenant"`
-}
-
-// MemberRekeyResponse carries every re-issued member credential — each the
-// only copy. The response is one NATS message: with ~1 KiB per creds file
-// and the default 1 MiB payload ceiling, a tenant beyond a few hundred
-// members needs pagination this verb does not have yet.
-type MemberRekeyResponse struct {
-	Members []MemberAddResponse `json:"members"`
-}
-
 // ServiceError is a micro endpoint's refusal, code and description intact.
 type ServiceError struct {
 	Code string
@@ -242,9 +166,11 @@ type ServiceError struct {
 
 func (e *ServiceError) Error() string { return fmt.Sprintf("%s: %s", e.Code, e.Desc) }
 
-// request round-trips one micro request and decodes the reply or the
-// service's error headers.
-func request[Req, Resp any](ctx context.Context, nc *nats.Conn, subject string, req Req) (Resp, error) {
+// Request round-trips one micro request on the product surface and
+// decodes the reply or the service's error headers — the one building
+// block every verb here is, exported so a build that adds verbs (the
+// managed service's) speaks the same way.
+func Request[Req, Resp any](ctx context.Context, nc *nats.Conn, subject string, req Req) (Resp, error) {
 	var zero Resp
 	data, err := json.Marshal(req)
 	if err != nil {
@@ -288,7 +214,7 @@ func (c *Client) CreateLog(ctx context.Context, log, description string, opts ..
 	for _, apply := range opts {
 		apply(&r)
 	}
-	return request[LogCreateRequest, LogCreateResponse](ctx, c.nc, LogCreateSubject, r)
+	return Request[LogCreateRequest, LogCreateResponse](ctx, c.nc, LogCreateSubject, r)
 }
 
 // TypeDefinition is the caller's side of a type record: every facet but
@@ -310,7 +236,7 @@ type TypeDefinition struct {
 // DefineType records a type definition — one act, all facets; a repeat
 // bumps the revision (0021).
 func (c *Client) DefineType(ctx context.Context, log, name string, def TypeDefinition) (TypeDefineResponse, error) {
-	return request[TypeDefineRequest, TypeDefineResponse](ctx, c.nc, TypeDefineSubject, TypeDefineRequest{
+	return Request[TypeDefineRequest, TypeDefineResponse](ctx, c.nc, TypeDefineSubject, TypeDefineRequest{
 		Principal:  c.author,
 		Log:        log,
 		Type:       name,
@@ -325,7 +251,7 @@ func (c *Client) DefineType(ctx context.Context, log, name string, def TypeDefin
 // it will serve once caught up. Config belongs to the kind: nil for
 // search, edge rules for graph.
 func (c *Client) DeclareIndex(ctx context.Context, log, index, kind string, config json.RawMessage) (IndexDeclareResponse, error) {
-	return request[IndexDeclareRequest, IndexDeclareResponse](ctx, c.nc, IndexDeclareSubject, IndexDeclareRequest{
+	return Request[IndexDeclareRequest, IndexDeclareResponse](ctx, c.nc, IndexDeclareSubject, IndexDeclareRequest{
 		Principal: c.author,
 		Log:       log,
 		Index:     index,
@@ -337,7 +263,7 @@ func (c *Client) DeclareIndex(ctx context.Context, log, index, kind string, conf
 // DeleteIndex retires an index; its workload stops and its derived index
 // is discarded.
 func (c *Client) DeleteIndex(ctx context.Context, log, index string) (IndexDeleteResponse, error) {
-	return request[IndexDeleteRequest, IndexDeleteResponse](ctx, c.nc, IndexDeleteSubject, IndexDeleteRequest{
+	return Request[IndexDeleteRequest, IndexDeleteResponse](ctx, c.nc, IndexDeleteSubject, IndexDeleteRequest{
 		Principal: c.author,
 		Log:       log,
 		Index:     index,
@@ -348,7 +274,7 @@ func (c *Client) DeleteIndex(ctx context.Context, log, index string) (IndexDelet
 // running or still replaying — the honest signal of an index that is not
 // current yet.
 func (c *Client) QueryIndex(ctx context.Context, log, index, query string, limit, offset int) (IndexQueryResponse, error) {
-	return request[IndexQueryRequest, IndexQueryResponse](ctx, c.nc, IndexQuerySubject(log, index), IndexQueryRequest{
+	return Request[IndexQueryRequest, IndexQueryResponse](ctx, c.nc, IndexQuerySubject(log, index), IndexQueryRequest{
 		Principal: c.author,
 		Query:     query,
 		Limit:     limit,
@@ -361,59 +287,10 @@ func (c *Client) QueryIndex(ctx context.Context, log, index, query string, limit
 // empty tail, or a lost race — with the reason; only transport and
 // refusal failures are errors.
 func (c *Client) RollupThing(ctx context.Context, log, thing string) (ThingRollupResponse, error) {
-	return request[ThingRollupRequest, ThingRollupResponse](ctx, c.nc, ThingRollupSubject, ThingRollupRequest{
+	return Request[ThingRollupRequest, ThingRollupResponse](ctx, c.nc, ThingRollupSubject, ThingRollupRequest{
 		Principal: c.author,
 		Log:       log,
 		Thing:     thing,
-	})
-}
-
-// Control is a handle on chronicle-control, dialed with control-plane
-// credentials — a different account than any tenant.
-type Control struct {
-	nc *nats.Conn
-}
-
-// NewControl adopts a control-plane connection.
-func NewControl(nc *nats.Conn) *Control { return &Control{nc: nc} }
-
-// Close closes the underlying connection.
-func (c *Control) Close() { c.nc.Close() }
-
-// MintTenant creates a tenant end to end and returns the first admin's
-// credentials.
-func (c *Control) MintTenant(ctx context.Context, name, admin string) (TenantMintResponse, error) {
-	return request[TenantMintRequest, TenantMintResponse](ctx, c.nc, TenantMintSubject, TenantMintRequest{
-		Name:  name,
-		Admin: admin,
-	})
-}
-
-// AddMember mints a principal into an existing tenant and returns the only
-// copy of their credentials.
-func (c *Control) AddMember(ctx context.Context, tenant, principal, role string, githubID int64) (MemberAddResponse, error) {
-	return request[MemberAddRequest, MemberAddResponse](ctx, c.nc, MemberAddSubject, MemberAddRequest{
-		Tenant:    tenant,
-		Principal: principal,
-		Role:      role,
-		GithubID:  githubID,
-	})
-}
-
-// RevokeMember invalidates a principal's credential — evicted from the
-// wire, retired from the registry.
-func (c *Control) RevokeMember(ctx context.Context, tenant, principal string) (MemberRevokeResponse, error) {
-	return request[MemberRevokeRequest, MemberRevokeResponse](ctx, c.nc, MemberRevokeSubject, MemberRevokeRequest{
-		Tenant:    tenant,
-		Principal: principal,
-	})
-}
-
-// RekeyMembers replaces the tenant's member-issuing key, evicting every
-// member credential at once, and returns the re-issued set.
-func (c *Control) RekeyMembers(ctx context.Context, tenant string) (MemberRekeyResponse, error) {
-	return request[MemberRekeyRequest, MemberRekeyResponse](ctx, c.nc, MemberRekeySubject, MemberRekeyRequest{
-		Tenant: tenant,
 	})
 }
 
@@ -459,14 +336,14 @@ type GraphWalkResponse struct {
 func (c *Client) GraphNeighbors(ctx context.Context, log, index string, q GraphQueryRequest) (GraphNeighborsResponse, error) {
 	q.Principal = c.author
 	q.Op = contract.GraphOpNeighbors
-	return request[GraphQueryRequest, GraphNeighborsResponse](ctx, c.nc, IndexQuerySubject(log, index), q)
+	return Request[GraphQueryRequest, GraphNeighborsResponse](ctx, c.nc, IndexQuerySubject(log, index), q)
 }
 
 // GraphWalk traverses one graph index breadth-first from a thing.
 func (c *Client) GraphWalk(ctx context.Context, log, index string, q GraphQueryRequest) (GraphWalkResponse, error) {
 	q.Principal = c.author
 	q.Op = contract.GraphOpWalk
-	return request[GraphQueryRequest, GraphWalkResponse](ctx, c.nc, IndexQuerySubject(log, index), q)
+	return Request[GraphQueryRequest, GraphWalkResponse](ctx, c.nc, IndexQuerySubject(log, index), q)
 }
 
 // SemanticQueryRequest is the semantic kind's payload on the standard
@@ -496,7 +373,7 @@ type SemanticQueryResponse struct {
 
 // QuerySemantic searches one semantic index by meaning.
 func (c *Client) QuerySemantic(ctx context.Context, log, index, text string, limit, offset int) (SemanticQueryResponse, error) {
-	return request[SemanticQueryRequest, SemanticQueryResponse](ctx, c.nc, IndexQuerySubject(log, index), SemanticQueryRequest{
+	return Request[SemanticQueryRequest, SemanticQueryResponse](ctx, c.nc, IndexQuerySubject(log, index), SemanticQueryRequest{
 		Principal: c.author,
 		Text:      text,
 		Limit:     limit,

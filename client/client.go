@@ -1,12 +1,13 @@
-// Package client is the Go client of the walking skeleton: the wire
-// contract of decision 0008, spoken directly. Appends are direct JetStream
-// publishes with the correctness machinery the server's; the control verbs
+// Package client is the Go client of the tenant plane: the wire contract
+// of decision 0008, spoken directly. Appends are direct JetStream
+// publishes with the correctness machinery the server's; the API verbs
 // are NATS micro requests on CHRON.API.>. The package speaks only the
-// contract package — never a service's internals.
+// contract package — never a service's internals — and it works against
+// any NATS in any auth mode: a member is whoever the credential says, or
+// whoever the caller states when the credential carries no name.
 package client
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"sync"
@@ -15,6 +16,7 @@ import (
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"github.com/nats-io/nkeys"
 )
 
 // Client is one member's (or service user's) handle on a tenant account.
@@ -28,9 +30,10 @@ type Client struct {
 	types    *typeCache
 }
 
-// Connect dials with decorated .creds content. The principal ID is read
-// from the user JWT's name — the SDK stamps Op-Author from the credentials
-// it runs with, an identity it was actually issued.
+// Connect dials with decorated .creds content — the managed form's
+// credential, and any operator-mode NATS's. The principal ID is read from
+// the user JWT's name: the SDK stamps Op-Author from the credentials it
+// runs with, an identity it was actually issued.
 func Connect(url string, creds []byte) (*Client, error) {
 	nc, author, err := dialCreds(url, creds, "chronicle-client")
 	if err != nil {
@@ -42,16 +45,6 @@ func Connect(url string, creds []byte) (*Client, error) {
 		return nil, err
 	}
 	return c, nil
-}
-
-// ConnectControlCreds dials chronicle-control with control-plane .creds
-// content.
-func ConnectControlCreds(url string, creds []byte) (*Control, error) {
-	nc, _, err := dialCreds(url, creds, "chronicle-cli-control")
-	if err != nil {
-		return nil, err
-	}
-	return NewControl(nc), nil
 }
 
 func dialCreds(url string, creds []byte, name string) (*nats.Conn, string, error) {
@@ -90,8 +83,51 @@ func ConnectFile(url, credsPath string) (*Client, error) {
 	return Connect(url, creds)
 }
 
-// Wrap adopts an existing connection — the in-process path `chronicle up`
-// and the tests use. The author is stamped explicitly.
+// ConnectWith dials however the operator's NATS takes a user — an nkey,
+// a user and password, a token — with the principal stated by the caller,
+// because a credential that carries no name cannot say who its holder is
+// (11-the-two-forms.md § bring your own NATS). The trust tier is the
+// registry's: the principal is the caller's assertion, checked against
+// membership at the node.
+func ConnectWith(url, author string, opts ...nats.Option) (*Client, error) {
+	if author == "" {
+		return nil, fmt.Errorf("connect: the principal must be stated when the credential carries no name")
+	}
+	nc, err := nats.Connect(url, append([]nats.Option{nats.Name("chronicle-client"), nats.Timeout(5 * time.Second)}, opts...)...)
+	if err != nil {
+		return nil, fmt.Errorf("connect: %w", err)
+	}
+	c, err := wrap(nc, author)
+	if err != nil {
+		nc.Close()
+		return nil, err
+	}
+	return c, nil
+}
+
+// ConnectNkeyFile dials as an nkey user — a seed file, the way a plain
+// server's config or the quick start names a user — stating the
+// principal.
+func ConnectNkeyFile(url, seedPath, author string) (*Client, error) {
+	opt, err := nats.NkeyOptionFromSeed(seedPath)
+	if err != nil {
+		return nil, fmt.Errorf("read nkey seed: %w", err)
+	}
+	return ConnectWith(url, author, opt)
+}
+
+// NkeyFromSeed parses a seed file's key pair — for callers that hold the
+// seed bytes rather than a path.
+func NkeyFromSeed(seed []byte) (nkeys.KeyPair, error) {
+	kp, err := nkeys.FromSeed(seed)
+	if err != nil {
+		return nil, fmt.Errorf("parse nkey seed: %w", err)
+	}
+	return kp, nil
+}
+
+// Wrap adopts an existing connection — the in-process path the quick
+// start and the tests use. The author is stamped explicitly.
 func Wrap(nc *nats.Conn, author string) (*Client, error) {
 	return wrap(nc, author)
 }
@@ -132,89 +168,4 @@ func (c *Client) subjectLock(subject string) *sync.Mutex {
 		c.inFlight[subject] = l
 	}
 	return l
-}
-
-// ConnectBridge dials through the browser identity bridge (decision 0026):
-// the sentinel triggers the callout, the GitHub token rides the CONNECT,
-// and the server places the connection in the tenant. The principal comes
-// back from the server's own answer to who-am-I — the placed user JWT
-// names it, and Op-Author stamps from an identity the bridge actually
-// resolved.
-func ConnectBridge(url string, sentinel []byte, tenant, githubToken string) (*Client, error) {
-	if tenant == "" || githubToken == "" {
-		return nil, fmt.Errorf("bridge connect: tenant and token are required")
-	}
-	token, err := jwt.ParseDecoratedJWT(sentinel)
-	if err != nil {
-		return nil, fmt.Errorf("parse sentinel jwt: %w", err)
-	}
-	kp, err := jwt.ParseDecoratedUserNKey(sentinel)
-	if err != nil {
-		return nil, fmt.Errorf("parse sentinel nkey: %w", err)
-	}
-	nc, err := nats.Connect(url,
-		nats.Name("chronicle-bridge-client"),
-		nats.UserJWT(
-			func() (string, error) { return token, nil },
-			func(nonce []byte) ([]byte, error) { return kp.Sign(nonce) },
-		),
-		nats.Token(tenant+":"+githubToken),
-		nats.Timeout(5*time.Second),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("bridge connect: %w", err)
-	}
-	author, err := whoami(nc, tenant)
-	if err != nil {
-		nc.Close()
-		return nil, err
-	}
-	c, err := wrap(nc, author)
-	if err != nil {
-		nc.Close()
-		return nil, err
-	}
-	return c, nil
-}
-
-// whoami asks the server for the placed identity. For a callout-placed
-// client the server (2.14.x, pinned by the vendored dependency) reports
-// the placed principal in the info's `user` field — `user_name` keeps the
-// sentinel's tag from the original CONNECT — and the account name is the
-// tenant, which doubles as the placement cross-check.
-func whoami(nc *nats.Conn, tenant string) (string, error) {
-	msg, err := nc.Request("$SYS.REQ.USER.INFO", nil, 5*time.Second)
-	if err != nil {
-		return "", fmt.Errorf("whoami: %w", err)
-	}
-	var resp struct {
-		Data struct {
-			User        string `json:"user"`
-			AccountName string `json:"account_name"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(msg.Data, &resp); err != nil {
-		return "", fmt.Errorf("whoami: decode: %w", err)
-	}
-	if resp.Data.AccountName != tenant {
-		return "", fmt.Errorf("whoami: placed in account %q, expected tenant %q", resp.Data.AccountName, tenant)
-	}
-	if resp.Data.User == "" || looksLikeNkey(resp.Data.User) {
-		return "", fmt.Errorf("whoami: server reported no principal name (got %q) — server behavior changed?", resp.Data.User)
-	}
-	return resp.Data.User, nil
-}
-
-// looksLikeNkey spots a raw user public key where a principal name should
-// be — 56 base32 chars starting with U.
-func looksLikeNkey(s string) bool {
-	if len(s) != 56 || s[0] != 'U' {
-		return false
-	}
-	for _, r := range s {
-		if (r < 'A' || r > 'Z') && (r < '2' || r > '7') {
-			return false
-		}
-	}
-	return true
 }

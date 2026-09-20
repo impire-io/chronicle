@@ -1,5 +1,7 @@
-// Command chronicle is the CLI: `up` runs the local fleet composition;
-// every other verb is a client on the product surface.
+// Command chronicle is the open CLI: the tenant sentences, and — through
+// `chronicle up` — the quick start in one process. The managed service
+// builds the same binary with its verbs added (11-the-two-forms.md § the
+// managed CLI).
 package main
 
 import (
@@ -10,35 +12,24 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/impire-io/chronicle/internal/cli"
-	"github.com/impire-io/chronicle/internal/fleet"
+	"github.com/impire-io/chronicle/cli"
+	"github.com/impire-io/chronicle/up"
 )
+
+const upUsage = `run locally
+  chronicle up [--dir D] [--port N]                      an embedded server, one account, the node, its indexers — a quick start, not production
+      production is your own NATS: chronicle-node and chronicle-workload as your own processes
+
+`
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	var err error
-	switch {
-	case len(os.Args) > 1 && os.Args[1] == "up":
-		err = fleet.Run(ctx, os.Args[2:], os.Stdout)
-	case len(os.Args) > 2 && os.Args[1] == "operator" && os.Args[2] == "rotate-signing-key":
-		// The service's step of the clustered rotation — or, with --dir
-		// alone, the dev shape around it.
-		err = fleet.RotateSigningKey(ctx, os.Args[3:], os.Stdout)
-	case len(os.Args) > 2 && os.Args[1] == "operator" && os.Args[2] == "seal":
-		// Design 10's first boot, the service's half: the environment's
-		// seeds become the AUTH bucket and the first instance.
-		err = fleet.Seal(ctx, os.Args[3:], os.Stdout)
-	case len(os.Args) > 2 && os.Args[1] == "operator" && os.Args[2] == "export":
-		// … and refresh the disaster-recovery export.
-		err = fleet.Export(ctx, os.Args[3:], os.Stdout)
-	case len(os.Args) > 2 && os.Args[1] == "operator" && os.Args[2] == "instance":
-		// … and grow or shrink the fleet by one instance over the bucket.
-		err = fleet.Instance(ctx, os.Args[3:], os.Stdout)
-	default:
-		err = cli.Run(ctx, os.Args[1:], os.Stdout)
-	}
+	err := cli.RunWith(ctx, os.Args[1:], os.Stdout, &cli.Extension{
+		Verbs: map[string]cli.Verb{"up": up.Run},
+		Usage: upUsage,
+	})
 	if err != nil && !errors.Is(err, context.Canceled) {
 		fmt.Fprintln(os.Stderr, "chronicle:", err)
 		os.Exit(1)
