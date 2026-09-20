@@ -196,7 +196,10 @@ see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
-[Sustainable Use License](LICENSE) — free for internal business,
-non-commercial, and personal use. The relicensing of this tenant plane to
-OSI-approved terms is its own decision record in `chronicle-hq`, made now
-that the repository holds only what will be relicensed (decision 0031).
+[Apache License 2.0](LICENSE) — chronicle-hq decision
+[0033](../chronicle-hq/03-DECISIONS/0033-the-tenant-plane-is-apache-2.md):
+the open tenant plane is licensed for anyone to use, embed, and sell on,
+with the patent grant a platform's adopters ask for. Contributions are
+under the Developer Certificate of Origin, licensed by the sign-off
+([CONTRIBUTING.md](CONTRIBUTING.md)). The managed service and the
+environment are private and carry no license.
