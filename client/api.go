@@ -23,6 +23,8 @@ const (
 	ThingRollupSubject  = "CHRON.API.THING.ROLLUP"
 	IndexDeclareSubject = "CHRON.API.INDEX.DECLARE"
 	IndexDeleteSubject  = "CHRON.API.INDEX.DELETE"
+	MemberAddSubject    = "CHRON.API.MEMBER.ADD"
+	MemberRevokeSubject = "CHRON.API.MEMBER.REVOKE"
 	PingSubject         = "CHRON.API.PING"
 )
 
@@ -150,6 +152,47 @@ type IndexHit struct {
 type IndexQueryResponse struct {
 	Hits  []IndexHit `json:"hits"`
 	Total uint64     `json:"total"`
+}
+
+// MemberAddRequest registers a principal as a member of the tenant with
+// a role — the registry write of 11-the-two-forms.md § membership,
+// without custody: one place writes the registry in both forms. Principal
+// is the caller (role admin); Member is who joins. The credential is not
+// this verb's: in the open form it is the operator's NATS's business, and
+// the managed service issues one and records its public key here.
+type MemberAddRequest struct {
+	Principal string `json:"principal"`
+	Member    string `json:"member"`
+	// Role is one of admin, writer, reader; "writer" when empty.
+	Role string `json:"role,omitempty"`
+	// PublicKey is the member's NATS user public key where one is known.
+	PublicKey string `json:"public_key,omitempty"`
+	// GithubID binds the membership to a GitHub identity for the managed
+	// service's browser bridge (decision 0026); zero means unbound.
+	GithubID int64 `json:"github_id,omitempty"`
+}
+
+// MemberAddResponse echoes the membership recorded.
+type MemberAddResponse struct {
+	Member string `json:"member"`
+	Role   string `json:"role"`
+}
+
+// MemberRevokeRequest retires a membership: the record leaves the
+// registry and the principal can act no more. The principal record stays
+// — it is the durable identity past records attribute to, and a re-added
+// member is the same principal. Killing the credential on the wire is the
+// issuer's job, after this.
+type MemberRevokeRequest struct {
+	Principal string `json:"principal"`
+	Member    string `json:"member"`
+}
+
+// MemberRevokeResponse names the retired membership and the public key it
+// held, for an issuer that revokes it on the wire.
+type MemberRevokeResponse struct {
+	Member    string `json:"member"`
+	PublicKey string `json:"public_key,omitempty"`
 }
 
 // About answers the ping verb.
@@ -291,6 +334,37 @@ func (c *Client) RollupThing(ctx context.Context, log, thing string) (ThingRollu
 		Principal: c.author,
 		Log:       log,
 		Thing:     thing,
+	})
+}
+
+// MemberOpt adjusts one member add.
+type MemberOpt func(*MemberAddRequest)
+
+// WithPublicKey records the member's NATS user public key.
+func WithPublicKey(key string) MemberOpt {
+	return func(r *MemberAddRequest) { r.PublicKey = key }
+}
+
+// WithGithubID binds the membership to a GitHub identity.
+func WithGithubID(id int64) MemberOpt {
+	return func(r *MemberAddRequest) { r.GithubID = id }
+}
+
+// AddMember registers a principal as a member with a role (admin only).
+// Role "" means writer.
+func (c *Client) AddMember(ctx context.Context, member, role string, opts ...MemberOpt) (MemberAddResponse, error) {
+	r := MemberAddRequest{Principal: c.author, Member: member, Role: role}
+	for _, o := range opts {
+		o(&r)
+	}
+	return Request[MemberAddRequest, MemberAddResponse](ctx, c.nc, MemberAddSubject, r)
+}
+
+// RevokeMember retires a membership (admin only).
+func (c *Client) RevokeMember(ctx context.Context, member string) (MemberRevokeResponse, error) {
+	return Request[MemberRevokeRequest, MemberRevokeResponse](ctx, c.nc, MemberRevokeSubject, MemberRevokeRequest{
+		Principal: c.author,
+		Member:    member,
 	})
 }
 

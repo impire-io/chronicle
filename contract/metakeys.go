@@ -225,3 +225,25 @@ const (
 	RoleWriter = "writer"
 	RoleReader = "reader"
 )
+
+// Roles lists the registry's vocabulary, in the order the CLI names it.
+var Roles = []string{RoleAdmin, RoleWriter, RoleReader}
+
+// KnownRole reports whether the role is in the registry's vocabulary —
+// write-side strict at MEMBER.ADD.
+func KnownRole(role string) bool {
+	for _, r := range Roles {
+		if role == r {
+			return true
+		}
+	}
+	return false
+}
+
+// ServicePrincipal is the principal the tenant's own service acts as —
+// the managed service composing a member verb with the credential it
+// issued, on the connection the node itself holds. It is never a member
+// and never in the registry: the registry's role check accepts it as the
+// operator, at the same trust tier as every other asserted principal
+// (0007: op signing by demand).
+const ServicePrincipal = "chronicle"

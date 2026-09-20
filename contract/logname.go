@@ -48,6 +48,21 @@ func ValidateTypeName(name string) error {
 	return nil
 }
 
+// ValidatePrincipalName refuses anything but a single lowercase
+// [a-z0-9-]+ token — the identifier grammar: the ID becomes a registry key
+// segment (identity.member.<id> must stay one KV token) and a default
+// .creds filename. The service principal is reserved: it is never a
+// member.
+func ValidatePrincipalName(name string) error {
+	if !logName.MatchString(name) {
+		return fmt.Errorf("principal %q: must match [a-z0-9-]+", name)
+	}
+	if name == ServicePrincipal {
+		return fmt.Errorf("principal %q is reserved for the tenant's own service", name)
+	}
+	return nil
+}
+
 // ValidateThing refuses a thing that is not one or more subject-token-safe
 // segments joined with ".". Identifiers are the customer's domain: chronicle
 // validates subject-token safety and mints nothing (wire contract § subject

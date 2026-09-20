@@ -60,7 +60,7 @@ func run() error {
 		if err != nil {
 			return fmt.Errorf("jetstream: %w", err)
 		}
-		if _, err := registry.Seed(startCtx, js, *admin); err != nil {
+		if _, err := registry.Seed(startCtx, js, *admin, ""); err != nil {
 			return err
 		}
 	}

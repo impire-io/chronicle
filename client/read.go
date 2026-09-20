@@ -273,6 +273,49 @@ func (c *Client) GetIndexDeclaration(ctx context.Context, log, index string) (co
 	return decl, nil
 }
 
+// MemberInfo is one membership: who, in which role, under which key.
+type MemberInfo struct {
+	Name      string
+	Role      string
+	PublicKey string
+	GithubID  int64
+}
+
+// ListMembers reads the tenant's registry from META, sorted by name — a
+// read of data at rest, any role may ask.
+func (c *Client) ListMembers(ctx context.Context) ([]MemberInfo, error) {
+	kv, err := c.js.KeyValue(ctx, contract.MetaBucket)
+	if err != nil {
+		return nil, fmt.Errorf("open META: %w", err)
+	}
+	keys, err := kv.Keys(ctx)
+	if errors.Is(err, jetstream.ErrNoKeysFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("list META keys: %w", err)
+	}
+	prefix := contract.MetaMember("")
+	var members []MemberInfo
+	for _, k := range keys {
+		name, ok := strings.CutPrefix(k, prefix)
+		if !ok || name == "" {
+			continue
+		}
+		entry, err := kv.Get(ctx, k)
+		if err != nil {
+			return nil, fmt.Errorf("read membership %s: %w", name, err)
+		}
+		var m contract.Membership
+		if err := json.Unmarshal(entry.Value(), &m); err != nil {
+			return nil, fmt.Errorf("decode membership %s: %w", name, err)
+		}
+		members = append(members, MemberInfo{Name: name, Role: m.Role, PublicKey: m.PublicKey, GithubID: m.GithubID})
+	}
+	sort.Slice(members, func(i, j int) bool { return members[i].Name < members[j].Name })
+	return members, nil
+}
+
 // ListThings names the log's things from the state index's keys, sorted —
 // derived, so possibly trailing the log; the fold watermark is excluded.
 // A non-empty prefix filters to the subtree under it.
