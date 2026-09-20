@@ -38,6 +38,12 @@ type Extension struct {
 	// open sentences by name; a name the open grammar already uses is
 	// refused at run.
 	Verbs map[string]Verb
+	// Override wraps an open verb with the build's own handling, the open
+	// handler passed in to delegate to: the managed build's `member` takes
+	// `<tenant> <principal>` and issues a credential, and hands anything
+	// else to the open sentence. A name outside the open grammar is
+	// refused at run.
+	Override map[string]func(open Verb) Verb
 	// Usage is the help for the added verbs — the sections printed ahead
 	// of the tenant sentences, in the same sectioned shape.
 	Usage string
@@ -53,19 +59,22 @@ func Run(ctx context.Context, args []string, out io.Writer) error {
 	return RunWith(ctx, args, out, nil)
 }
 
-// The open grammar's top-level verbs, which an extension may not shadow.
-var openVerbs = []string{"context", "log", "type", "operation", "op", "index", "create", "do", "get", "history", "rollup", "query", "things", "version"}
-
 // RunWith dispatches one CLI invocation with a build's extension.
 func RunWith(ctx context.Context, args []string, out io.Writer, ext *Extension) error {
 	x := &runner{ext: ext}
+	open := x.openVerbs()
 	if ext != nil {
 		for name := range ext.Verbs {
-			for _, open := range openVerbs {
-				if name == open {
-					return fmt.Errorf("extension verb %q shadows the open grammar", name)
-				}
+			if _, taken := open[name]; taken {
+				return fmt.Errorf("extension verb %q shadows the open grammar", name)
 			}
+		}
+		for name, wrap := range ext.Override {
+			verb, ok := open[name]
+			if !ok {
+				return fmt.Errorf("extension overrides %q, which the open grammar does not have", name)
+			}
+			open[name] = wrap(verb)
 		}
 	}
 	if len(args) == 0 {
@@ -76,88 +85,53 @@ func RunWith(ctx context.Context, args []string, out io.Writer, ext *Extension) 
 			return verb(ctx, args[1:], out)
 		}
 	}
-	sub := ""
-	if len(args) >= 2 {
-		sub = args[1]
+	if verb, ok := open[args[0]]; ok {
+		return verb(ctx, args[1:], out)
 	}
-	switch args[0] {
-	case "context":
-		switch sub {
-		case "save":
-			return contextSave(args[2:], out)
-		case "select":
-			return contextSelect(args[2:], out)
-		case "list":
-			return contextList(out)
-		case "show":
-			return contextShow(args[2:], out)
-		case "rm":
-			return contextRm(args[2:], out)
+	return x.usage(out)
+}
+
+// openVerbs is the open grammar: every top-level verb, each dispatching
+// its own sub-verbs, the usage for anything it does not know.
+func (x *runner) openVerbs() map[string]Verb {
+	sub := func(verbs map[string]Verb) Verb {
+		return func(ctx context.Context, args []string, out io.Writer) error {
+			if len(args) >= 1 {
+				if verb, ok := verbs[args[0]]; ok {
+					return verb(ctx, args[1:], out)
+				}
+			}
+			return x.usage(out)
 		}
-		return x.usage(out)
-	case "log":
-		switch sub {
-		case "create":
-			return x.logCreate(ctx, args[2:], out)
-		case "select":
-			return x.logSelect(ctx, args[2:], out)
-		case "list":
-			return x.logList(ctx, args[2:], out)
-		}
-		return x.usage(out)
-	case "type":
-		switch sub {
-		case "init":
-			return typeInit(args[2:], out)
-		case "define":
-			return x.typeDefine(ctx, args[2:], out)
-		case "inspect":
-			return x.typeInspect(ctx, args[2:], out)
-		case "list":
-			return x.typeList(ctx, args[2:], out)
-		}
-		return x.usage(out)
-	case "operation", "op":
-		switch sub {
-		case "define":
-			return x.opDefine(ctx, args[2:], out)
-		case "list":
-			return x.opList(ctx, args[2:], out)
-		case "inspect":
-			return x.opInspect(ctx, args[2:], out)
-		case "rm":
-			return x.opRm(ctx, args[2:], out)
-		}
-		return x.usage(out)
-	case "index":
-		switch sub {
-		case "declare":
-			return x.indexDeclare(ctx, args[2:], out)
-		case "delete":
-			return x.indexDelete(ctx, args[2:], out)
-		case "list":
-			return x.indexList(ctx, args[2:], out)
-		}
-		return x.usage(out)
-	case "create":
-		return x.createThing(ctx, args[1:], out)
-	case "do":
-		return x.doOperation(ctx, args[1:], out)
-	case "get":
-		return x.getState(ctx, args[1:], out)
-	case "history":
-		return x.history(ctx, args[1:], out)
-	case "rollup":
-		return x.rollup(ctx, args[1:], out)
-	case "query":
-		return x.query(ctx, args[1:], out)
-	case "things":
-		return x.things(ctx, args[1:], out)
-	case "version":
-		fmt.Fprintln(out, version.Version)
-		return nil
-	default:
-		return x.usage(out)
+	}
+	noCtx := func(f func(args []string, out io.Writer) error) Verb {
+		return func(_ context.Context, args []string, out io.Writer) error { return f(args, out) }
+	}
+	return map[string]Verb{
+		"context": sub(map[string]Verb{
+			"save":   noCtx(contextSave),
+			"select": noCtx(contextSelect),
+			"list":   func(_ context.Context, _ []string, out io.Writer) error { return contextList(out) },
+			"show":   noCtx(contextShow),
+			"rm":     noCtx(contextRm),
+		}),
+		"log":       sub(map[string]Verb{"create": x.logCreate, "select": x.logSelect, "list": x.logList}),
+		"type":      sub(map[string]Verb{"init": noCtx(typeInit), "define": x.typeDefine, "inspect": x.typeInspect, "list": x.typeList}),
+		"operation": sub(map[string]Verb{"define": x.opDefine, "list": x.opList, "inspect": x.opInspect, "rm": x.opRm}),
+		"op":        sub(map[string]Verb{"define": x.opDefine, "list": x.opList, "inspect": x.opInspect, "rm": x.opRm}),
+		"index":     sub(map[string]Verb{"declare": x.indexDeclare, "delete": x.indexDelete, "list": x.indexList}),
+		"member":    sub(map[string]Verb{"add": x.memberAdd, "revoke": x.memberRevoke, "list": x.memberList}),
+		"create":    x.createThing,
+		"do":        x.doOperation,
+		"get":       x.getState,
+		"history":   x.history,
+		"rollup":    x.rollup,
+		"query":     x.query,
+		"things":    x.things,
+		"version": func(_ context.Context, _ []string, out io.Writer) error {
+			fmt.Fprintln(out, version.Version)
+			return nil
+		},
 	}
 }
 
@@ -181,6 +155,11 @@ const OpenUsage = `define vocabulary (your context)
   chronicle op list <type> | inspect <type> <operation> | rm <type> <operation>
   chronicle index declare <index> [--kind K] [--config JSON]
   chronicle index delete <index> | list
+
+who may act (your context)
+  chronicle member add <principal> [--role admin|writer|reader] [--public-key K] [--github-id N]
+  chronicle member revoke <principal>                    the record goes; the credential is your NATS's to kill
+  chronicle member list
 
 work with things
   chronicle create <thing> [--payload JSON] [--op O]     birth through the type's create operation
@@ -1058,6 +1037,102 @@ func (x *runner) indexList(ctx context.Context, args []string, out io.Writer) er
 			continue
 		}
 		fmt.Fprintf(out, "%s\t%s\n", info.Name, info.Kind)
+	}
+	return nil
+}
+
+func (x *runner) memberAdd(ctx context.Context, args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("chronicle member add", flag.ContinueOnError)
+	fs.SetOutput(out)
+	cf := x.addConnectFlags(fs)
+	role := fs.String("role", contract.RoleWriter, "membership role: admin, writer, or reader")
+	publicKey := fs.String("public-key", "", "the member's NATS user public key, where your NATS names users by key")
+	githubID := fs.Int64("github-id", 0, "bind the membership to a GitHub identity (numeric user id)")
+	pos, err := parseArgs(fs, args)
+	if err != nil {
+		return err
+	}
+	if len(pos) != 1 {
+		return fmt.Errorf("member add: exactly one principal")
+	}
+	r, err := cf.resolve()
+	if err != nil {
+		return err
+	}
+	c, err := r.dial()
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	resp, err := c.AddMember(ctx, pos[0], *role, client.WithPublicKey(*publicKey), client.WithGithubID(*githubID))
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "member %s added: role %s\n", resp.Member, resp.Role)
+	return nil
+}
+
+func (x *runner) memberRevoke(ctx context.Context, args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("chronicle member revoke", flag.ContinueOnError)
+	fs.SetOutput(out)
+	cf := x.addConnectFlags(fs)
+	pos, err := parseArgs(fs, args)
+	if err != nil {
+		return err
+	}
+	if len(pos) != 1 {
+		return fmt.Errorf("member revoke: exactly one principal")
+	}
+	r, err := cf.resolve()
+	if err != nil {
+		return err
+	}
+	c, err := r.dial()
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	resp, err := c.RevokeMember(ctx, pos[0])
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "member %s revoked: gone from the registry", resp.Member)
+	if resp.PublicKey != "" {
+		fmt.Fprintf(out, "; user %s is your NATS's to kill", resp.PublicKey)
+	}
+	fmt.Fprintln(out)
+	return nil
+}
+
+func (x *runner) memberList(ctx context.Context, args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("chronicle member list", flag.ContinueOnError)
+	fs.SetOutput(out)
+	cf := x.addConnectFlags(fs)
+	if _, err := parseArgs(fs, args); err != nil {
+		return err
+	}
+	r, err := cf.resolve()
+	if err != nil {
+		return err
+	}
+	c, err := r.dial()
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	members, err := c.ListMembers(ctx)
+	if err != nil {
+		return err
+	}
+	for _, m := range members {
+		line := m.Name + "\t" + m.Role
+		if m.PublicKey != "" {
+			line += "\t" + m.PublicKey
+		}
+		if m.GithubID != 0 {
+			line += fmt.Sprintf("\tgithub:%d", m.GithubID)
+		}
+		fmt.Fprintln(out, line)
 	}
 	return nil
 }

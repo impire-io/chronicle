@@ -22,11 +22,12 @@ import (
 // form (11-the-two-forms.md § membership, without custody): META
 // create-if-absent, and the one admin principal and membership, each
 // create-if-absent, so a second run against the same account changes
-// nothing. The membership carries no public key: in the open form the
-// identity is the operator's NATS user, and the principal is asserted.
-func Seed(ctx context.Context, js jetstream.JetStream, admin string) (jetstream.KeyValue, error) {
-	if admin == "" {
-		return nil, errors.New("seed: the admin principal must not be empty")
+// nothing. The public key is the admin's NATS user where a minter issued
+// one; in the open form it is empty — the identity is the operator's NATS
+// user, and the principal is asserted.
+func Seed(ctx context.Context, js jetstream.JetStream, admin, publicKey string) (jetstream.KeyValue, error) {
+	if err := contract.ValidatePrincipalName(admin); err != nil {
+		return nil, fmt.Errorf("seed: %w", err)
 	}
 	meta, err := js.KeyValue(ctx, contract.MetaBucket)
 	if errors.Is(err, jetstream.ErrBucketNotFound) {
@@ -42,7 +43,7 @@ func Seed(ctx context.Context, js jetstream.JetStream, admin string) (jetstream.
 	if _, err := meta.Create(ctx, contract.MetaPrincipal(admin), principal); err != nil && !errors.Is(err, jetstream.ErrKeyExists) {
 		return nil, fmt.Errorf("seed principal %s: %w", admin, err)
 	}
-	membership, err := json.Marshal(contract.Membership{Role: contract.RoleAdmin})
+	membership, err := json.Marshal(contract.Membership{PublicKey: publicKey, Role: contract.RoleAdmin})
 	if err != nil {
 		return nil, err
 	}
@@ -60,6 +61,11 @@ func Seed(ctx context.Context, js jetstream.JetStream, admin string) (jetstream.
 func RequireRole(ctx context.Context, meta jetstream.KeyValue, principal string, roles ...string) error {
 	if principal == "" {
 		return errors.New("principal: must not be empty")
+	}
+	// The tenant's own service is the operator: it holds every role and
+	// no registry entry (contract.ServicePrincipal).
+	if principal == contract.ServicePrincipal {
+		return nil
 	}
 	entry, err := meta.Get(ctx, contract.MetaMember(principal))
 	if errors.Is(err, jetstream.ErrKeyNotFound) {

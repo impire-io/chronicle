@@ -189,6 +189,8 @@ func Start(ctx context.Context, nc *nats.Conn, cfg Config) (*Node, error) {
 		{"thing-rollup", client.ThingRollupSubject, n.handleThingRollup},
 		{"index-declare", client.IndexDeclareSubject, n.handleIndexDeclare},
 		{"index-delete", client.IndexDeleteSubject, n.handleIndexDelete},
+		{"member-add", client.MemberAddSubject, n.handleMemberAdd},
+		{"member-revoke", client.MemberRevokeSubject, n.handleMemberRevoke},
 	}
 	for _, e := range endpoints {
 		if err := svc.AddEndpoint(e.name, e.handler, micro.WithEndpointSubject(e.subject)); err != nil {

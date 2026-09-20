@@ -231,6 +231,30 @@ func TestCLISpine(t *testing.T) {
 		t.Fatalf("log list output: %s", out)
 	}
 
+	// Who may act: the admin registers a member, who speaks through a
+	// context on the same seed under their own name; revoked, they are
+	// refused; the list shows the registry.
+	out = run(ctx, t, "member", "add", "erin", "--role", "writer")
+	if !strings.Contains(out, "member erin added: role writer") {
+		t.Fatalf("member add output: %s", out)
+	}
+	run(ctx, t, "context", "save", "erin", "--nkey", devdir.UserNkeyPath(dir), "--principal", "erin", "--url", l.URL)
+	run(ctx, t, "rollup", "invoice.invoice-1", "--log", "orders", "--context", "erin")
+	if err := runErr(ctx, "log", "create", "theirs", "--context", "erin"); err == nil || !strings.Contains(err.Error(), "forbidden") {
+		t.Fatalf("writer governed: %v", err)
+	}
+	out = run(ctx, t, "member", "list")
+	if !strings.Contains(out, "admin\tadmin") || !strings.Contains(out, "erin\twriter") {
+		t.Fatalf("member list output: %s", out)
+	}
+	out = run(ctx, t, "member", "revoke", "erin")
+	if !strings.Contains(out, "member erin revoked: gone from the registry") {
+		t.Fatalf("member revoke output: %s", out)
+	}
+	if err := runErr(ctx, "rollup", "invoice.invoice-1", "--log", "orders", "--context", "erin"); err == nil || !strings.Contains(err.Error(), "forbidden") {
+		t.Fatalf("revoked member still speaks: %v", err)
+	}
+
 	// Discovery: the things and their pair grammar, from the state keys.
 	out = run(ctx, t, "things")
 	if !strings.Contains(out, "invoice.invoice-1") || !strings.Contains(out, "freeform-1") {
@@ -413,6 +437,29 @@ func TestCLIExtension(t *testing.T) {
 	shadow := &cli.Extension{Verbs: map[string]cli.Verb{"get": ext.Verbs["fly"]}}
 	if err := cli.RunWith(ctx, []string{"get", "x"}, &out, shadow); err == nil || !strings.Contains(err.Error(), "shadows") {
 		t.Fatalf("shadowing verb not refused: %v", err)
+	}
+	// An override wraps an open verb and may delegate to it.
+	wrapped := &cli.Extension{Override: map[string]func(cli.Verb) cli.Verb{
+		"member": func(open cli.Verb) cli.Verb {
+			return func(ctx context.Context, args []string, out io.Writer) error {
+				if len(args) >= 1 && args[0] == "mint" {
+					fmt.Fprintln(out, "minted")
+					return nil
+				}
+				return open(ctx, args, out)
+			}
+		},
+	}}
+	out.Reset()
+	if err := cli.RunWith(ctx, []string{"member", "mint"}, &out, wrapped); err != nil || !strings.Contains(out.String(), "minted") {
+		t.Fatalf("override: %v %s", err, out.String())
+	}
+	if err := cli.RunWith(ctx, []string{"member", "list"}, &out, wrapped); err == nil || !strings.Contains(err.Error(), "no credentials") {
+		t.Fatalf("override did not delegate to the open verb: %v", err)
+	}
+	stray := &cli.Extension{Override: map[string]func(cli.Verb) cli.Verb{"fly": nil}}
+	if err := cli.RunWith(ctx, []string{"version"}, &out, stray); err == nil || !strings.Contains(err.Error(), "does not have") {
+		t.Fatalf("stray override not refused: %v", err)
 	}
 	if err := runErr(ctx, "log", "list", "--bridge", "p.json", "--tenant", "acme"); err == nil || !strings.Contains(err.Error(), "this build has none") {
 		t.Fatalf("--bridge without a dialer not refused: %v", err)

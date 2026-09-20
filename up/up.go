@@ -113,7 +113,7 @@ func Up(ctx context.Context, cfg Config) (*Local, error) {
 		l.Stop()
 		return nil, err
 	}
-	if _, err := registry.Seed(ctx, js, devdir.LocalPrincipal); err != nil {
+	if _, err := registry.Seed(ctx, js, devdir.LocalPrincipal, ""); err != nil {
 		l.Stop()
 		return nil, err
 	}
