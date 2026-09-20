@@ -9,12 +9,15 @@ linters:
     - depguard
   settings:
     depguard:
-      # The service boundary (specs/001-walking-skeleton): contract is the
-      # one shared leaf; client speaks contract only; services stand alone
-      # and share through contract and client types, never through each
-      # other; devdir is the tiny seam adapters share with the bootstrap;
-      # foldcore and registry (specs/004-search-index) are shared leaves
-      # every projection and API-serving component may use.
+      # The tenant plane's seams (chronicle-hq/02-DESIGN/11-the-two-forms.md):
+      # contract is the one shared leaf; client speaks contract only; the
+      # node and the index kinds stand alone and share through contract
+      # and client types, never through each other; foldcore and registry
+      # are shared leaves every projection and API-serving component may
+      # use; devdir is the tiny seam the adapters share with the quick
+      # start; up composes; cli adapts. Every package here is public
+      # because the managed service (chronicle-service) composes them — the
+      # dependency runs one way, and nothing here knows that repo exists.
       rules:
         contract-is-a-leaf:
           files: ["**/contract/*.go", "!$test"]
@@ -24,164 +27,117 @@ linters:
         client-speaks-contract-only:
           files: ["**/client/*.go", "!$test"]
           deny:
-            - pkg: github.com/impire-io/chronicle/internal
+            - pkg: github.com/impire-io/chronicle/node
               desc: the client package is the wire surface; it never reaches into a service
+            - pkg: github.com/impire-io/chronicle/index
+              desc: the client package is the wire surface; it never reaches into a service
+            - pkg: github.com/impire-io/chronicle/foldcore
+              desc: the client package is the wire surface; it never reaches into a service
+            - pkg: github.com/impire-io/chronicle/registry
+              desc: the client package is the wire surface; it never reaches into a service
+            - pkg: github.com/impire-io/chronicle/up
+              desc: the client never imports the composition
+            - pkg: "github.com/impire-io/chronicle/cli{,/**}"
+              desc: the client never imports the adapters
+            - pkg: github.com/impire-io/chronicle/devdir
+              desc: the client knows no data-dir conventions
         node-stands-alone:
-          files: ["**/internal/node/**", "!$test"]
+          files: ["**/node/**", "!$test"]
           deny:
-            - pkg: github.com/impire-io/chronicle/internal/control
+            - pkg: github.com/impire-io/chronicle/index
               desc: services never import each other; share through contract and client types
-            - pkg: github.com/impire-io/chronicle/internal/index
-              desc: services never import each other; share through contract and client types
-            - pkg: github.com/impire-io/chronicle/internal/mint
-              desc: the node holds a tenant's service user only; minting never enters it
-            - pkg: github.com/impire-io/chronicle/internal/fleet
-              desc: services never import the composition root
-            - pkg: github.com/impire-io/chronicle/internal/cli
+            - pkg: github.com/impire-io/chronicle/up
+              desc: services never import the composition
+            - pkg: "github.com/impire-io/chronicle/cli{,/**}"
               desc: services never import the adapters
-            - pkg: github.com/impire-io/chronicle/internal/devdir
+            - pkg: github.com/impire-io/chronicle/devdir
               desc: services know no data-dir conventions; their mains do the connecting
-        control-stands-alone:
-          files: ["**/internal/control/**", "!$test"]
+        index-kinds-stand-alone:
+          files: ["**/index/**", "!$test"]
           deny:
-            - pkg: github.com/impire-io/chronicle/internal/node
-              desc: services never import each other; the composition root wires them
-            - pkg: github.com/impire-io/chronicle/internal/index
-              desc: services never import each other; the composition root wires them
-            - pkg: github.com/impire-io/chronicle/internal/fleet
-              desc: services never import the composition root
-            - pkg: github.com/impire-io/chronicle/internal/cli
-              desc: services never import the adapters
-        index-search-stands-alone:
-          files: ["**/internal/index/**", "!$test"]
-          deny:
-            - pkg: github.com/impire-io/chronicle/internal/node
+            - pkg: github.com/impire-io/chronicle/node
               desc: services never import each other; share through contract and client types
-            - pkg: github.com/impire-io/chronicle/internal/control
-              desc: services never import each other; share through contract and client types
-            - pkg: github.com/impire-io/chronicle/internal/mint
-              desc: an indexer holds a tenant's service user only; minting never enters it
-            - pkg: github.com/impire-io/chronicle/internal/fleet
-              desc: services never import the composition root
-            - pkg: github.com/impire-io/chronicle/internal/cli
+            - pkg: github.com/impire-io/chronicle/up
+              desc: services never import the composition
+            - pkg: "github.com/impire-io/chronicle/cli{,/**}"
               desc: services never import the adapters
-            - pkg: github.com/impire-io/chronicle/internal/devdir
+            - pkg: github.com/impire-io/chronicle/devdir
               desc: services know no data-dir conventions; their mains do the connecting
         foldcore-is-a-shared-leaf:
-          files: ["**/internal/foldcore/*.go", "!$test"]
+          files: ["**/foldcore/*.go", "!$test"]
           deny:
-            - pkg: github.com/impire-io/chronicle/internal/node
+            - pkg: github.com/impire-io/chronicle/node
               desc: the shared judgment imports no service
-            - pkg: github.com/impire-io/chronicle/internal/control
+            - pkg: github.com/impire-io/chronicle/index
               desc: the shared judgment imports no service
-            - pkg: github.com/impire-io/chronicle/internal/index
-              desc: the shared judgment imports no service
-            - pkg: github.com/impire-io/chronicle/internal/fleet
-              desc: the shared judgment never imports the composition root
-            - pkg: github.com/impire-io/chronicle/internal/cli
+            - pkg: github.com/impire-io/chronicle/up
+              desc: the shared judgment never imports the composition
+            - pkg: "github.com/impire-io/chronicle/cli{,/**}"
               desc: the shared judgment never imports the adapters
-            - pkg: github.com/impire-io/chronicle/internal/mint
-              desc: the shared judgment holds no minting material
         registry-is-a-shared-leaf:
-          files: ["**/internal/registry/*.go", "!$test"]
+          files: ["**/registry/*.go", "!$test"]
           deny:
-            - pkg: github.com/impire-io/chronicle/internal/node
+            - pkg: github.com/impire-io/chronicle/node
               desc: the shared role check imports no service
-            - pkg: github.com/impire-io/chronicle/internal/control
+            - pkg: github.com/impire-io/chronicle/index
               desc: the shared role check imports no service
-            - pkg: github.com/impire-io/chronicle/internal/index
-              desc: the shared role check imports no service
-            - pkg: github.com/impire-io/chronicle/internal/fleet
-              desc: the shared role check never imports the composition root
-            - pkg: github.com/impire-io/chronicle/internal/cli
+            - pkg: github.com/impire-io/chronicle/up
+              desc: the shared role check never imports the composition
+            - pkg: "github.com/impire-io/chronicle/cli{,/**}"
               desc: the shared role check never imports the adapters
-            - pkg: github.com/impire-io/chronicle/internal/mint
-              desc: the shared role check holds no minting material
-        mint-is-the-seam:
-          files: ["**/internal/mint/*.go", "!$test"]
-          deny:
-            - pkg: github.com/impire-io/chronicle/client
-              desc: minting issues credentials; speaking over them is a client's job
-            - pkg: github.com/impire-io/chronicle/internal/node
-              desc: the seam imports no service
-            - pkg: github.com/impire-io/chronicle/internal/control
-              desc: the seam imports no service
-            - pkg: github.com/impire-io/chronicle/internal/fleet
-              desc: the seam never imports the composition root
-            - pkg: github.com/impire-io/chronicle/internal/cli
-              desc: the seam never imports the adapters
         devdir-imports-nothing:
-          files: ["**/internal/devdir/*.go", "!$test"]
+          files: ["**/devdir/*.go", "!$test"]
           deny:
             - pkg: github.com/impire-io/chronicle
               desc: devdir declares conventions; it imports no chronicle package
-        fleet-composes-the-services:
-          files: ["**/internal/fleet/*.go", "!$test"]
+        guestnet-imports-nothing:
+          files: ["**/guestnet/*.go", "!$test"]
+          deny:
+            - pkg: github.com/impire-io/chronicle
+              desc: guestnet resolves a guest's host; it imports no chronicle package
+        up-composes-the-tenant-plane:
+          files: ["**/up/*.go", "!$test"]
           deny:
             - pkg: github.com/impire-io/chronicle/client
-              desc: the composition root starts services; speaking to them is a client's job
-            - pkg: github.com/impire-io/chronicle/internal/cli
-              desc: the composition root never imports the adapters
+              desc: the composition starts services; speaking to them is a client's job
+            - pkg: "github.com/impire-io/chronicle/cli{,/**}"
+              desc: the composition never imports the adapters
         adapters-speak-client-only:
-          files: ["**/internal/cli/*.go", "!$test"]
+          files: ["**/cli/*.go", "!$test"]
           deny:
-            - pkg: github.com/impire-io/chronicle/internal/node
-              desc: adapters reach the fleet through the client package, never a service's internals
-            - pkg: github.com/impire-io/chronicle/internal/control
-              desc: adapters reach the fleet through the client package, never a service's internals
-            - pkg: github.com/impire-io/chronicle/internal/mint
-              desc: adapters hold no minting material
-            - pkg: github.com/impire-io/chronicle/internal/fleet
-              desc: adapters stay clients; the composition root is dispatched from cmd/chronicle
+            - pkg: github.com/impire-io/chronicle/node
+              desc: adapters reach the tenant plane through the client package, never a service's internals
+            - pkg: github.com/impire-io/chronicle/index
+              desc: adapters reach the tenant plane through the client package, never a service's internals
+            - pkg: github.com/impire-io/chronicle/foldcore
+              desc: adapters reach the tenant plane through the client package
+            - pkg: github.com/impire-io/chronicle/registry
+              desc: adapters reach the tenant plane through the client package
+            - pkg: github.com/impire-io/chronicle/up
+              desc: adapters stay clients; the composition is dispatched from cmd/chronicle
         cmd-chronicle-runs-cli-and-composition:
           files: ["**/cmd/chronicle/*.go"]
           deny:
-            - pkg: github.com/impire-io/chronicle/internal/node
-              desc: cmd/chronicle reaches the services only through internal/fleet
-            - pkg: github.com/impire-io/chronicle/internal/control
-              desc: cmd/chronicle reaches the services only through internal/fleet
-            - pkg: github.com/impire-io/chronicle/internal/mint
-              desc: cmd/chronicle holds no minting material
+            - pkg: github.com/impire-io/chronicle/node
+              desc: cmd/chronicle reaches the tenant plane only through up and cli
+            - pkg: github.com/impire-io/chronicle/index
+              desc: cmd/chronicle reaches the tenant plane only through up and cli
         cmd-chronicle-node-runs-its-service:
           files: ["**/cmd/chronicle-node/*.go"]
           deny:
-            - pkg: github.com/impire-io/chronicle/internal/control
-              desc: this main runs internal/node and nothing else
-            - pkg: github.com/impire-io/chronicle/internal/fleet
-              desc: this main runs internal/node and nothing else
-            - pkg: github.com/impire-io/chronicle/internal/cli
-              desc: this main runs internal/node and nothing else
-            - pkg: github.com/impire-io/chronicle/internal/mint
-              desc: a node holds a tenant's service user only, never minting material
-        cmd-chronicle-control-runs-the-control-plane:
-          # One control instance over an operator-run substrate (specs/020-
-          # custody) is the composition root's wiring: like cmd/chronicle,
-          # this main reaches the services only through internal/fleet.
-          files: ["**/cmd/chronicle-control/*.go"]
+            - pkg: github.com/impire-io/chronicle/index
+              desc: this main runs the node and nothing else
+            - pkg: github.com/impire-io/chronicle/up
+              desc: this main runs the node and nothing else
+            - pkg: "github.com/impire-io/chronicle/cli{,/**}"
+              desc: this main runs the node and nothing else
+        cmd-chronicle-workload-runs-one-kind:
+          files: ["**/cmd/chronicle-workload/*.go"]
           deny:
-            - pkg: github.com/impire-io/chronicle/internal/node
-              desc: cmd/chronicle-control reaches the services only through internal/fleet
-            - pkg: github.com/impire-io/chronicle/internal/control
-              desc: cmd/chronicle-control reaches the services only through internal/fleet
-            - pkg: github.com/impire-io/chronicle/internal/mint
-              desc: cmd/chronicle-control holds no minting material
-            - pkg: github.com/impire-io/chronicle/internal/cli
-              desc: cmd/chronicle-control never imports the adapters
-        cmd-chronicle-workloads-runs-its-service:
-          # The workload service standalone (decision 0029): its credential
-          # and internal/workloads, nothing else.
-          files: ["**/cmd/chronicle-workloads/*.go"]
-          deny:
-            - pkg: github.com/impire-io/chronicle/internal/node
-              desc: this main runs internal/workloads and nothing else
-            - pkg: github.com/impire-io/chronicle/internal/control
-              desc: this main runs internal/workloads and nothing else
-            - pkg: github.com/impire-io/chronicle/internal/fleet
-              desc: this main runs internal/workloads and nothing else
-            - pkg: github.com/impire-io/chronicle/internal/cli
-              desc: this main runs internal/workloads and nothing else
-            - pkg: github.com/impire-io/chronicle/internal/mint
-              desc: the workload service holds its own credential only, never minting material
+            - pkg: github.com/impire-io/chronicle/up
+              desc: this main runs one placement kind and nothing else
+            - pkg: "github.com/impire-io/chronicle/cli{,/**}"
+              desc: this main runs one placement kind and nothing else
     errcheck:
       # Writing to stdout/stderr and ignoring the (near-impossible) error is idiomatic.
       exclude-functions:

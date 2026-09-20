@@ -2,11 +2,13 @@ version: 2
 
 project_name: chronicle
 
-# The shipped set is the whole fleet — all six binaries in every platform
-# archive (the sixth, chronicle-workloads, per decision 0029), plus the
-# standalone linux guest workloads (amd64 and arm64). The matrix answers to
-# chronicle-hq decisions 0017 and 0029; changing it is an amendment there,
-# never a quiet edit here.
+# The shipped set is the open tenant plane — chronicle (the CLI and the
+# quick start), chronicle-node, chronicle-workload — in every platform
+# archive, plus the standalone linux guest workloads (amd64 and arm64)
+# the managed service's microsandbox backend copies into microVM guests.
+# The matrix answers to chronicle-hq decisions 0017 and 0031; changing it
+# is an amendment there, never a quiet edit here. The managed binaries
+# ship from chronicle-service's own flow.
 #
 # {{.Version}} is the tag with the v stripped — bare semver, which the
 # NATS micro service registration requires. Dev builds stay 0.0.0-dev;
@@ -23,42 +25,9 @@ builds:
       - -s -w -X github.com/impire-io/chronicle/internal/version.Version={{.Version}}
     mod_timestamp: "{{ .CommitTimestamp }}"
 
-  - id: chronicle-control
-    main: ./cmd/chronicle-control
-    binary: chronicle-control
-    env:
-      - CGO_ENABLED=0
-    goos: [linux, darwin, windows]
-    goarch: [amd64, arm64]
-    ldflags:
-      - -s -w -X github.com/impire-io/chronicle/internal/version.Version={{.Version}}
-    mod_timestamp: "{{ .CommitTimestamp }}"
-
   - id: chronicle-node
     main: ./cmd/chronicle-node
     binary: chronicle-node
-    env:
-      - CGO_ENABLED=0
-    goos: [linux, darwin, windows]
-    goarch: [amd64, arm64]
-    ldflags:
-      - -s -w -X github.com/impire-io/chronicle/internal/version.Version={{.Version}}
-    mod_timestamp: "{{ .CommitTimestamp }}"
-
-  - id: chronicle-executor
-    main: ./cmd/chronicle-executor
-    binary: chronicle-executor
-    env:
-      - CGO_ENABLED=0
-    goos: [linux, darwin, windows]
-    goarch: [amd64, arm64]
-    ldflags:
-      - -s -w -X github.com/impire-io/chronicle/internal/version.Version={{.Version}}
-    mod_timestamp: "{{ .CommitTimestamp }}"
-
-  - id: chronicle-workloads
-    main: ./cmd/chronicle-workloads
-    binary: chronicle-workloads
     env:
       - CGO_ENABLED=0
     goos: [linux, darwin, windows]
@@ -96,7 +65,7 @@ builds:
 
 archives:
   - id: chronicle
-    ids: [chronicle, chronicle-control, chronicle-node, chronicle-executor, chronicle-workloads, chronicle-workload]
+    ids: [chronicle, chronicle-node, chronicle-workload]
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     formats: [tar.gz]
     format_overrides:
@@ -112,12 +81,12 @@ archives:
     name_template: "chronicle-workload_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     formats: [binary]
 
-# One formula installing the fleet from the platform archive. It is pushed
-# to impire-io/homebrew-tap on every release — RCs included, deliberately:
-# pre-v1 the candidates ARE the releases, and the tap is the one-command
-# install path (no Go toolchain, nothing edited). Needs the
-# HOMEBREW_TAP_TOKEN repo secret (fine-grained PAT, contents read/write on
-# the tap repo) — the workflow passes it through.
+# One formula installing the open set from the platform archive. It is
+# pushed to impire-io/homebrew-tap on every release — RCs included,
+# deliberately: pre-v1 the candidates ARE the releases, and the tap is
+# the one-command install path (no Go toolchain, nothing edited). Needs
+# the HOMEBREW_TAP_TOKEN repo secret (fine-grained PAT, contents
+# read/write on the tap repo) — the workflow passes it through.
 brews:
   - name: chronicle
     ids: [chronicle]
@@ -136,10 +105,7 @@ brews:
       email: noreply@impire.io
     install: |
       bin.install "chronicle"
-      bin.install "chronicle-control"
       bin.install "chronicle-node"
-      bin.install "chronicle-executor"
-      bin.install "chronicle-workloads"
       bin.install "chronicle-workload"
     test: |
       assert_match version.to_s, shell_output("#{bin}/chronicle version")

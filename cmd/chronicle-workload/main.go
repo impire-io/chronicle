@@ -1,11 +1,11 @@
-// Command chronicle-workload is the scheduled form of the fleet's
-// workload kinds (chronicle-hq/02-DESIGN/06-scheduler.md § the workload
-// contract): the one binary a placement runs, whatever the backend.
-// Backend zero never execs it — it starts the same kinds in-process — but
-// every real backend boots exactly this, with the two channels the
-// contract names: non-secret boot configuration as flags, the service
-// creds as a mounted file. A URL naming the msb-gateway host is resolved
-// against the guest's own routing table at boot.
+// Command chronicle-workload is the placement binary: a node or an index
+// kind as one process, whoever starts it (chronicle-hq/02-DESIGN/06-
+// scheduler.md § the workload contract). On the operator's own NATS it is
+// the unit they run per declared index; in the managed service every real
+// backend boots exactly this, with the two channels the contract names:
+// non-secret boot configuration as flags, the service creds as a mounted
+// file. A URL naming the msb-gateway host is resolved against the guest's
+// own routing table at boot.
 package main
 
 import (
@@ -20,12 +20,12 @@ import (
 
 	"github.com/impire-io/chronicle/client"
 	"github.com/impire-io/chronicle/contract"
-	"github.com/impire-io/chronicle/internal/guestnet"
-	"github.com/impire-io/chronicle/internal/index/graph"
-	"github.com/impire-io/chronicle/internal/index/search"
-	"github.com/impire-io/chronicle/internal/index/semantic"
-	"github.com/impire-io/chronicle/internal/node"
+	"github.com/impire-io/chronicle/guestnet"
+	"github.com/impire-io/chronicle/index/graph"
+	"github.com/impire-io/chronicle/index/search"
+	"github.com/impire-io/chronicle/index/semantic"
 	"github.com/impire-io/chronicle/internal/version"
+	"github.com/impire-io/chronicle/node"
 )
 
 func main() {
@@ -36,24 +36,30 @@ func main() {
 }
 
 func run() error {
-	kind := flag.String("kind", "", "workload kind: node or index-search (required)")
+	kind := flag.String("kind", "", "workload kind: node, index-search, index-graph, or index-semantic (required)")
 	logName := flag.String("log", "", "the indexed log (index kinds only)")
 	index := flag.String("index", "", "the index name (index kinds only)")
 	url := flag.String("url", "nats://127.0.0.1:4222", "NATS url; host msb-gateway resolves to the guest's default gateway")
-	creds := flag.String("creds", "", "the tenant's service-user credentials (required)")
+	creds := flag.String("creds", "", "the tenant's service-user credentials (.creds)")
+	nkey := flag.String("nkey", "", "the tenant's service user as an nkey seed file (instead of --creds)")
 	embedURL := flag.String("embedding-url", "", "OpenAI-compatible embedding endpoint (semantic kind)")
 	embedModel := flag.String("embedding-model", "", "embedding model (semantic kind)")
 	embedKeyFile := flag.String("embedding-key-file", "", "file carrying the provider key (semantic kind)")
 	flag.Parse()
-	if *creds == "" {
-		return fmt.Errorf("--creds is required")
+	if (*creds == "") == (*nkey == "") {
+		return fmt.Errorf("exactly one of --creds and --nkey is required")
 	}
 
 	resolved, err := guestnet.ResolveURL(*url)
 	if err != nil {
 		return err
 	}
-	c, err := client.ConnectFile(resolved, *creds)
+	var c *client.Client
+	if *creds != "" {
+		c, err = client.ConnectFile(resolved, *creds)
+	} else {
+		c, err = client.ConnectNkeyFile(resolved, *nkey, "chronicle-workload")
+	}
 	if err != nil {
 		return err
 	}
@@ -105,7 +111,7 @@ func run() error {
 		}
 		stopWorkload = svc.Stop
 	default:
-		return fmt.Errorf("kind %q is not in this build's vocabulary (node, index-search)", *kind)
+		return fmt.Errorf("kind %q is not in this build's vocabulary (node, index-search, index-graph, index-semantic)", *kind)
 	}
 	defer stopWorkload()
 
