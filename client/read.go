@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/impire-io/chronicle/contract"
@@ -59,6 +60,13 @@ func (c *Client) Replay(ctx context.Context, log, thing string) ([]contract.Op, 
 	return ops, err
 }
 
+// The replay's fetch cadence: one short wait per fetch, retried within a
+// budget that outlasts any transient stall of the ordered consumer.
+const (
+	replayWait   = time.Second
+	replayBudget = 20 * time.Second
+)
+
 // FoldTail replays a thing's ops after the given stream sequence — the
 // exactness recipe: read the state value, then fold the log from Seq+1
 // with the reader's own semantics.
@@ -95,10 +103,31 @@ func (c *Client) fold(ctx context.Context, log, subject string, after uint64, ap
 		return fmt.Errorf("consumer info: %w", err)
 	}
 	pending := info.NumPending
-	for range pending {
-		msg, err := cons.Next(jetstream.FetchMaxWait(10 * time.Second))
-		if err != nil {
-			return fmt.Errorf("replay next: %w", err)
+	// Short fetches inside a budget, like the node's own replay: an ordered
+	// consumer that resets under load recovers on the next fetch, and a
+	// subject compacted away meanwhile reads as nothing left rather than
+	// a message that never came.
+	deadline := time.Now().Add(replayBudget)
+	for delivered := uint64(0); delivered < pending; delivered++ {
+		var msg jetstream.Msg
+		for {
+			var err error
+			msg, err = cons.Next(jetstream.FetchMaxWait(replayWait))
+			if err == nil {
+				break
+			}
+			if !errors.Is(err, nats.ErrTimeout) && !errors.Is(err, jetstream.ErrNoMessages) {
+				return fmt.Errorf("replay next: %w", err)
+			}
+			if ctx.Err() != nil {
+				return fmt.Errorf("replay next: %w", ctx.Err())
+			}
+			if time.Now().After(deadline) {
+				return fmt.Errorf("replay next: %w", err)
+			}
+			if info, ierr := cons.Info(ctx); ierr == nil && info.NumPending == 0 {
+				return nil
+			}
 		}
 		md, err := msg.Metadata()
 		if err != nil {
