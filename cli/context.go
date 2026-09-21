@@ -198,6 +198,29 @@ func SaveContext(name string, c Context) error {
 	return saveStoredContext(root, name, sc)
 }
 
+// LoadContext reads a stored context as a build sees it — the named one,
+// or the selection when the name is empty (CHRONICLE_CONTEXT beats the
+// store's current file); ok is false when nothing is selected. It is the
+// extension's way to speak from the context the user selected: the
+// managed build's `account create` finds the bridge login there.
+func LoadContext(name string) (Context, bool, error) {
+	root, err := configRoot()
+	if err != nil {
+		return Context{}, false, err
+	}
+	if name == "" {
+		name = currentContextName(root)
+	}
+	if name == "" {
+		return Context{}, false, nil
+	}
+	sc, err := loadStoredContext(root, name)
+	if err != nil {
+		return Context{}, false, err
+	}
+	return Context(sc), true, nil
+}
+
 // SelectContext makes a saved context the selection.
 func SelectContext(name string) error {
 	root, err := configRoot()

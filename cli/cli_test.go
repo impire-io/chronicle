@@ -490,6 +490,17 @@ func TestCLIExtension(t *testing.T) {
 	if err := cli.RunWith(ctx, []string{"log", "list", "--bridge", "p.json"}, &out, bridged); err == nil || !strings.Contains(err.Error(), "--account") {
 		t.Fatalf("--bridge without an account not taught: %v", err)
 	}
+	// A build reads the selection back — the managed account create finds
+	// the bridge login there.
+	if err := cli.RunWith(ctx, []string{"context", "select", "hosted"}, &out, bridged); err != nil {
+		t.Fatalf("context select: %v", err)
+	}
+	if c, ok, err := cli.LoadContext(""); err != nil || !ok || !strings.HasSuffix(c.Bridge, "/p.json") || c.Account != "acme" {
+		t.Fatalf("LoadContext of the selection: %+v ok=%v err=%v", c, ok, err)
+	}
+	if _, ok, err := cli.LoadContext("nowhere"); err == nil || ok {
+		t.Fatalf("LoadContext of a missing context: ok=%v err=%v", ok, err)
+	}
 	if err := cli.RunWith(ctx, []string{"context", "save", "half", "--bridge", "p.json"}, &out, bridged); err == nil || !strings.Contains(err.Error(), "--account") {
 		t.Fatalf("context save --bridge without --account not refused: %v", err)
 	}
