@@ -3,6 +3,7 @@ package cli_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/impire-io/chronicle/cli"
+	"github.com/impire-io/chronicle/client"
 	"github.com/impire-io/chronicle/devdir"
 	"github.com/impire-io/chronicle/internal/version"
 	"github.com/impire-io/chronicle/up"
@@ -461,7 +463,34 @@ func TestCLIExtension(t *testing.T) {
 	if err := cli.RunWith(ctx, []string{"version"}, &out, stray); err == nil || !strings.Contains(err.Error(), "does not have") {
 		t.Fatalf("stray override not refused: %v", err)
 	}
-	if err := runErr(ctx, "log", "list", "--bridge", "p.json", "--tenant", "acme"); err == nil || !strings.Contains(err.Error(), "this build has none") {
+	if err := runErr(ctx, "log", "list", "--bridge", "p.json", "--account", "acme"); err == nil || !strings.Contains(err.Error(), "this build has none") {
 		t.Fatalf("--bridge without a dialer not refused: %v", err)
+	}
+	// A bridge context carries the profile and the account: the sentences
+	// need neither flag, and the dial is the build's (0035).
+	dialed := ""
+	bridged := &cli.Extension{BridgeDial: func(profile, account string) (*client.Client, error) {
+		dialed = profile + " " + account
+		return nil, errors.New("dialed")
+	}}
+	out.Reset()
+	if err := cli.RunWith(ctx, []string{"context", "save", "hosted", "--bridge", "p.json", "--account", "acme"}, &out, bridged); err != nil {
+		t.Fatalf("context save --bridge: %v", err)
+	}
+	if err := cli.RunWith(ctx, []string{"log", "list", "--context", "hosted"}, &out, bridged); err == nil || err.Error() != "dialed" || !strings.HasSuffix(dialed, "/p.json acme") {
+		t.Fatalf("bridge context dial: err=%v dialed=%q", err, dialed)
+	}
+	if err := cli.RunWith(ctx, []string{"log", "list", "--context", "hosted", "--account", "other"}, &out, bridged); err == nil || !strings.HasSuffix(dialed, "/p.json other") {
+		t.Fatalf("--account did not beat the context's: %q", dialed)
+	}
+	out.Reset()
+	if err := cli.RunWith(ctx, []string{"context", "show", "hosted"}, &out, bridged); err != nil || !strings.Contains(out.String(), "bridge:  ") || !strings.Contains(out.String(), "account: acme") {
+		t.Fatalf("context show for a bridge context: %v\n%s", err, out.String())
+	}
+	if err := cli.RunWith(ctx, []string{"log", "list", "--bridge", "p.json"}, &out, bridged); err == nil || !strings.Contains(err.Error(), "--account") {
+		t.Fatalf("--bridge without an account not taught: %v", err)
+	}
+	if err := cli.RunWith(ctx, []string{"context", "save", "half", "--bridge", "p.json"}, &out, bridged); err == nil || !strings.Contains(err.Error(), "--account") {
+		t.Fatalf("context save --bridge without --account not refused: %v", err)
 	}
 }
