@@ -5,7 +5,9 @@
 // backend boots exactly this, with the two channels the contract names:
 // non-secret boot configuration as flags, the service creds as a mounted
 // file. A URL naming the msb-gateway host is resolved against the guest's
-// own routing table at boot.
+// own routing table at boot, and a TLS URL is verified against the name
+// the executor hands it (--tls-server-name), not the gateway address —
+// the certificate names the server, never a sandbox's gateway.
 package main
 
 import (
@@ -40,6 +42,7 @@ func run() error {
 	logName := flag.String("log", "", "the indexed log (index kinds only)")
 	index := flag.String("index", "", "the index name (index kinds only)")
 	url := flag.String("url", "nats://127.0.0.1:4222", "NATS url; host msb-gateway resolves to the guest's default gateway")
+	tlsServerName := flag.String("tls-server-name", "", "the name the server's certificate is verified against when the URL's host cannot be named by it, as a guest dialing its gateway; empty means the URL's host")
 	creds := flag.String("creds", "", "the tenant's service-user credentials (.creds)")
 	nkey := flag.String("nkey", "", "the tenant's service user as an nkey seed file (instead of --creds)")
 	embedURL := flag.String("embedding-url", "", "OpenAI-compatible embedding endpoint (semantic kind)")
@@ -56,9 +59,9 @@ func run() error {
 	}
 	var c *client.Client
 	if *creds != "" {
-		c, err = client.ConnectFile(resolved, *creds)
+		c, err = client.ConnectFile(resolved, *creds, client.TLSServerName(*tlsServerName))
 	} else {
-		c, err = client.ConnectNkeyFile(resolved, *nkey, "chronicle-workload")
+		c, err = client.ConnectNkeyFile(resolved, *nkey, "chronicle-workload", client.TLSServerName(*tlsServerName))
 	}
 	if err != nil {
 		return err
