@@ -18,14 +18,27 @@ import (
 	"github.com/impire-io/chronicle/contract"
 )
 
-// Seed births a tenant's registry where no service minted it — the open
-// form (11-the-two-forms.md § membership, without custody): META
+// SeedOpt adjusts the admin membership Seed records.
+type SeedOpt func(*contract.Membership)
+
+// WithGithubID binds the seeded admin to a GitHub identity — the numeric
+// user id — for the browser bridge: a self-service account's admin logs
+// in through the bridge and may hold no issued credential at all
+// (decision 0035). Zero binds nothing.
+func WithGithubID(id int64) SeedOpt {
+	return func(m *contract.Membership) { m.GithubID = id }
+}
+
+// Seed births an account's registry where no service minted it — the
+// open form (11-the-two-forms.md § membership, without custody): META
 // create-if-absent, and the one admin principal and membership, each
 // create-if-absent, so a second run against the same account changes
 // nothing. The public key is the admin's NATS user where a minter issued
 // one; in the open form it is empty — the identity is the operator's NATS
-// user, and the principal is asserted.
-func Seed(ctx context.Context, js jetstream.JetStream, admin, publicKey string) (jetstream.KeyValue, error) {
+// user, and the principal is asserted. The managed service seeds the same
+// way at every mint, binding the admin to its GitHub identity where the
+// account is the identity's own.
+func Seed(ctx context.Context, js jetstream.JetStream, admin, publicKey string, opts ...SeedOpt) (jetstream.KeyValue, error) {
 	if err := contract.ValidatePrincipalName(admin); err != nil {
 		return nil, fmt.Errorf("seed: %w", err)
 	}
@@ -43,7 +56,11 @@ func Seed(ctx context.Context, js jetstream.JetStream, admin, publicKey string) 
 	if _, err := meta.Create(ctx, contract.MetaPrincipal(admin), principal); err != nil && !errors.Is(err, jetstream.ErrKeyExists) {
 		return nil, fmt.Errorf("seed principal %s: %w", admin, err)
 	}
-	membership, err := json.Marshal(contract.Membership{PublicKey: publicKey, Role: contract.RoleAdmin})
+	m := contract.Membership{PublicKey: publicKey, Role: contract.RoleAdmin}
+	for _, opt := range opts {
+		opt(&m)
+	}
+	membership, err := json.Marshal(m)
 	if err != nil {
 		return nil, err
 	}
