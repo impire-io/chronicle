@@ -1,4 +1,4 @@
-// Command chronicle is the open CLI: the tenant sentences, and — through
+// Command chronicle is the open CLI: the account sentences, and — through
 // `chronicle up` — the quick start in one process. The managed service
 // builds the same binary with its verbs added (11-the-two-forms.md § the
 // managed CLI).

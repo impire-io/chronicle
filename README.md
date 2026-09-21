@@ -2,17 +2,17 @@
 
 Chronicle is ops-logs as a product: append-only event logs whose folded
 state and declared indexes (search, graph, semantic) run as NATS micro
-services — for one tenant, on any NATS you already have. There is no web
+services — for one account, on any NATS you already have. There is no web
 UI and no side door: a CLI over the one client surface, a node that folds
 your logs, one process per declared index, and a quick start that embeds
 its own server for the five-minute path.
 
-This repository is the **open tenant plane** of chronicle (chronicle-hq
+This repository is the **open account plane** of chronicle (chronicle-hq
 design
 [`11-the-two-forms.md`](../chronicle-hq/02-DESIGN/11-the-two-forms.md),
 decision
 [0031](../chronicle-hq/03-DECISIONS/0031-open-is-one-tenant-the-service-is-managed.md)):
-everything that runs, or is used, inside one tenant. Creating tenants for
+everything that runs, or is used, inside one account. Creating accounts for
 strangers, placing their workloads across hosts, running them in microVMs,
 and logging humans in are the managed service at chronicle.impire.dev,
 built on this code in its own repositories. The repo exists by decision
@@ -59,7 +59,7 @@ interrupted. It is a development convenience and says so: production is
 your own NATS (below).
 
 **3. Work with things** — in another terminal. The quick start's one user
-is the tenant's admin, and every sentence finds it through the data dir,
+is the account's admin, and every sentence finds it through the data dir,
 so nothing needs a flag:
 
 ```sh
@@ -143,7 +143,7 @@ things: **one account**, **JetStream** on it, and users in it. Then:
   | publish | `CHRON.>`, `$SYS.REQ.USER.INFO`, `$JS.API.CONSUMER.>`, `$JS.API.STREAM.INFO.>`, `$JS.API.STREAM.NAMES`, `$JS.API.STREAM.MSG.GET.>`, `$JS.API.DIRECT.GET.>` |
   | subscribe | `CHRON.>`, `_INBOX.>` |
 
-  Membership and roles live in the tenant's `META` bucket and the node
+  Membership and roles live in the account's `META` bucket and the node
   enforces them; the principal a client acts as is the creds file's JWT
   name, or stated beside an nkey. Save it once and speak through it:
 
@@ -153,7 +153,7 @@ things: **one account**, **JetStream** on it, and users in it. Then:
   chronicle context select prod
   ```
 
-What this form cannot do, by construction: create a second tenant, place
+What this form cannot do, by construction: create a second account, place
 a workload on another host, run anything in a microVM, log a human in
 with GitHub, invite anyone. Those are the managed service.
 
@@ -162,12 +162,12 @@ with GitHub, invite anyone. Those are the managed service.
 | Path | What it is |
 |---|---|
 | `cmd/chronicle` | The CLI, and — through `chronicle up` — the quick start in one process (thin main; logic in `cli` and `up`). |
-| `cmd/chronicle-node` | One tenant's node, standalone: the fold, state, and API verbs (thin main; logic in `node`). |
+| `cmd/chronicle-node` | One account's node, standalone: the fold, state, and API verbs (thin main; logic in `node`). |
 | `cmd/chronicle-workload` | The placement binary: a node or an index kind as one process, whoever starts it — your unit, the quick start, or the managed executor's guest (thin main). `--creds` or `--nkey` for the user, `--url` for the server; a guest that reaches a TLS server through an address its certificate cannot name adds `--tls-server-name` — the name is verified, never skipped. |
-| `contract` | The tenant wire contract: subjects, headers, stream/bucket names, META grammar, the placement kinds and the node's index report. |
-| `client` | The public Go client package — the one way callers talk to a tenant, on any NATS in any auth mode. |
+| `contract` | The account wire contract: subjects, headers, stream/bucket names, META grammar, the placement kinds and the node's index report. |
+| `client` | The public Go client package — the one way callers talk to an account, on any NATS in any auth mode. |
 | `node`, `index/*`, `foldcore`, `registry` | The node, the three index kinds and their shared projection, the fold judgment, the membership registry. Public so the managed service composes them; the dependency runs one way. |
-| `cli`, `up`, `devdir`, `guestnet` | The tenant sentences (with the seam a build adds verbs through), the quick start, its data-dir conventions, a guest's way to its host. |
+| `cli`, `up`, `devdir`, `guestnet` | The account sentences (with the seam a build adds verbs through), the quick start, its data-dir conventions, a guest's way to its host. |
 | `specs/` | The spec-kit increments this repo was built through. |
 
 ## Build & run from source
@@ -202,6 +202,6 @@ product carries (chronicle-hq decisions
 [0017](../chronicle-hq/03-DECISIONS/0017-release-flow.md) and
 [0033](../chronicle-hq/03-DECISIONS/0033-the-public-repo-stays-under-the-sustainable-use-license.md)).
 "Open" in the split's sense names the boundary — everything that runs
-inside one tenant, published here — not an OSI license. Contributions
+inside one account, published here — not an OSI license. Contributions
 are under the Developer Certificate of Origin
 ([CONTRIBUTING.md](CONTRIBUTING.md)).

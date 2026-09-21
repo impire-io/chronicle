@@ -2,7 +2,7 @@
 // an adapter on the one product surface, never a side door. The grammar is
 // decision 0025's: vocabulary nouns get noun-verb, everyday sentences get
 // bare verbs, and the connection and working log come from the selected
-// context instead of every invocation. The package carries the tenant
+// context instead of every invocation. The package carries the account
 // sentences — the open form (11-the-two-forms.md § the managed CLI); a
 // build that owns more, the managed service's, adds its verbs through an
 // Extension and ships the same binary as a superset.
@@ -31,8 +31,8 @@ import (
 type Verb func(ctx context.Context, args []string, out io.Writer) error
 
 // Extension is what a build adds to the open CLI. The open binary itself
-// adds `up`; the managed build adds the fleet and its tenants' verbs and
-// a second way of being someone. Nothing here changes a tenant sentence.
+// adds `up`; the managed build adds the fleet and its accounts' verbs and
+// a second way of being someone. Nothing here changes an account sentence.
 type Extension struct {
 	// Verbs are the top-level verbs the build adds, dispatched before the
 	// open sentences by name; a name the open grammar already uses is
@@ -40,18 +40,18 @@ type Extension struct {
 	Verbs map[string]Verb
 	// Override wraps an open verb with the build's own handling, the open
 	// handler passed in to delegate to: the managed build's `member` takes
-	// `<tenant> <principal>` and issues a credential, and hands anything
+	// `<account> <principal>` and issues a credential, and hands anything
 	// else to the open sentence. A name outside the open grammar is
 	// refused at run.
 	Override map[string]func(open Verb) Verb
 	// Usage is the help for the added verbs — the sections printed ahead
-	// of the tenant sentences, in the same sectioned shape.
+	// of the account sentences, in the same sectioned shape.
 	Usage string
-	// BridgeDial dials a tenant sentence through a way of being someone
+	// BridgeDial dials an account sentence through a way of being someone
 	// the open form does not have — the managed service's browser
-	// identity bridge (decision 0026): the profile and the tenant, a
+	// identity bridge (decision 0026): the profile and the account, a
 	// client back. Nil means --bridge is refused with the reason.
-	BridgeDial func(profile, tenant string) (*client.Client, error)
+	BridgeDial func(profile, account string) (*client.Client, error)
 }
 
 // Run dispatches one CLI invocation with no extension: the open grammar.
@@ -141,7 +141,7 @@ type runner struct {
 	ext *Extension
 }
 
-// OpenUsage is the help for the tenant sentences — what every build
+// OpenUsage is the help for the account sentences — what every build
 // prints after its own sections.
 const OpenUsage = `define vocabulary (your context)
   chronicle context save <name> (--creds F | --nkey F --principal P) [--url U]
@@ -205,13 +205,15 @@ func parseArgs(fs *flag.FlagSet, args []string) ([]string, error) {
 	}
 }
 
-// connectFlags are the flags every tenant-plane verb shares. Resolution is
-// field-wise (0025): explicit flags beat CHRONICLE_CONTEXT / CHRONICLE_LOG
-// beat the selected context beat the --dir quick start's recorded url
-// and user. Being someone is one of three ways, never two at once: a
-// creds file (the JWT names the principal), an nkey seed with the
+// connectFlags are the flags every account-plane verb shares. Resolution
+// is field-wise (0025): explicit flags beat CHRONICLE_CONTEXT /
+// CHRONICLE_LOG beat the selected context beat the --dir quick start's
+// recorded url and user. Being someone is one of three ways, never two at
+// once: a creds file (the JWT names the principal), an nkey seed with the
 // principal stated (a user on your own NATS, or the quick start's), or
-// the browser bridge where the build has one.
+// the browser bridge where the build has one — a profile and the account
+// it lands in, which `chronicle login` saves on a context so the
+// sentences need neither flag from there (0035).
 type connectFlags struct {
 	url       *string
 	creds     *string
@@ -221,9 +223,9 @@ type connectFlags struct {
 	logName   *string
 	ctxName   *string
 	bridge    *string
-	tenant    *string
+	account   *string
 
-	bridgeDial func(profile, tenant string) (*client.Client, error)
+	bridgeDial func(profile, account string) (*client.Client, error)
 }
 
 func (x *runner) addConnectFlags(fs *flag.FlagSet) connectFlags {
@@ -235,8 +237,8 @@ func (x *runner) addConnectFlags(fs *flag.FlagSet) connectFlags {
 		dir:       fs.String("dir", devdir.Default(), "the quick start's data dir (chronicle up): the url and identity fallback"),
 		logName:   fs.String("log", "", "the log to speak to (default: CHRONICLE_LOG, else the selected log)"),
 		ctxName:   fs.String("context", "", "context name (default: CHRONICLE_CONTEXT, else the selection)"),
-		bridge:    fs.String("bridge", "", "bridge profile from a managed install; dial via GitHub login (see: chronicle login)"),
-		tenant:    fs.String("tenant", "", "target tenant for a --bridge dial"),
+		bridge:    fs.String("bridge", "", "bridge profile from a managed install; dial via GitHub login (default: the context's; see: chronicle login)"),
+		account:   fs.String("account", "", "the account a --bridge dial lands in (default: the context's)"),
 	}
 	if x.ext != nil {
 		cf.bridgeDial = x.ext.BridgeDial
@@ -261,9 +263,9 @@ type resolved struct {
 	principal string
 	log       string // may be empty; verbs that need one call needLog
 	bridge    string
-	tenant    string
+	account   string
 
-	bridgeDial func(profile, tenant string) (*client.Client, error)
+	bridgeDial func(profile, account string) (*client.Client, error)
 }
 
 func (cf connectFlags) resolve() (resolved, error) {
@@ -280,7 +282,7 @@ func (cf connectFlags) resolve() (resolved, error) {
 	}
 	r := resolved{
 		url: *cf.url, creds: *cf.creds, nkey: *cf.nkey, principal: *cf.principal,
-		log: *cf.logName, bridge: *cf.bridge, tenant: *cf.tenant, bridgeDial: cf.bridgeDial,
+		log: *cf.logName, bridge: *cf.bridge, account: *cf.account, bridgeDial: cf.bridgeDial,
 	}
 	ways := 0
 	for _, w := range []string{r.creds, r.nkey, r.bridge} {
@@ -292,7 +294,10 @@ func (cf connectFlags) resolve() (resolved, error) {
 		return resolved{}, fmt.Errorf("--creds, --nkey and --bridge are three ways to be someone; pick one")
 	}
 	if ways == 0 {
-		r.creds, r.nkey, r.principal = sc.Creds, sc.Nkey, sc.Principal
+		r.creds, r.nkey, r.principal, r.bridge = sc.Creds, sc.Nkey, sc.Principal, sc.Bridge
+	}
+	if r.account == "" {
+		r.account = sc.Account
 	}
 	if r.log == "" {
 		r.log = os.Getenv("CHRONICLE_LOG")
@@ -339,10 +344,10 @@ func (r resolved) dial() (*client.Client, error) {
 		if r.bridgeDial == nil {
 			return nil, fmt.Errorf("--bridge dials through the browser identity bridge, which is the managed service's: this build has none")
 		}
-		if r.tenant == "" {
-			return nil, fmt.Errorf("--bridge needs --tenant")
+		if r.account == "" {
+			return nil, fmt.Errorf("--bridge needs the account to land in: --account A, or the context chronicle login saved")
 		}
-		return r.bridgeDial(r.bridge, r.tenant)
+		return r.bridgeDial(r.bridge, r.account)
 	case r.nkey != "":
 		return client.ConnectNkeyFile(r.url, r.nkey, r.principal)
 	default:
@@ -356,6 +361,8 @@ func contextSave(args []string, out io.Writer) error {
 	creds := fs.String("creds", "", "credentials file — the JWT names the principal")
 	nkey := fs.String("nkey", "", "nkey seed file — a user on your own NATS; needs --principal")
 	principal := fs.String("principal", "", "your member ID, for --nkey")
+	bridge := fs.String("bridge", "", "bridge profile from a managed install — dial via GitHub login; needs --account")
+	account := fs.String("account", "", "the account a --bridge dial lands in")
 	url := fs.String("url", "", "NATS url (default: the --dir quick start's recorded url at use)")
 	pos, err := parseArgs(fs, args)
 	if err != nil {
@@ -364,15 +371,25 @@ func contextSave(args []string, out io.Writer) error {
 	if len(pos) != 1 {
 		return fmt.Errorf("context save: exactly one context name")
 	}
+	ways := 0
+	for _, w := range []string{*creds, *nkey, *bridge} {
+		if w != "" {
+			ways++
+		}
+	}
 	switch {
-	case *creds == "" && *nkey == "":
-		return fmt.Errorf("context save: --creds F, or --nkey F --principal P")
-	case *creds != "" && *nkey != "":
-		return fmt.Errorf("context save: --creds and --nkey are two ways to be someone; pick one")
+	case ways == 0:
+		return fmt.Errorf("context save: --creds F, --nkey F --principal P, or --bridge F --account A")
+	case ways > 1:
+		return fmt.Errorf("context save: --creds, --nkey and --bridge are three ways to be someone; pick one")
 	case *nkey != "" && *principal == "":
 		return fmt.Errorf("context save: --nkey needs --principal (the seed carries no name)")
-	case *creds != "" && *principal != "":
-		return fmt.Errorf("context save: a creds file names its principal; --principal goes with --nkey")
+	case *nkey == "" && *principal != "":
+		return fmt.Errorf("context save: a creds file or a bridge names its principal; --principal goes with --nkey")
+	case *bridge != "" && *account == "":
+		return fmt.Errorf("context save: --bridge needs --account (the account the login lands in)")
+	case *bridge == "" && *account != "":
+		return fmt.Errorf("context save: --account goes with --bridge; a creds file or an nkey is already placed")
 	}
 	root, err := configRoot()
 	if err != nil {
@@ -381,18 +398,25 @@ func contextSave(args []string, out io.Writer) error {
 	// A re-save is field-wise: the url and the selected log survive
 	// unless replaced — a rekey swaps the creds, not the connection.
 	sc, _ := loadStoredContext(root, pos[0])
-	if *creds != "" {
+	switch {
+	case *creds != "":
 		abs, err := filepath.Abs(*creds)
 		if err != nil {
 			return err
 		}
-		sc.Creds, sc.Nkey, sc.Principal = abs, "", ""
-	} else {
+		sc.Creds, sc.Nkey, sc.Principal, sc.Bridge, sc.Account = abs, "", "", "", ""
+	case *nkey != "":
 		abs, err := filepath.Abs(*nkey)
 		if err != nil {
 			return err
 		}
-		sc.Creds, sc.Nkey, sc.Principal = "", abs, *principal
+		sc.Creds, sc.Nkey, sc.Principal, sc.Bridge, sc.Account = "", abs, *principal, "", ""
+	default:
+		abs, err := filepath.Abs(*bridge)
+		if err != nil {
+			return err
+		}
+		sc.Creds, sc.Nkey, sc.Principal, sc.Bridge, sc.Account = "", "", "", abs, *account
 	}
 	if *url != "" {
 		sc.URL = *url
@@ -476,10 +500,14 @@ func contextShow(args []string, out io.Writer) error {
 	} else {
 		fmt.Fprintf(out, "url:     (the --dir quick start's recorded url)\n")
 	}
-	if sc.Nkey != "" {
+	switch {
+	case sc.Nkey != "":
 		fmt.Fprintf(out, "nkey:    %s\n", sc.Nkey)
 		fmt.Fprintf(out, "as:      %s\n", sc.Principal)
-	} else {
+	case sc.Bridge != "":
+		fmt.Fprintf(out, "bridge:  %s\n", sc.Bridge)
+		fmt.Fprintf(out, "account: %s\n", sc.Account)
+	default:
 		fmt.Fprintf(out, "creds:   %s\n", sc.Creds)
 	}
 	if sc.Log != "" {

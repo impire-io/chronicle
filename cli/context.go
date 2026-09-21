@@ -17,13 +17,16 @@ import (
 )
 
 // storedContext is one context record: contexts/<name>.json — the
-// connection, one way of being someone (a creds file, or an nkey seed
-// with the principal stated), and the working log.
+// connection, one way of being someone (a creds file, an nkey seed with
+// the principal stated, or a bridge profile with the account the login
+// lands in), and the working log.
 type storedContext struct {
 	URL       string `json:"url,omitempty"`
 	Creds     string `json:"creds,omitempty"`
 	Nkey      string `json:"nkey,omitempty"`
 	Principal string `json:"principal,omitempty"`
+	Bridge    string `json:"bridge,omitempty"`
+	Account   string `json:"account,omitempty"`
 	Log       string `json:"log,omitempty"`
 }
 
@@ -161,18 +164,22 @@ func updateSelectedLog(root, name, log string) error {
 // Context is a stored context as a build sees it: the connection, one way
 // of being someone, the working log. It is the extension's way to end
 // onboarding connected (0025 § 1) after issuing a credential of its own —
-// the managed build's tenant and member verbs save and select the
-// context for the creds they mint.
+// the managed build's account and member verbs save and select the
+// context for the creds they mint, and its login saves the bridge
+// profile with the account it landed in (0035).
 type Context struct {
 	URL       string
 	Creds     string
 	Nkey      string
 	Principal string
+	Bridge    string
+	Account   string
 	Log       string
 }
 
 // SaveContext stores a context under the user config dir, field-wise
-// over what the name already holds: an empty field keeps the stored one.
+// over what the name already holds: an empty field keeps the stored one,
+// and one way of being someone replaces the others.
 func SaveContext(name string, c Context) error {
 	root, err := configRoot()
 	if err != nil {
@@ -182,8 +189,8 @@ func SaveContext(name string, c Context) error {
 	if c.URL != "" {
 		sc.URL = c.URL
 	}
-	if c.Creds != "" || c.Nkey != "" {
-		sc.Creds, sc.Nkey, sc.Principal = c.Creds, c.Nkey, c.Principal
+	if c.Creds != "" || c.Nkey != "" || c.Bridge != "" {
+		sc.Creds, sc.Nkey, sc.Principal, sc.Bridge, sc.Account = c.Creds, c.Nkey, c.Principal, c.Bridge, c.Account
 	}
 	if c.Log != "" {
 		sc.Log = c.Log
