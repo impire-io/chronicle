@@ -163,7 +163,7 @@ with GitHub, invite anyone. Those are the managed service.
 |---|---|
 | `cmd/chronicle` | The CLI, and — through `chronicle up` — the quick start in one process (thin main; logic in `cli` and `up`). |
 | `cmd/chronicle-node` | One tenant's node, standalone: the fold, state, and API verbs (thin main; logic in `node`). |
-| `cmd/chronicle-workload` | The placement binary: a node or an index kind as one process, whoever starts it — your unit, the quick start, or the managed executor's guest (thin main). |
+| `cmd/chronicle-workload` | The placement binary: a node or an index kind as one process, whoever starts it — your unit, the quick start, or the managed executor's guest (thin main). `--creds` or `--nkey` for the user, `--url` for the server; a guest that reaches a TLS server through an address its certificate cannot name adds `--tls-server-name` — the name is verified, never skipped. |
 | `contract` | The tenant wire contract: subjects, headers, stream/bucket names, META grammar, the placement kinds and the node's index report. |
 | `client` | The public Go client package — the one way callers talk to a tenant, on any NATS in any auth mode. |
 | `node`, `index/*`, `foldcore`, `registry` | The node, the three index kinds and their shared projection, the fold judgment, the membership registry. Public so the managed service composes them; the dependency runs one way. |

@@ -33,9 +33,10 @@ type Client struct {
 // Connect dials with decorated .creds content — the managed form's
 // credential, and any operator-mode NATS's. The principal ID is read from
 // the user JWT's name: the SDK stamps Op-Author from the credentials it
-// runs with, an identity it was actually issued.
-func Connect(url string, creds []byte) (*Client, error) {
-	nc, author, err := dialCreds(url, creds, "chronicle-client")
+// runs with, an identity it was actually issued. Further options — a
+// TLSServerName, say — ride after the credential's own.
+func Connect(url string, creds []byte, opts ...nats.Option) (*Client, error) {
+	nc, author, err := dialCreds(url, creds, "chronicle-client", opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -47,7 +48,7 @@ func Connect(url string, creds []byte) (*Client, error) {
 	return c, nil
 }
 
-func dialCreds(url string, creds []byte, name string) (*nats.Conn, string, error) {
+func dialCreds(url string, creds []byte, name string, opts ...nats.Option) (*nats.Conn, string, error) {
 	token, err := jwt.ParseDecoratedJWT(creds)
 	if err != nil {
 		return nil, "", fmt.Errorf("parse creds jwt: %w", err)
@@ -60,14 +61,14 @@ func dialCreds(url string, creds []byte, name string) (*nats.Conn, string, error
 	if err != nil {
 		return nil, "", fmt.Errorf("parse creds nkey: %w", err)
 	}
-	nc, err := nats.Connect(url,
+	nc, err := nats.Connect(url, append([]nats.Option{
 		nats.Name(name),
 		nats.UserJWT(
 			func() (string, error) { return token, nil },
 			func(nonce []byte) ([]byte, error) { return kp.Sign(nonce) },
 		),
-		nats.Timeout(5*time.Second),
-	)
+		nats.Timeout(5 * time.Second),
+	}, opts...)...)
 	if err != nil {
 		return nil, "", fmt.Errorf("connect: %w", err)
 	}
@@ -75,12 +76,12 @@ func dialCreds(url string, creds []byte, name string) (*nats.Conn, string, error
 }
 
 // ConnectFile dials with a .creds file path.
-func ConnectFile(url, credsPath string) (*Client, error) {
+func ConnectFile(url, credsPath string, opts ...nats.Option) (*Client, error) {
 	creds, err := os.ReadFile(credsPath)
 	if err != nil {
 		return nil, fmt.Errorf("read creds: %w", err)
 	}
-	return Connect(url, creds)
+	return Connect(url, creds, opts...)
 }
 
 // ConnectWith dials however the operator's NATS takes a user — an nkey,
@@ -108,12 +109,12 @@ func ConnectWith(url, author string, opts ...nats.Option) (*Client, error) {
 // ConnectNkeyFile dials as an nkey user — a seed file, the way a plain
 // server's config or the quick start names a user — stating the
 // principal.
-func ConnectNkeyFile(url, seedPath, author string) (*Client, error) {
+func ConnectNkeyFile(url, seedPath, author string, opts ...nats.Option) (*Client, error) {
 	opt, err := nats.NkeyOptionFromSeed(seedPath)
 	if err != nil {
 		return nil, fmt.Errorf("read nkey seed: %w", err)
 	}
-	return ConnectWith(url, author, opt)
+	return ConnectWith(url, author, append([]nats.Option{opt}, opts...)...)
 }
 
 // NkeyFromSeed parses a seed file's key pair — for callers that hold the
