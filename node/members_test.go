@@ -67,10 +67,7 @@ func TestMemberVerbs(t *testing.T) {
 	refused(t, err, "forbidden")
 
 	// The registry lists what the verb recorded.
-	members, err := erin.ListMembers(ctx)
-	if err != nil {
-		t.Fatalf("list members: %v", err)
-	}
+	members := collect(t, erin.ListMembers(ctx))
 	byName := map[string]client.MemberInfo{}
 	for _, m := range members {
 		byName[m.Name] = m
@@ -121,10 +118,7 @@ func TestMemberVerbs(t *testing.T) {
 	if _, err := service.AddMember(ctx, "gus", contract.RoleAdmin, client.WithGithubID(42)); err != nil {
 		t.Fatalf("service add member: %v", err)
 	}
-	members, err = alice.ListMembers(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
+	members = collect(t, alice.ListMembers(ctx))
 	for _, m := range members {
 		if m.Name == contract.ServicePrincipal {
 			t.Fatal("the service principal is in the registry")

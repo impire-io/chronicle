@@ -160,32 +160,27 @@ func (s *Service) handleQuery(req micro.Request) {
 
 	var r client.SemanticQueryRequest
 	if err := json.Unmarshal(req.Data(), &r); err != nil {
-		_ = req.Error("bad-request", err.Error(), nil)
+		_ = req.Error(contract.CodeBadRequest, err.Error(), nil)
 		return
 	}
 	if err := registry.RequireRole(ctx, s.proj.Meta(), r.Principal, contract.RoleAdmin, contract.RoleWriter, contract.RoleReader); err != nil {
-		_ = req.Error("forbidden", err.Error(), nil)
+		_ = req.Error(contract.CodeForbidden, err.Error(), nil)
 		return
 	}
 	if r.Text == "" {
-		_ = req.Error("bad-request", "text is required", nil)
+		_ = req.Error(contract.CodeBadRequest, "text is required", nil)
 		return
 	}
 	run, ok := s.proj.Serving().(*semanticRun)
 	if !ok {
 		// Unreachable once Start has returned.
-		_ = req.Error("500", "index not caught up", nil)
+		_ = req.Error(contract.CodeInternal, "index not caught up", nil)
 		return
 	}
-	reply, err := run.query(ctx, r)
+	hits, trailer, err := run.query(ctx, r)
 	if err != nil {
-		_ = req.Error("provider-unavailable", fmt.Sprintf("embed the query: %v", err), nil)
+		_ = req.Error(contract.CodeProviderUnavailable, fmt.Sprintf("embed the query: %v", err), nil)
 		return
 	}
-	data, err := json.Marshal(reply)
-	if err != nil {
-		_ = req.Error("500", err.Error(), nil)
-		return
-	}
-	_ = req.Respond(data)
+	projection.Stream(req, hits, trailer)
 }

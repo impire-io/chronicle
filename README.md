@@ -105,10 +105,21 @@ The graph and semantic kinds are declared the same way with `--kind graph`
 or `--kind semantic` (each takes its `--config`; the designs in
 [`chronicle-hq/02-DESIGN/05-indexes.md`](../chronicle-hq/02-DESIGN/05-indexes.md)
 carry the shapes) and queried through the same verb — text for semantic,
-`--from` (and `--depth` to walk) for graph. `chronicle log list`,
-`chronicle index list`, `chronicle type list`, and `chronicle things`
-say what exists. Run `chronicle` with no arguments for the full verb
-list.
+`--from` (and `--depth` to walk) for graph. Hits stream as they arrive
+and the total closes the listing; `--limit` caps them. `chronicle log
+list`, `chronicle index list`, `chronicle type list`, and `chronicle
+things` say what exists — every collection prints as it arrives, and
+`--json` emits one JSON object per line. Run `chronicle` with no
+arguments for the full verb list.
+
+**5. Build on it.** The Go client is the SDK's Go form: collections are
+iterators, single state is a reply, and the live surface — `Tail`,
+`Watch`, `WatchDeclarations` — is fed by JetStream, never a core
+subscription. What every SDK restates is described once in
+[`contract/sdk-contract.json`](contract/sdk-contract.json) and checked by
+the [conformance suite](conformance/README.md), which every release
+archive carries (the SDK contract,
+[`chronicle-hq/02-DESIGN/12-the-sdk-contract.md`](../chronicle-hq/02-DESIGN/12-the-sdk-contract.md)).
 
 **Optional: the semantic kind.** Semantic indexes need an
 OpenAI-API-compatible `/embeddings` provider and stay declared but

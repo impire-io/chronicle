@@ -74,6 +74,13 @@ archives:
     files:
       - README.md
       - LICENSE
+      # The SDK contract and its conformance suite ride every archive, so an
+      # SDK's CI fetches the suite and the binaries by one version
+      # (chronicle-hq design 12).
+      - contract/sdk-contract.json
+      - conformance/README.md
+      - conformance/fixtures/*.json
+      - conformance/scenarios/*.json
 
   # The standalone guest workloads: raw binary uploads, still checksummed.
   - id: chronicle-workload-guest

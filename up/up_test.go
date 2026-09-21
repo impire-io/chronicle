@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"iter"
 	"strings"
 	"testing"
 	"time"
@@ -71,7 +72,7 @@ func TestUpServesOneTenant(t *testing.T) {
 	}
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		_, err := admin.QueryIndex(ctx, "orders", "text", "widgets", 10, 0)
+		err := drain(admin.QueryIndex(ctx, "orders", "text", "widgets", 10).Items())
 		if err != nil && strings.Contains(err.Error(), "no responder") {
 			break
 		}
@@ -121,12 +122,14 @@ func waitHit(ctx context.Context, t *testing.T, c *client.Client, log, index, qu
 	t.Helper()
 	deadline := time.Now().Add(15 * time.Second)
 	for {
-		resp, err := c.QueryIndex(ctx, log, index, query, 10, 0)
-		if err == nil {
-			for _, h := range resp.Hits {
-				if h.Thing == wantThing {
-					return
-				}
+		var err error
+		for h, herr := range c.QueryIndex(ctx, log, index, query, 10).Items() {
+			if herr != nil {
+				err = herr
+				break
+			}
+			if h.Thing == wantThing {
+				return
 			}
 		}
 		if time.Now().After(deadline) {
@@ -137,4 +140,14 @@ func waitHit(ctx context.Context, t *testing.T, c *client.Client, log, index, qu
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+}
+
+// drain consumes a streamed reply and returns the error that ended it.
+func drain[T any](items iter.Seq2[T, error]) error {
+	for _, err := range items {
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }

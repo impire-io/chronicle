@@ -119,47 +119,41 @@ func (s *Service) handleQuery(req micro.Request) {
 
 	var r client.GraphQueryRequest
 	if err := json.Unmarshal(req.Data(), &r); err != nil {
-		_ = req.Error("bad-request", err.Error(), nil)
+		_ = req.Error(contract.CodeBadRequest, err.Error(), nil)
 		return
 	}
 	if err := registry.RequireRole(ctx, s.proj.Meta(), r.Principal, contract.RoleAdmin, contract.RoleWriter, contract.RoleReader); err != nil {
-		_ = req.Error("forbidden", err.Error(), nil)
+		_ = req.Error(contract.CodeForbidden, err.Error(), nil)
 		return
 	}
 	if r.Thing == "" {
-		_ = req.Error("bad-request", "thing is required", nil)
+		_ = req.Error(contract.CodeBadRequest, "thing is required", nil)
 		return
 	}
 	switch r.Direction {
 	case "", contract.GraphDirectionOut, contract.GraphDirectionIn, contract.GraphDirectionBoth:
 	default:
-		_ = req.Error("bad-direction", fmt.Sprintf("direction %q is not in the vocabulary (out, in, both)", r.Direction), nil)
+		_ = req.Error(contract.CodeBadDirection, fmt.Sprintf("direction %q is not in the vocabulary (out, in, both)", r.Direction), nil)
 		return
 	}
 	run, ok := s.proj.Serving().(*graphRun)
 	if !ok {
 		// Unreachable once Start has returned: the endpoint registers only
 		// after the first fold catches up and swaps its run in.
-		_ = req.Error("500", "index not caught up", nil)
+		_ = req.Error(contract.CodeInternal, "index not caught up", nil)
 		return
 	}
 
-	var reply any
 	switch r.Op {
 	case contract.GraphOpNeighbors, "":
-		reply = run.neighbors(r)
+		res := run.neighbors(r)
+		projection.Stream(req, res.Edges, client.GraphTrailer{Total: res.Total})
 	case contract.GraphOpWalk:
-		reply = run.walk(r)
+		res := run.walk(r)
+		projection.Stream(req, res.Things, client.GraphTrailer{Total: res.Total, DepthCapped: res.DepthCapped, Truncated: res.Truncated})
 	default:
 		// The kind-shaped payload rule (05-indexes.md § the query surface):
 		// a payload outside the index's kind is refused with the kind named.
-		_ = req.Error("bad-op", fmt.Sprintf("op %q is not in the graph kind's vocabulary (neighbors, walk)", r.Op), nil)
-		return
+		_ = req.Error(contract.CodeBadOp, fmt.Sprintf("op %q is not in the graph kind's vocabulary (neighbors, walk)", r.Op), nil)
 	}
-	data, err := json.Marshal(reply)
-	if err != nil {
-		_ = req.Error("500", err.Error(), nil)
-		return
-	}
-	_ = req.Respond(data)
 }

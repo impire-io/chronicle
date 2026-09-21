@@ -1,0 +1,61 @@
+{
+  "$comment": "Subject, stream, bucket and key derivations (design 02, design 03).",
+  "cases": [
+    {
+      "log": "my-log",
+      "thing": "invoice.inv-1",
+      "upper": "MY_LOG",
+      "stream": "LOG_MY_LOG",
+      "stateBucket": "STATE_MY_LOG",
+      "logSubjects": "CHRON.my-log.>",
+      "opsFilter": "CHRON.my-log.OPS.>",
+      "opsSubject": "CHRON.my-log.OPS.invoice.inv-1",
+      "opsPrefix": "CHRON.my-log.OPS.",
+      "thingFromSubject": "invoice.inv-1",
+      "metaLogConfig": "log.my-log.config",
+      "metaType": {
+        "type": "invoice",
+        "key": "log.my-log.type.invoice"
+      },
+      "metaIndex": {
+        "index": "text",
+        "key": "index.my-log.text"
+      }
+    },
+    {
+      "log": "orders",
+      "thing": "a.b.c",
+      "upper": "ORDERS",
+      "stream": "LOG_ORDERS",
+      "stateBucket": "STATE_ORDERS",
+      "logSubjects": "CHRON.orders.>",
+      "opsFilter": "CHRON.orders.OPS.>",
+      "opsSubject": "CHRON.orders.OPS.a.b.c",
+      "opsPrefix": "CHRON.orders.OPS.",
+      "thingFromSubject": "a.b.c",
+      "metaLogConfig": "log.orders.config",
+      "metaType": {
+        "type": "comment",
+        "key": "log.orders.type.comment"
+      },
+      "metaIndex": {
+        "index": "meaning",
+        "key": "index.orders.meaning"
+      }
+    }
+  ],
+  "identity": {
+    "principal": {
+      "id": "alice",
+      "key": "identity.principal.alice"
+    },
+    "member": {
+      "id": "alice",
+      "key": "identity.member.alice"
+    },
+    "invite": {
+      "digest": "abc123",
+      "key": "identity.invite.abc123"
+    }
+  }
+}

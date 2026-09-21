@@ -18,11 +18,7 @@ import (
 // replayOf reads a thing's history, failing the test on error.
 func replayOf(ctx context.Context, t *testing.T, c *client.Client, log, thing string) []contract.Op {
 	t.Helper()
-	ops, err := c.Replay(ctx, log, thing)
-	if err != nil {
-		t.Fatalf("replay %s: %v", thing, err)
-	}
-	return ops
+	return collect(t, c.Replay(ctx, log, thing))
 }
 
 func TestSaveVersion(t *testing.T) {

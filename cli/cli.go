@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/impire-io/chronicle/client"
 	"github.com/impire-io/chronicle/contract"
@@ -147,30 +148,30 @@ const OpenUsage = `define vocabulary (your context)
   chronicle context save <name> (--creds F | --nkey F --principal P) [--url U]
   chronicle context select <name> | show | list | rm <name>
   chronicle log create <log> [--desc S] [--history H]    creates and selects the working log
-  chronicle log select <log> | list
+  chronicle log select <log> | list [--json]
   chronicle type init [<type>]                           print a definition skeleton
   chronicle type define <type> --file F | --def JSON
   chronicle type inspect <type> [--json] | list
   chronicle op define <type> <operation> --schema S [--effect E]      op = operation
   chronicle op list <type> | inspect <type> <operation> | rm <type> <operation>
   chronicle index declare <index> [--kind K] [--config JSON]
-  chronicle index delete <index> | list
+  chronicle index delete <index> | list [--json]
 
 who may act (your context)
   chronicle member add <principal> [--role admin|writer|reader] [--public-key K] [--github-id N]
   chronicle member revoke <principal>                    the record goes; the credential is your NATS's to kill
-  chronicle member list
+  chronicle member list [--json]
 
 work with things
   chronicle create <thing> [--payload JSON] [--op O]     birth through the type's create operation
   chronicle do <thing> <operation> [--payload JSON] [--parents a,b] [--expect-seq N]
-  chronicle get <thing>
-  chronicle history <thing>
+  chronicle get <thing> [--json]
+  chronicle history <thing> [--json]
   chronicle rollup <thing>
 
 find things
-  chronicle query <index> [text...] [--from T] [--depth N] [--limit N] [--offset N]
-  chronicle things [prefix]
+  chronicle query <index> [text...] [--from T] [--depth N] [--limit N] [--json]
+  chronicle things [prefix] [--json]                    every collection streams; --json is JSON lines
 
 chronicle version
 `
@@ -581,9 +582,12 @@ func (x *runner) logSelect(ctx context.Context, args []string, out io.Writer) er
 		return err
 	}
 	defer c.Close()
-	logs, err := c.ListLogs(ctx)
-	if err != nil {
-		return err
+	var logs []string
+	for l, err := range c.ListLogs(ctx) {
+		if err != nil {
+			return err
+		}
+		logs = append(logs, l)
 	}
 	found := false
 	for _, l := range logs {
@@ -596,6 +600,7 @@ func (x *runner) logSelect(ctx context.Context, args []string, out io.Writer) er
 		if len(logs) == 0 {
 			return fmt.Errorf("log %q not found — no logs exist yet (chronicle log create <log>)", pos[0])
 		}
+		sort.Strings(logs)
 		return fmt.Errorf("log %q not found — logs: %s", pos[0], strings.Join(logs, ", "))
 	}
 	if err := updateSelectedLog(root, name, pos[0]); err != nil {
@@ -609,6 +614,7 @@ func (x *runner) logList(ctx context.Context, args []string, out io.Writer) erro
 	fs := flag.NewFlagSet("chronicle log list", flag.ContinueOnError)
 	fs.SetOutput(out)
 	cf := x.addConnectFlags(fs)
+	asJSON := fs.Bool("json", false, "one JSON object per line")
 	if _, err := parseArgs(fs, args); err != nil {
 		return err
 	}
@@ -621,11 +627,16 @@ func (x *runner) logList(ctx context.Context, args []string, out io.Writer) erro
 		return err
 	}
 	defer c.Close()
-	logs, err := c.ListLogs(ctx)
-	if err != nil {
-		return err
-	}
-	for _, l := range logs {
+	for l, err := range c.ListLogs(ctx) {
+		if err != nil {
+			return err
+		}
+		if *asJSON {
+			if err := jsonLine(out, map[string]any{"log": l, "selected": l == r.log}); err != nil {
+				return err
+			}
+			continue
+		}
 		if l == r.log {
 			fmt.Fprintf(out, "%s (selected)\n", l)
 			continue
@@ -739,6 +750,7 @@ func (x *runner) typeList(ctx context.Context, args []string, out io.Writer) err
 	fs := flag.NewFlagSet("chronicle type list", flag.ContinueOnError)
 	fs.SetOutput(out)
 	cf := x.addConnectFlags(fs)
+	asJSON := fs.Bool("json", false, "one JSON object per line")
 	if _, err := parseArgs(fs, args); err != nil {
 		return err
 	}
@@ -755,11 +767,16 @@ func (x *runner) typeList(ctx context.Context, args []string, out io.Writer) err
 		return err
 	}
 	defer c.Close()
-	names, err := c.ListTypes(ctx, log)
-	if err != nil {
-		return err
-	}
-	for _, name := range names {
+	for name, err := range c.ListTypes(ctx, log) {
+		if err != nil {
+			return err
+		}
+		if *asJSON {
+			if err := jsonLine(out, map[string]string{"type": name}); err != nil {
+				return err
+			}
+			continue
+		}
 		fmt.Fprintln(out, name)
 	}
 	return nil
@@ -1011,6 +1028,7 @@ func (x *runner) indexList(ctx context.Context, args []string, out io.Writer) er
 	fs := flag.NewFlagSet("chronicle index list", flag.ContinueOnError)
 	fs.SetOutput(out)
 	cf := x.addConnectFlags(fs)
+	asJSON := fs.Bool("json", false, "one JSON object per line")
 	if _, err := parseArgs(fs, args); err != nil {
 		return err
 	}
@@ -1027,11 +1045,16 @@ func (x *runner) indexList(ctx context.Context, args []string, out io.Writer) er
 		return err
 	}
 	defer c.Close()
-	infos, err := c.ListIndexes(ctx, log)
-	if err != nil {
-		return err
-	}
-	for _, info := range infos {
+	for info, err := range c.ListIndexes(ctx, log) {
+		if err != nil {
+			return err
+		}
+		if *asJSON {
+			if err := jsonLine(out, info); err != nil {
+				return err
+			}
+			continue
+		}
 		if info.Kind == contract.IndexKindState {
 			fmt.Fprintf(out, "%s\t%s\t(born with the log, undeletable)\n", info.Name, info.Kind)
 			continue
@@ -1108,6 +1131,7 @@ func (x *runner) memberList(ctx context.Context, args []string, out io.Writer) e
 	fs := flag.NewFlagSet("chronicle member list", flag.ContinueOnError)
 	fs.SetOutput(out)
 	cf := x.addConnectFlags(fs)
+	asJSON := fs.Bool("json", false, "one JSON object per line")
 	if _, err := parseArgs(fs, args); err != nil {
 		return err
 	}
@@ -1120,11 +1144,16 @@ func (x *runner) memberList(ctx context.Context, args []string, out io.Writer) e
 		return err
 	}
 	defer c.Close()
-	members, err := c.ListMembers(ctx)
-	if err != nil {
-		return err
-	}
-	for _, m := range members {
+	for m, err := range c.ListMembers(ctx) {
+		if err != nil {
+			return err
+		}
+		if *asJSON {
+			if err := jsonLine(out, m); err != nil {
+				return err
+			}
+			continue
+		}
 		line := m.Name + "\t" + m.Role
 		if m.PublicKey != "" {
 			line += "\t" + m.PublicKey
@@ -1253,6 +1282,7 @@ func (x *runner) getState(ctx context.Context, args []string, out io.Writer) err
 	fs := flag.NewFlagSet("chronicle get", flag.ContinueOnError)
 	fs.SetOutput(out)
 	cf := x.addConnectFlags(fs)
+	asJSON := fs.Bool("json", false, "print the state value as one JSON object")
 	pos, err := parseArgs(fs, args)
 	if err != nil {
 		return err
@@ -1277,6 +1307,9 @@ func (x *runner) getState(ctx context.Context, args []string, out io.Writer) err
 	if err != nil {
 		return err
 	}
+	if *asJSON {
+		return jsonLine(out, sv)
+	}
 	fmt.Fprintf(out, "seq %d\n%s\n", sv.Seq, sv.State)
 	return nil
 }
@@ -1285,6 +1318,7 @@ func (x *runner) history(ctx context.Context, args []string, out io.Writer) erro
 	fs := flag.NewFlagSet("chronicle history", flag.ContinueOnError)
 	fs.SetOutput(out)
 	cf := x.addConnectFlags(fs)
+	asJSON := fs.Bool("json", false, "one JSON object per op")
 	pos, err := parseArgs(fs, args)
 	if err != nil {
 		return err
@@ -1305,11 +1339,16 @@ func (x *runner) history(ctx context.Context, args []string, out io.Writer) erro
 		return err
 	}
 	defer c.Close()
-	ops, err := c.Replay(ctx, log, pos[0])
-	if err != nil {
-		return err
-	}
-	for _, op := range ops {
+	for op, err := range c.Replay(ctx, log, pos[0]) {
+		if err != nil {
+			return err
+		}
+		if *asJSON {
+			if err := jsonLine(out, toOpLine(op)); err != nil {
+				return err
+			}
+			continue
+		}
 		fmt.Fprintf(out, "seq %d  %s  by %s  op %s\n  %s\n", op.Seq, op.Type, op.Author, op.ID, op.Payload)
 	}
 	return nil
@@ -1361,8 +1400,8 @@ func (x *runner) query(ctx context.Context, args []string, out io.Writer) error 
 	direction := fs.String("direction", "out", "graph: out, in, or both")
 	label := fs.String("label", "", "graph neighbors: filter to one edge label")
 	labels := fs.String("labels", "", "graph walk: comma-separated traversable labels")
-	limit := fs.Int("limit", 0, "max hits (default 10, cap 100)")
-	offset := fs.Int("offset", 0, "hits to skip")
+	limit := fs.Int("limit", 0, "cap the hits (default: every match)")
+	asJSON := fs.Bool("json", false, "one JSON object per hit, the trailer last")
 	pos, err := parseArgs(fs, args)
 	if err != nil {
 		return err
@@ -1391,15 +1430,29 @@ func (x *runner) query(ctx context.Context, args []string, out io.Writer) error 
 	decl, err := c.GetIndexDeclaration(ctx, log, index)
 	if err != nil {
 		if errors.Is(err, client.ErrNoIndex) {
-			if infos, lerr := c.ListIndexes(ctx, log); lerr == nil && len(infos) > 0 {
-				names := make([]string, 0, len(infos))
-				for _, info := range infos {
-					names = append(names, info.Name)
+			var names []string
+			for info, lerr := range c.ListIndexes(ctx, log) {
+				if lerr != nil {
+					break
 				}
+				names = append(names, info.Name)
+			}
+			if len(names) > 0 {
+				sort.Strings(names)
 				return fmt.Errorf("%w — declared indexes: %s", err, strings.Join(names, ", "))
 			}
 		}
 		return err
+	}
+	// Hits print as they arrive; the trailer's total closes the listing
+	// (design 07, amended by 0036). Under --json the trailer is the last
+	// line, as {"trailer": {...}}.
+	trailer := func(t any, human func()) error {
+		if *asJSON {
+			return jsonLine(out, map[string]any{"trailer": t})
+		}
+		human()
+		return nil
 	}
 	switch decl.Kind {
 	case contract.IndexKindSearch:
@@ -1407,35 +1460,51 @@ func (x *runner) query(ctx context.Context, args []string, out io.Writer) error 
 			fmt.Fprintf(out, "index %s is a search index: chronicle query %s <text...>\n", index, index)
 			return nil
 		}
-		resp, err := c.QueryIndex(ctx, log, index, text, *limit, *offset)
-		if err != nil {
-			return err
-		}
-		for _, hit := range resp.Hits {
+		s := c.QueryIndex(ctx, log, index, text, *limit)
+		for hit, err := range s.Items() {
+			if err != nil {
+				return err
+			}
+			if *asJSON {
+				if err := jsonLine(out, hit); err != nil {
+					return err
+				}
+				continue
+			}
 			fmt.Fprintf(out, "%s\t%.4f\n", hit.Thing, hit.Score)
 		}
-		fmt.Fprintf(out, "%d of %d\n", len(resp.Hits), resp.Total)
+		t, _ := s.Trailer()
+		return trailer(t, func() { fmt.Fprintf(out, "%d of %d\n", s.Count(), t.Total) })
 	case contract.IndexKindSemantic:
 		if text == "" {
 			fmt.Fprintf(out, "index %s is a semantic index: chronicle query %s <text...>\n", index, index)
 			return nil
 		}
-		resp, err := c.QuerySemantic(ctx, log, index, text, *limit, *offset)
-		if err != nil {
-			return err
-		}
-		for _, h := range resp.Hits {
+		s := c.QuerySemantic(ctx, log, index, text, *limit)
+		for h, err := range s.Items() {
+			if err != nil {
+				return err
+			}
+			if *asJSON {
+				if err := jsonLine(out, h); err != nil {
+					return err
+				}
+				continue
+			}
 			fmt.Fprintf(out, "%s\t%.4f", h.Thing, h.Score)
 			if h.Field != "" {
 				fmt.Fprintf(out, "\t%s", h.Field)
 			}
 			fmt.Fprintln(out)
 		}
-		fmt.Fprintf(out, "%d of %d", len(resp.Hits), resp.Total)
-		if resp.Unembedded > 0 {
-			fmt.Fprintf(out, " (%d not yet embedded)", resp.Unembedded)
-		}
-		fmt.Fprintln(out)
+		t, _ := s.Trailer()
+		return trailer(t, func() {
+			fmt.Fprintf(out, "%d of %d", s.Count(), t.Total)
+			if t.Unembedded > 0 {
+				fmt.Fprintf(out, " (%d not yet embedded)", t.Unembedded)
+			}
+			fmt.Fprintln(out)
+		})
 	case contract.IndexKindGraph:
 		if *from == "" {
 			fmt.Fprintf(out, "index %s is a graph index: chronicle query %s --from <thing> [--depth N] [--direction D] [--label L | --labels a,b]\n", index, index)
@@ -1448,47 +1517,62 @@ func (x *runner) query(ctx context.Context, args []string, out io.Writer) error 
 			if *labels != "" {
 				labelList = strings.Split(*labels, ",")
 			}
-			resp, err := c.GraphWalk(ctx, log, index, client.GraphQueryRequest{
+			s := c.GraphWalk(ctx, log, index, client.GraphQueryRequest{
 				Thing: *from, Direction: *direction, Labels: labelList, Depth: *depth, Limit: *limit,
 			})
+			for v, err := range s.Items() {
+				if err != nil {
+					return err
+				}
+				if *asJSON {
+					if err := jsonLine(out, v); err != nil {
+						return err
+					}
+					continue
+				}
+				fmt.Fprintf(out, "%s\tdepth %d\tvia %s\n", v.Thing, v.Depth, v.Via)
+			}
+			t, _ := s.Trailer()
+			return trailer(t, func() {
+				fmt.Fprintf(out, "%d things", t.Total)
+				if t.DepthCapped {
+					fmt.Fprintf(out, " (depth capped at %d)", contract.GraphWalkMaxDepth)
+				}
+				if t.Truncated {
+					fmt.Fprint(out, " (truncated)")
+				}
+				fmt.Fprintln(out)
+			})
+		}
+		s := c.GraphNeighbors(ctx, log, index, client.GraphQueryRequest{
+			Thing: *from, Direction: *direction, Label: *label, Limit: *limit,
+		})
+		for e, err := range s.Items() {
 			if err != nil {
 				return err
 			}
-			for _, v := range resp.Things {
-				fmt.Fprintf(out, "%s\tdepth %d\tvia %s\n", v.Thing, v.Depth, v.Via)
+			if *asJSON {
+				if err := jsonLine(out, e); err != nil {
+					return err
+				}
+				continue
 			}
-			fmt.Fprintf(out, "%d things", resp.Total)
-			if resp.DepthCapped {
-				fmt.Fprintf(out, " (depth capped at %d)", contract.GraphWalkMaxDepth)
-			}
-			if resp.Truncated {
-				fmt.Fprint(out, " (truncated)")
-			}
-			fmt.Fprintln(out)
-			return nil
-		}
-		resp, err := c.GraphNeighbors(ctx, log, index, client.GraphQueryRequest{
-			Thing: *from, Direction: *direction, Label: *label, Limit: *limit, Offset: *offset,
-		})
-		if err != nil {
-			return err
-		}
-		for _, e := range resp.Edges {
 			fmt.Fprintf(out, "%s -[%s]-> %s\n", e.From, e.Label, e.To)
 		}
-		fmt.Fprintf(out, "%d of %d\n", len(resp.Edges), resp.Total)
+		t, _ := s.Trailer()
+		return trailer(t, func() { fmt.Fprintf(out, "%d of %d\n", s.Count(), t.Total) })
 	case contract.IndexKindState:
 		return fmt.Errorf("the state index is read with: chronicle get <thing>")
 	default:
 		return fmt.Errorf("index %s has kind %q this build cannot query", index, decl.Kind)
 	}
-	return nil
 }
 
 func (x *runner) things(ctx context.Context, args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("chronicle things", flag.ContinueOnError)
 	fs.SetOutput(out)
 	cf := x.addConnectFlags(fs)
+	asJSON := fs.Bool("json", false, "one JSON object per line")
 	pos, err := parseArgs(fs, args)
 	if err != nil {
 		return err
@@ -1513,14 +1597,23 @@ func (x *runner) things(ctx context.Context, args []string, out io.Writer) error
 		return err
 	}
 	defer c.Close()
-	names, err := c.ListThings(ctx, log, prefix)
-	if err != nil {
-		return err
-	}
-	for _, name := range names {
+	n := 0
+	for name, err := range c.ListThings(ctx, log, prefix) {
+		if err != nil {
+			return err
+		}
+		n++
+		if *asJSON {
+			if err := jsonLine(out, map[string]string{"thing": name}); err != nil {
+				return err
+			}
+			continue
+		}
 		fmt.Fprintln(out, name)
 	}
-	fmt.Fprintf(out, "%d things\n", len(names))
+	if !*asJSON {
+		fmt.Fprintf(out, "%d things\n", n)
+	}
 	return nil
 }
 
@@ -1536,4 +1629,38 @@ func operationNames(ops map[string]contract.OpDef) []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// jsonLine prints one JSON object per line — the CLI's shape for a
+// collection under --json (design 07, amended by 0036): a listing streams
+// to stdout as it streams to the SDK caller.
+func jsonLine(out io.Writer, v any) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(out, "%s\n", b)
+	return err
+}
+
+// opLine is one op as history prints it under --json.
+type opLine struct {
+	Seq     uint64          `json:"seq"`
+	ID      string          `json:"id"`
+	Type    string          `json:"type"`
+	Author  string          `json:"author"`
+	Parents []string        `json:"parents,omitempty"`
+	Ts      string          `json:"ts,omitempty"`
+	Payload json.RawMessage `json:"payload"`
+}
+
+func toOpLine(op contract.Op) opLine {
+	l := opLine{Seq: op.Seq, ID: op.ID, Type: op.Type, Author: op.Author, Parents: op.Parents, Payload: op.Payload}
+	if !op.Ts.IsZero() {
+		l.Ts = op.Ts.UTC().Format(time.RFC3339Nano)
+	}
+	if len(l.Payload) == 0 {
+		l.Payload = json.RawMessage("null")
+	}
+	return l
 }

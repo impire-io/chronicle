@@ -44,6 +44,13 @@ non-negotiables.
   operator mode, a minter, or a fleet is on the wrong side of the line.
 - **Minimal build**: every addition names the present need it serves; "we
   might want it later" is not a need.
+- **The client surface is the artifact's.** `contract/sdk-contract.json`
+  describes the surface every SDK restates (chronicle-hq design 12); a
+  change to the contract package, the client's surface, or the artifact
+  changes the conformance suite (`conformance/`) in the same PR, and the
+  artifact test in `client/` proves the two agree. Collections are
+  iterators, single state is a reply; data at rest is read through
+  JetStream, computed results are streamed replies.
 - **Nothing sits in the append path**: appends are direct JetStream
   publishes; dedup and CAS guards are the server's, never proxied or
   re-implemented.

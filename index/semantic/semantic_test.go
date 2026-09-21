@@ -158,14 +158,14 @@ func TestSemanticEndToEnd(t *testing.T) {
 	}
 	t.Cleanup(svc.Stop)
 
-	resp, err := alice.QuerySemantic(ctx, "orders", "meaning", "widget", 0, 0)
+	resp, err := querySemantic(ctx, alice, "orders", "meaning", "widget")
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
 	if len(resp.Hits) == 0 || resp.Hits[0].Thing != "invoice.invoice-1" || resp.Unembedded != 0 {
 		t.Fatalf("widget query = %+v", resp)
 	}
-	resp, err = alice.QuerySemantic(ctx, "orders", "meaning", "gadget", 0, 0)
+	resp, err = querySemantic(ctx, alice, "orders", "meaning", "gadget")
 	if err != nil || resp.Hits[0].Thing != "invoice.invoice-2" {
 		t.Fatalf("gadget query = %+v, %v", resp, err)
 	}
@@ -180,7 +180,7 @@ func TestSemanticEndToEnd(t *testing.T) {
 	}
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		resp, err = alice.QuerySemantic(ctx, "orders", "meaning", "widget", 0, 0)
+		resp, err = querySemantic(ctx, alice, "orders", "meaning", "widget")
 		if err == nil && resp.Unembedded == 1 {
 			break
 		}
@@ -201,7 +201,7 @@ func TestSemanticEndToEnd(t *testing.T) {
 	provider.failSubstr.Store("")
 	deadline = time.Now().Add(15 * time.Second)
 	for {
-		resp, err = alice.QuerySemantic(ctx, "orders", "meaning", "widget", 0, 0)
+		resp, err = querySemantic(ctx, alice, "orders", "meaning", "widget")
 		if err == nil && resp.Unembedded == 0 && scoreOf(resp, "invoice.invoice-3") > 0.9 {
 			break
 		}
@@ -212,7 +212,7 @@ func TestSemanticEndToEnd(t *testing.T) {
 	}
 }
 
-func scoreOf(resp client.SemanticQueryResponse, thing string) float64 {
+func scoreOf(resp semanticResult, thing string) float64 {
 	for _, h := range resp.Hits {
 		if h.Thing == thing {
 			return h.Score
@@ -271,7 +271,7 @@ func TestSemanticOpsSource(t *testing.T) {
 
 	// Meaning living only in history is queryable; two matching ops on
 	// item-1 still make one thing-level hit, ranked first.
-	resp, err := alice.QuerySemantic(ctx, "items", "meaning", "widget", 0, 0)
+	resp, err := querySemantic(ctx, alice, "items", "meaning", "widget")
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
@@ -292,7 +292,7 @@ func TestSemanticOpsSource(t *testing.T) {
 	}
 	deadline := time.Now().Add(15 * time.Second)
 	for {
-		resp, err = alice.QuerySemantic(ctx, "items", "meaning", "gadget", 0, 0)
+		resp, err = querySemantic(ctx, alice, "items", "meaning", "gadget")
 		if err == nil && resp.Unembedded == 0 && len(resp.Hits) > 0 && resp.Hits[0].Thing == "item.item-2" {
 			break
 		}
@@ -301,4 +301,26 @@ func TestSemanticOpsSource(t *testing.T) {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+}
+
+// semanticResult gathers a streamed reply for assertions: the hits in
+// order and the trailer.
+type semanticResult struct {
+	Hits       []client.SemanticHit
+	Total      uint64
+	Unembedded int
+}
+
+func querySemantic(ctx context.Context, c *client.Client, log, index, text string) (semanticResult, error) {
+	s := c.QuerySemantic(ctx, log, index, text, 0)
+	var r semanticResult
+	for h, err := range s.Items() {
+		if err != nil {
+			return r, err
+		}
+		r.Hits = append(r.Hits, h)
+	}
+	t, _ := s.Trailer()
+	r.Total, r.Unembedded = t.Total, t.Unembedded
+	return r, nil
 }

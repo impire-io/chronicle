@@ -24,38 +24,26 @@ import (
 
 	"github.com/nats-io/nats.go/jetstream"
 
-	"github.com/impire-io/chronicle/client"
 	"github.com/impire-io/chronicle/contract"
 )
 
-// Decision is what one op does to state under the current declarations.
-type Decision int
+// Decision is the contract's fold decision (contract.Decision), kept
+// under its old name here: the rules moved to the contract with design 12
+// so an SDK performing the exactness recipe judges with the same code;
+// the pass that drives them per subject stays here.
+type Decision = contract.Decision
 
+// The decisions, under their old names.
 const (
-	// Merge — the op is schema-valid and its operation declares effect
-	// merge: the payload applies to the thing's state as an RFC 7386
-	// merge patch.
-	Merge Decision = iota
-	// None — the operation declares effect none (the default): the op
-	// lives in history and moves no state.
-	None
-	// UnknownType — the thing's type defines no such operation (or the
-	// thing is untyped); readers ignore the op with a warning.
-	UnknownType
-	// UnknownEffect — the operation declares an effect outside this
-	// build's vocabulary: treated as none with a warning (read-side
-	// tolerance).
-	UnknownEffect
-	// BadTypeRecord — the type record is unreadable or a schema in it
-	// does not compile; the op moves nothing.
-	BadTypeRecord
-	// Invalid — the op's payload is not JSON or fails its operation's
-	// schema: marked, never dropped, takes no effect.
-	Invalid
-	// Undeclared — the thing is an aspect its parent's type does not
-	// declare (0022 § 3): the whole subject is marked, taking no effect
-	// anywhere state is derived, until a declaration redeems it.
-	Undeclared
+	Merge             = contract.Merge
+	None              = contract.None
+	UnknownType       = contract.UnknownType
+	UnknownEffect     = contract.UnknownEffect
+	BadTypeRecord     = contract.BadTypeRecord
+	Invalid           = contract.Invalid
+	Undeclared        = contract.Undeclared
+	Reset             = contract.Reset
+	MalformedSnapshot = contract.MalformedSnapshot
 )
 
 // Lookup closes over one log's META bucket as a contract.TypeLookup.
@@ -148,55 +136,12 @@ func LogFingerprint(ctx context.Context, meta jetstream.KeyValue, log string) (s
 	return b.String(), nil
 }
 
-// JudgeSnapshot validates a snapshot's state against a resolved type's
-// thing schema (0021 § 3): state that fails its shape is marked, never
-// dropped. Empty detail means the state stands; a record without a shape
-// declared is tolerated read-side.
+// JudgeSnapshot is contract.JudgeSnapshot under its old name.
 func JudgeSnapshot(rec *contract.TypeRecord, state json.RawMessage) string {
-	if len(rec.Schema) == 0 {
-		return ""
-	}
-	sch, err := client.CompileSchema(rec.Schema)
-	if err != nil {
-		return fmt.Sprintf("thing schema does not compile: %v", err)
-	}
-	var v any
-	if err := json.Unmarshal(state, &v); err != nil {
-		return fmt.Sprintf("state is not JSON: %v", err)
-	}
-	if err := sch.Validate(v); err != nil {
-		return fmt.Sprintf("state fails the thing schema: %v", err)
-	}
-	return ""
+	return contract.JudgeSnapshot(rec, state)
 }
 
-// JudgeRecord decides one non-snapshot op under one type record — latest
-// declaration wins (0011 § 3), so the same op can judge differently after
-// a declaration changes, and derived state is rebuilt by replay when it
-// does. The detail carries the specifics a caller may want in its warning
-// or veto; it is empty for Merge and None.
+// JudgeRecord is contract.JudgeRecord under its old name.
 func JudgeRecord(rec *contract.TypeRecord, op contract.Op) (Decision, string) {
-	def, ok := rec.Operations[op.Type]
-	if !ok {
-		return UnknownType, fmt.Sprintf("the type defines no operation %s", op.Type)
-	}
-	sch, err := client.CompileSchema(def.Schema)
-	if err != nil {
-		return BadTypeRecord, fmt.Sprintf("compile operation schema: %v", err)
-	}
-	var v any
-	if err := json.Unmarshal(op.Payload, &v); err != nil {
-		return Invalid, fmt.Sprintf("payload is not JSON: %v", err)
-	}
-	if err := sch.Validate(v); err != nil {
-		return Invalid, fmt.Sprintf("payload fails its schema: %v", err)
-	}
-	switch effect := contract.NormalizeEffect(def.Effect); effect {
-	case contract.EffectNone:
-		return None, ""
-	case contract.EffectMerge:
-		return Merge, ""
-	default:
-		return UnknownEffect, fmt.Sprintf("effect %q is outside this build's vocabulary", effect)
-	}
+	return contract.JudgeRecord(rec, op)
 }

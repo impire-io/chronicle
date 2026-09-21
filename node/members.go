@@ -32,15 +32,15 @@ func (n *node) handleMemberAdd(req micro.Request) {
 
 	var r client.MemberAddRequest
 	if err := json.Unmarshal(req.Data(), &r); err != nil {
-		_ = req.Error("bad-request", err.Error(), nil)
+		_ = req.Error(contract.CodeBadRequest, err.Error(), nil)
 		return
 	}
 	if err := n.requireRole(ctx, r.Principal, contract.RoleAdmin); err != nil {
-		_ = req.Error("forbidden", err.Error(), nil)
+		_ = req.Error(contract.CodeForbidden, err.Error(), nil)
 		return
 	}
 	if err := contract.ValidatePrincipalName(r.Member); err != nil {
-		_ = req.Error("bad-principal-name", err.Error(), nil)
+		_ = req.Error(contract.CodeBadPrincipalName, err.Error(), nil)
 		return
 	}
 	role := r.Role
@@ -48,36 +48,36 @@ func (n *node) handleMemberAdd(req micro.Request) {
 		role = contract.RoleWriter
 	}
 	if !contract.KnownRole(role) {
-		_ = req.Error("bad-role", fmt.Sprintf("role %q: one of %v", role, contract.Roles), nil)
+		_ = req.Error(contract.CodeBadRole, fmt.Sprintf("role %q: one of %v", role, contract.Roles), nil)
 		return
 	}
 
 	principal, err := json.Marshal(contract.Principal{ID: r.Member})
 	if err != nil {
-		_ = req.Error("500", err.Error(), nil)
+		_ = req.Error(contract.CodeInternal, err.Error(), nil)
 		return
 	}
 	if _, err := n.meta.Create(ctx, contract.MetaPrincipal(r.Member), principal); err != nil && !errors.Is(err, jetstream.ErrKeyExists) {
-		_ = req.Error("500", fmt.Sprintf("record principal: %v", err), nil)
+		_ = req.Error(contract.CodeInternal, fmt.Sprintf("record principal: %v", err), nil)
 		return
 	}
 	membership, err := json.Marshal(contract.Membership{PublicKey: r.PublicKey, Role: role, GithubID: r.GithubID})
 	if err != nil {
-		_ = req.Error("500", err.Error(), nil)
+		_ = req.Error(contract.CodeInternal, err.Error(), nil)
 		return
 	}
 	if _, err := n.meta.Create(ctx, contract.MetaMember(r.Member), membership); err != nil {
 		if errors.Is(err, jetstream.ErrKeyExists) {
-			_ = req.Error("member-exists", fmt.Sprintf("principal %q is already a member", r.Member), nil)
+			_ = req.Error(contract.CodeMemberExists, fmt.Sprintf("principal %q is already a member", r.Member), nil)
 			return
 		}
-		_ = req.Error("500", fmt.Sprintf("record membership: %v", err), nil)
+		_ = req.Error(contract.CodeInternal, fmt.Sprintf("record membership: %v", err), nil)
 		return
 	}
 
 	reply, err := json.Marshal(client.MemberAddResponse{Member: r.Member, Role: role})
 	if err != nil {
-		_ = req.Error("500", err.Error(), nil)
+		_ = req.Error(contract.CodeInternal, err.Error(), nil)
 		return
 	}
 	_ = req.Respond(reply)
@@ -93,39 +93,39 @@ func (n *node) handleMemberRevoke(req micro.Request) {
 
 	var r client.MemberRevokeRequest
 	if err := json.Unmarshal(req.Data(), &r); err != nil {
-		_ = req.Error("bad-request", err.Error(), nil)
+		_ = req.Error(contract.CodeBadRequest, err.Error(), nil)
 		return
 	}
 	if err := n.requireRole(ctx, r.Principal, contract.RoleAdmin); err != nil {
-		_ = req.Error("forbidden", err.Error(), nil)
+		_ = req.Error(contract.CodeForbidden, err.Error(), nil)
 		return
 	}
 	if err := contract.ValidatePrincipalName(r.Member); err != nil {
-		_ = req.Error("bad-principal-name", err.Error(), nil)
+		_ = req.Error(contract.CodeBadPrincipalName, err.Error(), nil)
 		return
 	}
 	entry, err := n.meta.Get(ctx, contract.MetaMember(r.Member))
 	if errors.Is(err, jetstream.ErrKeyNotFound) {
-		_ = req.Error("not-a-member", fmt.Sprintf("principal %q is not a member", r.Member), nil)
+		_ = req.Error(contract.CodeNotAMember, fmt.Sprintf("principal %q is not a member", r.Member), nil)
 		return
 	}
 	if err != nil {
-		_ = req.Error("500", fmt.Sprintf("read membership: %v", err), nil)
+		_ = req.Error(contract.CodeInternal, fmt.Sprintf("read membership: %v", err), nil)
 		return
 	}
 	var m contract.Membership
 	if err := json.Unmarshal(entry.Value(), &m); err != nil {
-		_ = req.Error("500", fmt.Sprintf("decode membership: %v", err), nil)
+		_ = req.Error(contract.CodeInternal, fmt.Sprintf("decode membership: %v", err), nil)
 		return
 	}
 	if err := n.meta.Delete(ctx, contract.MetaMember(r.Member)); err != nil {
-		_ = req.Error("500", fmt.Sprintf("retire membership: %v", err), nil)
+		_ = req.Error(contract.CodeInternal, fmt.Sprintf("retire membership: %v", err), nil)
 		return
 	}
 
 	reply, err := json.Marshal(client.MemberRevokeResponse{Member: r.Member, PublicKey: m.PublicKey})
 	if err != nil {
-		_ = req.Error("500", err.Error(), nil)
+		_ = req.Error(contract.CodeInternal, err.Error(), nil)
 		return
 	}
 	_ = req.Respond(reply)

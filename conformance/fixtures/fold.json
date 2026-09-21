@@ -1,0 +1,380 @@
+{
+  "$comment": "The fold step (design 03 § the state buckets; design 12): under the types, each case applies its ops in order to an initially absent state and expects the decisions and the final state. A null state means the thing has none.",
+  "types": {
+    "invoice": {
+      "revision": 1,
+      "schema": {
+        "type": "object",
+        "required": [
+          "total"
+        ]
+      },
+      "aspects": {
+        "comments": "comment"
+      },
+      "operations": {
+        "create": {
+          "schema": {
+            "type": "object"
+          },
+          "effect": "merge"
+        },
+        "send": {
+          "schema": {
+            "type": "object",
+            "required": [
+              "to"
+            ]
+          },
+          "effect": "merge"
+        },
+        "note": {
+          "schema": {
+            "type": "object"
+          },
+          "effect": "none"
+        },
+        "odd": {
+          "schema": {
+            "type": "object"
+          },
+          "effect": "frobnicate"
+        }
+      }
+    },
+    "comment": {
+      "revision": 1,
+      "schema": {},
+      "aspects": {
+        "reactions": "reaction"
+      },
+      "operations": {
+        "create": {
+          "schema": {
+            "type": "object"
+          },
+          "effect": "merge"
+        }
+      }
+    },
+    "reaction": {
+      "revision": 1,
+      "schema": {}
+    },
+    "orphan-parent": {
+      "revision": 1,
+      "schema": {},
+      "aspects": {
+        "kids": "ghost"
+      }
+    }
+  },
+  "cases": [
+    {
+      "name": "a typed birth by declared merge, then a merge",
+      "thing": "invoice.inv-1",
+      "ops": [
+        {
+          "type": "create",
+          "payload": {
+            "total": 120
+          }
+        },
+        {
+          "type": "send",
+          "payload": {
+            "to": "x"
+          }
+        }
+      ],
+      "decisions": [
+        "merge",
+        "merge"
+      ],
+      "state": {
+        "total": 120,
+        "to": "x"
+      }
+    },
+    {
+      "name": "a snapshot resets",
+      "thing": "invoice.inv-1",
+      "ops": [
+        {
+          "type": "snapshot",
+          "payload": {
+            "state": {
+              "total": 1
+            },
+            "frontier": []
+          }
+        },
+        {
+          "type": "send",
+          "payload": {
+            "to": "y"
+          }
+        },
+        {
+          "type": "snapshot",
+          "payload": {
+            "state": {
+              "total": 2
+            }
+          }
+        }
+      ],
+      "decisions": [
+        "reset",
+        "merge",
+        "reset"
+      ],
+      "state": {
+        "total": 2
+      }
+    },
+    {
+      "name": "none moves nothing",
+      "thing": "invoice.inv-1",
+      "ops": [
+        {
+          "type": "create",
+          "payload": {
+            "total": 1
+          }
+        },
+        {
+          "type": "note",
+          "payload": {
+            "text": "hi"
+          }
+        }
+      ],
+      "decisions": [
+        "merge",
+        "none"
+      ],
+      "state": {
+        "total": 1
+      }
+    },
+    {
+      "name": "an invalid payload is marked",
+      "thing": "invoice.inv-1",
+      "ops": [
+        {
+          "type": "create",
+          "payload": {
+            "total": 1
+          }
+        },
+        {
+          "type": "send",
+          "payload": {}
+        }
+      ],
+      "decisions": [
+        "merge",
+        "invalid"
+      ],
+      "state": {
+        "total": 1
+      }
+    },
+    {
+      "name": "a payload that is not JSON is marked",
+      "thing": "invoice.inv-1",
+      "ops": [
+        {
+          "type": "create",
+          "payload": {
+            "total": 1
+          }
+        },
+        {
+          "type": "send",
+          "raw": "not json"
+        }
+      ],
+      "decisions": [
+        "merge",
+        "invalid"
+      ],
+      "state": {
+        "total": 1
+      }
+    },
+    {
+      "name": "an unknown op type is ignored",
+      "thing": "invoice.inv-1",
+      "ops": [
+        {
+          "type": "create",
+          "payload": {
+            "total": 1
+          }
+        },
+        {
+          "type": "frobnicate",
+          "payload": {}
+        }
+      ],
+      "decisions": [
+        "merge",
+        "unknown-type"
+      ],
+      "state": {
+        "total": 1
+      }
+    },
+    {
+      "name": "an unknown effect is treated as none",
+      "thing": "invoice.inv-1",
+      "ops": [
+        {
+          "type": "create",
+          "payload": {
+            "total": 1
+          }
+        },
+        {
+          "type": "odd",
+          "payload": {}
+        }
+      ],
+      "decisions": [
+        "merge",
+        "unknown-effect"
+      ],
+      "state": {
+        "total": 1
+      }
+    },
+    {
+      "name": "an untyped thing moves only by snapshot",
+      "thing": "widget.w-1",
+      "ops": [
+        {
+          "type": "send",
+          "payload": {
+            "to": "x"
+          }
+        },
+        {
+          "type": "snapshot",
+          "payload": {
+            "state": {
+              "a": 1
+            }
+          }
+        }
+      ],
+      "decisions": [
+        "unknown-type",
+        "reset"
+      ],
+      "state": {
+        "a": 1
+      }
+    },
+    {
+      "name": "an undeclared aspect is marked",
+      "thing": "invoice.inv-1.notes.n-1",
+      "ops": [
+        {
+          "type": "snapshot",
+          "payload": {
+            "state": {
+              "a": 1
+            }
+          }
+        },
+        {
+          "type": "create",
+          "payload": {}
+        }
+      ],
+      "decisions": [
+        "undeclared",
+        "undeclared"
+      ],
+      "state": null
+    },
+    {
+      "name": "a snapshot failing the thing schema is marked",
+      "thing": "invoice.inv-2",
+      "ops": [
+        {
+          "type": "snapshot",
+          "payload": {
+            "state": {
+              "nototal": 1
+            }
+          }
+        }
+      ],
+      "decisions": [
+        "malformed-snapshot"
+      ],
+      "state": null
+    },
+    {
+      "name": "a snapshot that is not a snapshot is marked",
+      "thing": "invoice.inv-2",
+      "ops": [
+        {
+          "type": "snapshot",
+          "raw": "[]"
+        }
+      ],
+      "decisions": [
+        "malformed-snapshot"
+      ],
+      "state": null
+    },
+    {
+      "name": "an aspect is typed by its parent",
+      "thing": "invoice.inv-1.comments.c-1",
+      "ops": [
+        {
+          "type": "create",
+          "payload": {
+            "text": "hi"
+          }
+        }
+      ],
+      "decisions": [
+        "merge"
+      ],
+      "state": {
+        "text": "hi"
+      }
+    },
+    {
+      "name": "a merge deletes with null",
+      "thing": "invoice.inv-1",
+      "ops": [
+        {
+          "type": "create",
+          "payload": {
+            "total": 1,
+            "to": "x"
+          }
+        },
+        {
+          "type": "send",
+          "payload": {
+            "to": null
+          }
+        }
+      ],
+      "decisions": [
+        "merge",
+        "merge"
+      ],
+      "state": {
+        "total": 1
+      }
+    }
+  ]
+}

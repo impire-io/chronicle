@@ -27,29 +27,29 @@ func (n *node) handleIndexDeclare(req micro.Request) {
 
 	var r client.IndexDeclareRequest
 	if err := json.Unmarshal(req.Data(), &r); err != nil {
-		_ = req.Error("bad-request", err.Error(), nil)
+		_ = req.Error(contract.CodeBadRequest, err.Error(), nil)
 		return
 	}
 	if err := n.requireRole(ctx, r.Principal, contract.RoleAdmin); err != nil {
-		_ = req.Error("forbidden", err.Error(), nil)
+		_ = req.Error(contract.CodeForbidden, err.Error(), nil)
 		return
 	}
 	if err := contract.ValidateLogName(r.Log); err != nil {
-		_ = req.Error("bad-log-name", err.Error(), nil)
+		_ = req.Error(contract.CodeBadLogName, err.Error(), nil)
 		return
 	}
 	if err := contract.ValidateIndexName(r.Index); err != nil {
-		_ = req.Error("bad-index-name", err.Error(), nil)
+		_ = req.Error(contract.CodeBadIndexName, err.Error(), nil)
 		return
 	}
 	// The state kind is the one exception (0023): its declaration is
 	// written by the node at log creation and only there.
 	if r.Kind == contract.IndexKindState || r.Index == contract.StateIndexName {
-		_ = req.Error("reserved-state-index", "the state index is declared at log creation and only there (0023)", nil)
+		_ = req.Error(contract.CodeReservedStateIndex, "the state index is declared at log creation and only there (0023)", nil)
 		return
 	}
 	if !contract.KnownIndexKind(r.Kind) {
-		_ = req.Error("bad-kind", fmt.Sprintf("kind %q is not in this node's vocabulary (search, graph, semantic)", r.Kind), nil)
+		_ = req.Error(contract.CodeBadKind, fmt.Sprintf("kind %q is not in this node's vocabulary (search, graph, semantic)", r.Kind), nil)
 		return
 	}
 	// Config belongs to the kind — write-side strict (0015): graph
@@ -58,41 +58,41 @@ func (n *node) handleIndexDeclare(req micro.Request) {
 	switch r.Kind {
 	case contract.IndexKindSearch:
 		if _, err := contract.ParseSearchConfig(r.Config); err != nil {
-			_ = req.Error("bad-config", err.Error(), nil)
+			_ = req.Error(contract.CodeBadConfig, err.Error(), nil)
 			return
 		}
 	case contract.IndexKindGraph:
 		if _, err := contract.ParseGraphConfig(r.Config); err != nil {
-			_ = req.Error("bad-config", err.Error(), nil)
+			_ = req.Error(contract.CodeBadConfig, err.Error(), nil)
 			return
 		}
 	case contract.IndexKindSemantic:
 		if _, err := contract.ParseSemanticConfig(r.Config); err != nil {
-			_ = req.Error("bad-config", err.Error(), nil)
+			_ = req.Error(contract.CodeBadConfig, err.Error(), nil)
 			return
 		}
 	default:
 		if len(r.Config) > 0 {
-			_ = req.Error("bad-config", fmt.Sprintf("kind %q takes no config", r.Kind), nil)
+			_ = req.Error(contract.CodeBadConfig, fmt.Sprintf("kind %q takes no config", r.Kind), nil)
 			return
 		}
 	}
 	if _, err := n.meta.Get(ctx, contract.MetaLogConfig(r.Log)); err != nil {
-		_ = req.Error("no-such-log", fmt.Sprintf("log %q is not created", r.Log), nil)
+		_ = req.Error(contract.CodeNoSuchLog, fmt.Sprintf("log %q is not created", r.Log), nil)
 		return
 	}
 
 	value, err := json.Marshal(contract.IndexDeclaration{Kind: r.Kind, Config: r.Config})
 	if err != nil {
-		_ = req.Error("500", err.Error(), nil)
+		_ = req.Error(contract.CodeInternal, err.Error(), nil)
 		return
 	}
 	if _, err := n.meta.Create(ctx, contract.MetaIndex(r.Log, r.Index), value); err != nil {
 		if errors.Is(err, jetstream.ErrKeyExists) {
-			_ = req.Error("index-exists", fmt.Sprintf("index %q on log %q already exists", r.Index, r.Log), nil)
+			_ = req.Error(contract.CodeIndexExists, fmt.Sprintf("index %q on log %q already exists", r.Index, r.Log), nil)
 			return
 		}
-		_ = req.Error("500", err.Error(), nil)
+		_ = req.Error(contract.CodeInternal, err.Error(), nil)
 		return
 	}
 	// The declaration stands regardless of the report: boot re-derivation
@@ -106,7 +106,7 @@ func (n *node) handleIndexDeclare(req micro.Request) {
 
 	reply, err := json.Marshal(client.IndexDeclareResponse{Query: client.IndexQuerySubject(r.Log, r.Index)})
 	if err != nil {
-		_ = req.Error("500", err.Error(), nil)
+		_ = req.Error(contract.CodeInternal, err.Error(), nil)
 		return
 	}
 	_ = req.Respond(reply)
@@ -121,35 +121,35 @@ func (n *node) handleIndexDelete(req micro.Request) {
 
 	var r client.IndexDeleteRequest
 	if err := json.Unmarshal(req.Data(), &r); err != nil {
-		_ = req.Error("bad-request", err.Error(), nil)
+		_ = req.Error(contract.CodeBadRequest, err.Error(), nil)
 		return
 	}
 	if err := n.requireRole(ctx, r.Principal, contract.RoleAdmin); err != nil {
-		_ = req.Error("forbidden", err.Error(), nil)
+		_ = req.Error(contract.CodeForbidden, err.Error(), nil)
 		return
 	}
 	if err := contract.ValidateLogName(r.Log); err != nil {
-		_ = req.Error("bad-log-name", err.Error(), nil)
+		_ = req.Error(contract.CodeBadLogName, err.Error(), nil)
 		return
 	}
 	if err := contract.ValidateIndexName(r.Index); err != nil {
-		_ = req.Error("bad-index-name", err.Error(), nil)
+		_ = req.Error(contract.CodeBadIndexName, err.Error(), nil)
 		return
 	}
 	// The exactness recipe and roll-up consume the state index: it is
 	// the one derived view whose loss would break a contract (0023).
 	if r.Index == contract.StateIndexName {
-		_ = req.Error("reserved-state-index", "the state index cannot be deleted while the log exists (0023)", nil)
+		_ = req.Error(contract.CodeReservedStateIndex, "the state index cannot be deleted while the log exists (0023)", nil)
 		return
 	}
 	// Get first: deleting an absent key succeeds silently in KV, and the
 	// caller deserves the honest answer.
 	if _, err := n.meta.Get(ctx, contract.MetaIndex(r.Log, r.Index)); err != nil {
-		_ = req.Error("no-such-index", fmt.Sprintf("index %q on log %q is not declared", r.Index, r.Log), nil)
+		_ = req.Error(contract.CodeNoSuchIndex, fmt.Sprintf("index %q on log %q is not declared", r.Index, r.Log), nil)
 		return
 	}
 	if err := n.meta.Delete(ctx, contract.MetaIndex(r.Log, r.Index)); err != nil {
-		_ = req.Error("500", err.Error(), nil)
+		_ = req.Error(contract.CodeInternal, err.Error(), nil)
 		return
 	}
 	if n.indexes != nil {
@@ -160,7 +160,7 @@ func (n *node) handleIndexDelete(req micro.Request) {
 
 	reply, err := json.Marshal(client.IndexDeleteResponse{Deleted: true})
 	if err != nil {
-		_ = req.Error("500", err.Error(), nil)
+		_ = req.Error(contract.CodeInternal, err.Error(), nil)
 		return
 	}
 	_ = req.Respond(reply)
