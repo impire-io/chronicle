@@ -14,7 +14,7 @@ decision
 [0031](../chronicle-hq/03-DECISIONS/0031-open-is-one-tenant-the-service-is-managed.md)):
 everything that runs, or is used, inside one tenant. Creating tenants for
 strangers, placing their workloads across hosts, running them in microVMs,
-and logging humans in are the managed service at chronicle.impire.io,
+and logging humans in are the managed service at chronicle.impire.dev,
 built on this code in its own repositories. The repo exists by decision
 [0010](../chronicle-hq/03-DECISIONS/0010-chronicle-repo.md) of
 [`chronicle-hq`](https://github.com/impire-io/chronicle-hq) — the source
