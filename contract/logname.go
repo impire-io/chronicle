@@ -6,12 +6,29 @@ import (
 	"strings"
 )
 
-// logName is the wire contract's rule: a single lowercase token, [a-z0-9-]+.
-var logName = regexp.MustCompile(`^[a-z0-9-]+$`)
+// LogNamePattern is the wire contract's rule: a single lowercase token,
+// [a-z0-9-]+ — the grammar of log, index, type, principal and aspect
+// names. The artifact carries it; the SDKs restate it.
+const LogNamePattern = `^[a-z0-9-]+$`
 
-// reservedLogNames is the short reserved list refused at log creation
-// (wire contract § subject grammar).
-var reservedLogNames = map[string]bool{"api": true, "sys": true, "meta": true}
+// ThingTokenPattern is one thing-tail token's grammar — deliberately
+// narrower than NATS allows: it keeps every thing tail a valid KV key,
+// the charset edge case 0008 flags for build-time verification.
+const ThingTokenPattern = `^[a-zA-Z0-9_-]+$`
+
+// ReservedLogNames is the short reserved list refused at log creation
+// (wire contract § subject grammar), sorted.
+var ReservedLogNames = []string{"api", "meta", "sys"}
+
+var logName = regexp.MustCompile(LogNamePattern)
+
+var reservedLogNames = func() map[string]bool {
+	m := map[string]bool{}
+	for _, name := range ReservedLogNames {
+		m[name] = true
+	}
+	return m
+}()
 
 // ValidateLogName refuses anything but a single lowercase [a-z0-9-]+ token
 // outside the reserved list.
@@ -83,7 +100,4 @@ func ValidateThing(thing string) error {
 	return nil
 }
 
-// thingToken is deliberately narrower than NATS allows: it keeps every thing
-// tail a valid KV key, the charset edge case 0008 flags for build-time
-// verification.
-var thingToken = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+var thingToken = regexp.MustCompile(ThingTokenPattern)

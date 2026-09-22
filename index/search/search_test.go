@@ -77,7 +77,7 @@ func waitHit(ctx context.Context, t *testing.T, c *client.Client, log, index, qu
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		resp, err := c.QueryIndex(ctx, log, index, query, 0, 0)
+		resp, err := queryAll(ctx, c, log, index, query)
 		if err == nil && len(resp.Hits) == 1 && resp.Hits[0].Thing == thing {
 			return
 		}
@@ -114,7 +114,7 @@ func TestSearchEndToEnd(t *testing.T) {
 	}
 
 	// The catch-up gate, from the outside: no responder before Start.
-	if _, err := alice.QueryIndex(ctx, "orders", "text", "widgets", 0, 0); err == nil ||
+	if _, err := queryAll(ctx, alice, "orders", "text", "widgets"); err == nil ||
 		!strings.Contains(err.Error(), "no responder") {
 		t.Fatalf("query before the indexer runs: %v", err)
 	}
@@ -130,7 +130,7 @@ func TestSearchEndToEnd(t *testing.T) {
 
 	// Boot replay: Start returned, so the pre-existing ops are indexed —
 	// no polling needed.
-	resp, err := alice.QueryIndex(ctx, "orders", "text", "widgets", 0, 0)
+	resp, err := queryAll(ctx, alice, "orders", "text", "widgets")
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
@@ -145,7 +145,7 @@ func TestSearchEndToEnd(t *testing.T) {
 	waitHit(ctx, t, alice, "orders", "text", "gadgets", "invoice.invoice-1")
 
 	// An empty query matches everything — the total counts things, not ops.
-	resp, err = alice.QueryIndex(ctx, "orders", "text", "", 0, 0)
+	resp, err = queryAll(ctx, alice, "orders", "text", "")
 	if err != nil {
 		t.Fatalf("match-all query: %v", err)
 	}
@@ -158,14 +158,14 @@ func TestSearchEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("wrap reader: %v", err)
 	}
-	if _, err := rita.QueryIndex(ctx, "orders", "text", "gadgets", 0, 0); err != nil {
+	if _, err := queryAll(ctx, rita, "orders", "text", "gadgets"); err != nil {
 		t.Fatalf("reader query: %v", err)
 	}
 	mallory, err := client.Wrap(alice.Conn(), "mallory")
 	if err != nil {
 		t.Fatalf("wrap outsider: %v", err)
 	}
-	if _, err := mallory.QueryIndex(ctx, "orders", "text", "gadgets", 0, 0); err == nil {
+	if _, err := queryAll(ctx, mallory, "orders", "text", "gadgets"); err == nil {
 		t.Fatal("non-member query answered")
 	}
 }
@@ -204,7 +204,7 @@ func TestSearchFollowsEffects(t *testing.T) {
 	defer svc.Stop()
 
 	// Effect none: the op lives in history; search cannot see it.
-	resp, err := alice.QueryIndex(ctx, "notes", "text", "xyzzy", 0, 0)
+	resp, err := queryAll(ctx, alice, "notes", "text", "xyzzy")
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
@@ -269,7 +269,7 @@ func TestSearchOpsSource(t *testing.T) {
 
 	// Text living only in history is findable; hits name things, one per
 	// thing however many ops matched, best op first.
-	resp, err := alice.QueryIndex(ctx, "items", "trail", "flux", 0, 0)
+	resp, err := queryAll(ctx, alice, "items", "trail", "flux")
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
@@ -300,14 +300,14 @@ func TestSearchOpsSource(t *testing.T) {
 		t.Fatalf("start narrowed indexer: %v", err)
 	}
 	defer svc2.Stop()
-	resp, err = alice.QueryIndex(ctx, "items", "notes-only", "widget", 0, 0)
+	resp, err = queryAll(ctx, alice, "items", "notes-only", "widget")
 	if err != nil {
 		t.Fatalf("narrowed query: %v", err)
 	}
 	if len(resp.Hits) != 0 {
 		t.Fatalf("a types-narrowed index saw another type's op: %+v", resp)
 	}
-	if resp, err = alice.QueryIndex(ctx, "items", "notes-only", "flux", 0, 0); err != nil || resp.Total != 2 {
+	if resp, err = queryAll(ctx, alice, "items", "notes-only", "flux"); err != nil || resp.Total != 2 {
 		t.Fatalf("narrowed flux hits: %v %+v", err, resp)
 	}
 }
@@ -439,4 +439,25 @@ func TestSearchBootsFromStateCheckpoint(t *testing.T) {
 	if catcher2.has("state checkpoint seeded") {
 		t.Fatal("a stale watermark must void the checkpoint")
 	}
+}
+
+// queryResult gathers a streamed reply for assertions: the hits in order
+// and the trailer's total.
+type queryResult struct {
+	Hits  []client.IndexHit
+	Total uint64
+}
+
+func queryAll(ctx context.Context, c *client.Client, log, index, query string) (queryResult, error) {
+	s := c.QueryIndex(ctx, log, index, query, 0)
+	var r queryResult
+	for h, err := range s.Items() {
+		if err != nil {
+			return r, err
+		}
+		r.Hits = append(r.Hits, h)
+	}
+	t, _ := s.Trailer()
+	r.Total = t.Total
+	return r, nil
 }

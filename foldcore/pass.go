@@ -71,58 +71,27 @@ func (p *Pass) Fold(ctx context.Context, thing string, op contract.Op) {
 		p.Warn("resolve failed; op takes no effect", "thing", thing, "op", op.ID, "err", err)
 		return
 	}
-	if res.Kind == contract.ResolvedUndeclared {
-		p.Warn("marked undeclared aspect", "thing", thing, "op", op.ID, "detail", res.Detail)
-		return
-	}
-
-	if op.Type == contract.OpTypeSnapshot {
-		snap, err := contract.ParseSnapshot(op.Payload)
-		if err != nil {
-			p.Warn("marked malformed snapshot", "thing", thing, "op", op.ID, "err", err)
-			return
-		}
-		if res.Kind == contract.ResolvedTyped {
-			if detail := JudgeSnapshot(res.Record, snap.State); detail != "" {
-				p.Warn("marked snapshot state", "thing", thing, "op", op.ID, "detail", detail)
-				return
-			}
-		}
-		p.commit(ctx, thing, st, op.Seq, snap.State)
-		return
-	}
-
-	var decision Decision
-	var detail string
-	if res.Kind == contract.ResolvedTyped {
-		decision, detail = JudgeRecord(res.Record, op)
-	} else {
-		decision, detail = UnknownType, "thing is untyped: "+res.Detail
-	}
-	switch decision {
-	case Merge:
-		p.mu.Lock()
-		cur := st.state
-		p.mu.Unlock()
-		// A declared merge applies onto current state — empty when the
-		// subject has none: create is an operation, and merge onto
-		// nothing is birth (0025 § 3).
-		merged, err := contract.MergePatch(cur, op.Payload)
-		if err != nil {
-			p.Warn("merge failed; marked", "thing", thing, "op", op.ID, "err", err)
-			return
-		}
-		p.commit(ctx, thing, st, op.Seq, merged)
-	case None:
+	p.mu.Lock()
+	cur := st.state
+	p.mu.Unlock()
+	out := contract.FoldStep(res, cur, op)
+	switch out.Decision {
+	case contract.Reset, contract.Merge:
+		p.commit(ctx, thing, st, op.Seq, out.State)
+	case contract.MalformedSnapshot:
+		p.Warn("marked snapshot", "thing", thing, "op", op.ID, "detail", out.Detail)
+	case contract.None:
 		// The op lives in history; state is not its home.
-	case UnknownType:
-		p.Warn("unknown op type ignored", "thing", thing, "op", op.ID, "type", op.Type, "detail", detail)
-	case UnknownEffect:
-		p.Warn("unknown effect treated as none", "type", op.Type, "detail", detail)
-	case BadTypeRecord:
-		p.Warn("type record unusable", "type", op.Type, "detail", detail)
-	case Invalid:
-		p.Warn("marked invalid payload", "thing", thing, "op", op.ID, "type", op.Type, "detail", detail)
+	case contract.UnknownType:
+		p.Warn("unknown op type ignored", "thing", thing, "op", op.ID, "type", op.Type, "detail", out.Detail)
+	case contract.UnknownEffect:
+		p.Warn("unknown effect treated as none", "type", op.Type, "detail", out.Detail)
+	case contract.BadTypeRecord:
+		p.Warn("type record unusable", "type", op.Type, "detail", out.Detail)
+	case contract.Invalid:
+		p.Warn("marked invalid payload", "thing", thing, "op", op.ID, "type", op.Type, "detail", out.Detail)
+	case contract.Undeclared:
+		p.Warn("marked undeclared aspect", "thing", thing, "op", op.ID, "detail", out.Detail)
 	}
 }
 

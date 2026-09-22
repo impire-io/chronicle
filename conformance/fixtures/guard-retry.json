@@ -1,0 +1,23 @@
+{
+  "$comment": "The retry after a guard refusal (design 02 § the operation record; client/ops.go): the guard fires before dedup, so a retried guarded append surfaces wrong-last-sequence even when the first attempt landed. The SDK reads the subject's last op and compares IDs: equal means the earlier attempt landed and the refusal was dedup's echo (report the landed ack); different means the thing moved (report thing-moved: re-read, re-validate, retry).",
+  "cases": [
+    {
+      "name": "my op landed",
+      "lastOpID": "op-1",
+      "retriedOpID": "op-1",
+      "landed": true
+    },
+    {
+      "name": "the thing moved",
+      "lastOpID": "op-2",
+      "retriedOpID": "op-1",
+      "landed": false
+    },
+    {
+      "name": "nothing on the subject yet",
+      "lastOpID": "",
+      "retriedOpID": "op-1",
+      "landed": false
+    }
+  ]
+}

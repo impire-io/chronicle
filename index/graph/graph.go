@@ -144,9 +144,27 @@ func evalPath(v any, segs []string) []string {
 	return nil
 }
 
-// neighbors answers the degree-one read: edges at a thing, filtered by
-// direction and label, in stable order for honest pagination.
-func (r *graphRun) neighbors(req client.GraphQueryRequest) client.GraphNeighborsResponse {
+// neighborsResult is one neighbors query's answer before it streams:
+// the edges in stable order under the cap, and the total.
+type neighborsResult struct {
+	Edges []contract.GraphEdge
+	Total uint64
+}
+
+// walkResult is one walk's answer before it streams: the things first
+// reached, breadth first, with the depth and label they arrived through;
+// DepthCapped says the requested depth exceeded the cap, Truncated that
+// the limit bit before the frontier emptied.
+type walkResult struct {
+	Things      []contract.GraphVisit
+	Total       uint64
+	DepthCapped bool
+	Truncated   bool
+}
+
+// neighbors answers the edges at a thing: out, in, or both, filtered to
+// one label when asked, in stable order. A zero limit means every edge.
+func (r *graphRun) neighbors(req client.GraphQueryRequest) neighborsResult {
 	r.mu.RLock()
 	var edges []contract.GraphEdge
 	if req.Direction == contract.GraphDirectionOut || req.Direction == contract.GraphDirectionBoth || req.Direction == "" {
@@ -175,26 +193,17 @@ func (r *graphRun) neighbors(req client.GraphQueryRequest) client.GraphNeighbors
 		}
 		return edges[i].To < edges[j].To
 	})
-
 	total := uint64(len(edges))
-	limit := req.Limit
-	if limit <= 0 {
-		limit = 10
+	if req.Limit > 0 && req.Limit < len(edges) {
+		edges = edges[:req.Limit]
 	}
-	if limit > 100 {
-		limit = 100
-	}
-	offset := max(req.Offset, 0)
-	if offset > len(edges) {
-		offset = len(edges)
-	}
-	end := min(offset+limit, len(edges))
-	return client.GraphNeighborsResponse{Edges: append([]contract.GraphEdge{}, edges[offset:end]...), Total: total}
+	return neighborsResult{Edges: append([]contract.GraphEdge{}, edges...), Total: total}
 }
 
 // walk answers the bounded traversal: breadth-first, cycle-safe, depth
-// capped — and the cap stated in the reply when it bit.
-func (r *graphRun) walk(req client.GraphQueryRequest) client.GraphWalkResponse {
+// capped — and the cap stated in the trailer when it bit. A zero limit
+// means every reachable thing within the depth.
+func (r *graphRun) walk(req client.GraphQueryRequest) walkResult {
 	depth := req.Depth
 	if depth <= 0 {
 		depth = 1
@@ -202,13 +211,6 @@ func (r *graphRun) walk(req client.GraphQueryRequest) client.GraphWalkResponse {
 	capped := depth > contract.GraphWalkMaxDepth
 	if capped {
 		depth = contract.GraphWalkMaxDepth
-	}
-	limit := req.Limit
-	if limit <= 0 {
-		limit = 100
-	}
-	if limit > 1000 {
-		limit = 1000
 	}
 	var labels map[string]struct{}
 	if len(req.Labels) > 0 {
@@ -262,11 +264,11 @@ func (r *graphRun) walk(req client.GraphQueryRequest) client.GraphWalkResponse {
 			}
 			visited[next] = struct{}{}
 			visits = append(visits, contract.GraphVisit{Thing: next, Depth: cur.depth + 1, Via: e.Label})
-			if len(visits) >= limit {
-				return client.GraphWalkResponse{Things: visits, Total: uint64(len(visits)), DepthCapped: capped, Truncated: true}
+			if req.Limit > 0 && len(visits) >= req.Limit {
+				return walkResult{Things: visits, Total: uint64(len(visits)), DepthCapped: capped, Truncated: true}
 			}
 			queue = append(queue, frontier{next, cur.depth + 1})
 		}
 	}
-	return client.GraphWalkResponse{Things: visits, Total: uint64(len(visits)), DepthCapped: capped}
+	return walkResult{Things: visits, Total: uint64(len(visits)), DepthCapped: capped}
 }

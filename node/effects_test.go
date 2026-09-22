@@ -210,10 +210,7 @@ func TestEffectChangeRebuildsState(t *testing.T) {
 	}
 
 	// And the log itself is untouched — the rebuild was derived-only.
-	ops, err := alice.Replay(ctx, "orders", "invoice.invoice-1")
-	if err != nil {
-		t.Fatalf("replay: %v", err)
-	}
+	ops := collect(t, alice.Replay(ctx, "orders", "invoice.invoice-1"))
 	if len(ops) != 2 {
 		t.Fatalf("replay after rebuild: %d ops", len(ops))
 	}

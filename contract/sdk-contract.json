@@ -1,0 +1,1474 @@
+{
+  "$comment": "The chronicle SDK contract (chronicle-hq design 12): the wire described once, restated by every SDK. The Go contract package proves it matches; an SDK generates its types, constants and error enum from it and nothing else.",
+  "version": "1.0.0",
+  "shapes": [
+    {
+      "name": "request-reply",
+      "description": "one request, one reply; no responder is a typed error"
+    },
+    {
+      "name": "streamed-reply",
+      "description": "one request; chunks and a trailer from one responder; ends on the trailer, a stall or the deadline is the safety net"
+    },
+    {
+      "name": "scatter-gather",
+      "description": "one request, any responder may answer; ends on a deadline or a count; zero answers is an empty result. Not on chronicle's wire: an application's own"
+    },
+    {
+      "name": "batch-publish",
+      "description": "many messages, one commit ack: the server's atomic batch publish. Described, unbuilt until a consumer exists"
+    },
+    {
+      "name": "publish",
+      "description": "a guarded JetStream publish: every append"
+    },
+    {
+      "name": "subscribe",
+      "description": "a resumable JetStream read — an ordered consumer or a KV scan or watch — never a core subscription"
+    }
+  ],
+  "headers": {
+    "operation": {
+      "Nats-Msg-Id": "the op ID and the dedup key, made once by the writer, kept across retries",
+      "Op-Type": "the operation's kind in the log's vocabulary",
+      "Op-Author": "the principal ID, stamped from the credentials",
+      "Op-Parents": "the op IDs the writer had seen, one header value per parent",
+      "Op-Ts": "author-claimed clock, RFC 3339, informational only",
+      "Op-Version": "the envelope version"
+    },
+    "envelopeVersion": "1",
+    "guards": {
+      "Nats-Expected-Last-Subject-Sequence": "JetStream's per-subject CAS; 0 is birth",
+      "Nats-Rollup": "a snapshot that replaces its subject's history; only ever the rollup subject value"
+    },
+    "rollupSubject": "sub",
+    "stream": {
+      "Chron-Chunk": "a message's position in a streamed reply, from 1, increasing by one; the trailer continues the numbering",
+      "Chron-End": "marks the trailer; carries the count of items sent across every chunk"
+    },
+    "serviceError": {
+      "Nats-Service-Error-Code": "a code from the error catalog",
+      "Nats-Service-Error": "the description"
+    }
+  },
+  "grammars": {
+    "name": {
+      "pattern": "^[a-z0-9-]+$",
+      "appliesTo": [
+        "log",
+        "index",
+        "type",
+        "principal",
+        "aspect segment"
+      ]
+    },
+    "thingToken": {
+      "pattern": "^[a-zA-Z0-9_-]+$",
+      "note": "a thing tail is one or more tokens joined with '.'; the tail is also the state bucket's key"
+    },
+    "reservedLogNames": [
+      "api",
+      "meta",
+      "sys"
+    ],
+    "servicePrincipal": "chronicle",
+    "root": "CHRON",
+    "metaBucket": "META",
+    "snapshotOpType": "snapshot",
+    "stateFoldKey": "=fold",
+    "derivations": {
+      "upperLog": "the log name uppercased with '-' mapped to '_'",
+      "stream": "LOG_<LOG>",
+      "stateBucket": "STATE_<LOG>",
+      "logSubjects": "CHRON.<log>.>",
+      "opsFilter": "CHRON.<log>.OPS.>",
+      "opsSubject": "CHRON.<log>.OPS.<thing>"
+    },
+    "metaKeys": {
+      "logConfig": "log.<log>.config",
+      "type": "log.<log>.type.<type>",
+      "index": "index.<log>.<index>",
+      "principal": "identity.principal.<id>",
+      "member": "identity.member.<id>",
+      "invite": "identity.invite.<digest>"
+    },
+    "roles": [
+      "admin",
+      "writer",
+      "reader"
+    ],
+    "effects": [
+      "merge",
+      "none"
+    ],
+    "history": [
+      "compactable",
+      "preserved"
+    ],
+    "indexKinds": [
+      "state",
+      "search",
+      "graph",
+      "semantic"
+    ]
+  },
+  "records": {
+    "typeRecord": {
+      "type": "object",
+      "properties": {
+        "revision": {
+          "type": "integer"
+        },
+        "schema": {
+          "type": [
+            "object",
+            "boolean"
+          ],
+          "description": "a JSON Schema document"
+        },
+        "history": {
+          "type": "string",
+          "enum": [
+            "compactable",
+            "preserved"
+          ]
+        },
+        "aspects": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]+$"
+          },
+          "description": "{segment → type}"
+        },
+        "operations": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "schema": {
+                "type": [
+                  "object",
+                  "boolean"
+                ],
+                "description": "a JSON Schema document"
+              },
+              "effect": {
+                "type": "string",
+                "enum": [
+                  "merge",
+                  "none"
+                ]
+              }
+            },
+            "required": [
+              "schema"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "revision",
+        "schema"
+      ]
+    },
+    "indexDeclaration": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string"
+        },
+        "config": {
+          "description": "any JSON"
+        }
+      },
+      "required": [
+        "kind"
+      ]
+    },
+    "stateValue": {
+      "type": "object",
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "description": "the stream sequence the state was folded to"
+        },
+        "state": {
+          "description": "any JSON"
+        }
+      },
+      "required": [
+        "seq",
+        "state"
+      ]
+    },
+    "snapshotPayload": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "description": "any JSON"
+        },
+        "frontier": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "state"
+      ]
+    },
+    "op": {
+      "type": "object",
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "description": "the stream sequence — the only order"
+        },
+        "id": {
+          "type": "string",
+          "description": "Nats-Msg-Id"
+        },
+        "type": {
+          "type": "string",
+          "description": "Op-Type"
+        },
+        "author": {
+          "type": "string",
+          "description": "Op-Author"
+        },
+        "parents": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "ts": {
+          "type": "string",
+          "description": "Op-Ts, RFC 3339; informational only"
+        },
+        "payload": {
+          "description": "any JSON"
+        }
+      },
+      "required": [
+        "seq",
+        "id",
+        "type",
+        "author",
+        "payload"
+      ]
+    }
+  },
+  "streamSettings": {
+    "duplicateWindowSeconds": 120,
+    "defaultMaxBytes": 1073741824
+  },
+  "clientDefaults": {
+    "streamStallSeconds": 5,
+    "streamPendingMsgs": 65536,
+    "streamPendingBytes": 67108864,
+    "chunkByteBudget": 262144,
+    "dedupWindowSeconds": 120
+  },
+  "fold": {
+    "decisions": [
+      "merge",
+      "none",
+      "unknown-type",
+      "unknown-effect",
+      "bad-type-record",
+      "invalid",
+      "undeclared",
+      "reset",
+      "malformed-snapshot"
+    ],
+    "rules": "resolve the tail first: an undeclared aspect is marked and moves nothing; a snapshot resets state to its payload's, judged against the thing schema when typed; a declared merge applies RFC 7386 onto current state, empty included; none, an unknown type, an unknown effect, a bad record or an invalid payload moves nothing; an untyped subject moves only by snapshot"
+  },
+  "errors": [
+    {
+      "code": "500",
+      "meaning": "the service failed; the description says how"
+    },
+    {
+      "code": "bad-request",
+      "meaning": "the request body does not decode, or a required field is missing"
+    },
+    {
+      "code": "forbidden",
+      "meaning": "the principal's role does not admit the verb"
+    },
+    {
+      "code": "not-a-member",
+      "meaning": "the principal is not in the registry"
+    },
+    {
+      "code": "bad-log-name",
+      "meaning": "the log name is outside [a-z0-9-]+ or reserved"
+    },
+    {
+      "code": "bad-index-name",
+      "meaning": "the index name is outside [a-z0-9-]+"
+    },
+    {
+      "code": "bad-type-name",
+      "meaning": "the type name is outside [a-z0-9-]+"
+    },
+    {
+      "code": "bad-principal-name",
+      "meaning": "the principal name is outside [a-z0-9-]+ or reserved"
+    },
+    {
+      "code": "bad-thing",
+      "meaning": "the thing tail is not subject-token safe"
+    },
+    {
+      "code": "bad-role",
+      "meaning": "the role is outside the vocabulary (admin, writer, reader)"
+    },
+    {
+      "code": "bad-history",
+      "meaning": "the history declaration is outside the vocabulary (compactable, preserved)"
+    },
+    {
+      "code": "bad-kind",
+      "meaning": "the index kind is outside the node's vocabulary"
+    },
+    {
+      "code": "bad-config",
+      "meaning": "the index config does not parse under its kind's contract"
+    },
+    {
+      "code": "bad-schema",
+      "meaning": "a JSON Schema in the type record does not compile"
+    },
+    {
+      "code": "bad-effect",
+      "meaning": "an operation's effect is outside the vocabulary (merge, none)"
+    },
+    {
+      "code": "bad-op-type",
+      "meaning": "an operation's name is not a valid op type"
+    },
+    {
+      "code": "bad-aspect-segment",
+      "meaning": "an aspects key is outside [a-z0-9-]+"
+    },
+    {
+      "code": "bad-aspect-type",
+      "meaning": "an aspects value names a type outside [a-z0-9-]+"
+    },
+    {
+      "code": "bad-op",
+      "meaning": "the query's op is outside the index kind's vocabulary"
+    },
+    {
+      "code": "bad-direction",
+      "meaning": "the graph direction is outside the vocabulary (out, in, both)"
+    },
+    {
+      "code": "log-exists",
+      "meaning": "the log already exists"
+    },
+    {
+      "code": "index-exists",
+      "meaning": "the index is already declared"
+    },
+    {
+      "code": "member-exists",
+      "meaning": "the member is already registered"
+    },
+    {
+      "code": "no-such-log",
+      "meaning": "the log does not exist"
+    },
+    {
+      "code": "no-such-index",
+      "meaning": "the index is not declared"
+    },
+    {
+      "code": "no-such-thing",
+      "meaning": "the thing has no history on the log"
+    },
+    {
+      "code": "reserved-state-index",
+      "meaning": "the state index is the node's: not declarable, not deletable while the log exists"
+    },
+    {
+      "code": "provider-unavailable",
+      "meaning": "the semantic kind's embedding provider did not answer"
+    }
+  ],
+  "interactions": [
+    {
+      "name": "ping",
+      "shape": "request-reply",
+      "subject": "CHRON.API.PING",
+      "role": "any",
+      "request": {
+        "description": "empty"
+      },
+      "reply": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "version"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "500"
+      ]
+    },
+    {
+      "name": "log.create",
+      "shape": "request-reply",
+      "subject": "CHRON.API.LOG.CREATE",
+      "role": "admin",
+      "request": {
+        "type": "object",
+        "properties": {
+          "principal": {
+            "type": "string",
+            "description": "the caller's principal ID — the same assertion as Op-Author"
+          },
+          "log": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]+$"
+          },
+          "description": {
+            "type": "string"
+          },
+          "max_bytes": {
+            "type": "integer",
+            "description": "per-log byte budget; zero means the default"
+          },
+          "history": {
+            "type": "string",
+            "enum": [
+              "compactable",
+              "preserved"
+            ]
+          }
+        },
+        "required": [
+          "principal",
+          "log"
+        ],
+        "additionalProperties": false
+      },
+      "reply": {
+        "type": "object",
+        "properties": {
+          "stream": {
+            "type": "string",
+            "description": "the created stream, LOG_<LOG>"
+          }
+        },
+        "required": [
+          "stream"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "500",
+        "bad-request",
+        "forbidden",
+        "not-a-member",
+        "bad-log-name",
+        "bad-history",
+        "log-exists"
+      ]
+    },
+    {
+      "name": "type.define",
+      "shape": "request-reply",
+      "subject": "CHRON.API.TYPE.DEFINE",
+      "role": "admin",
+      "request": {
+        "type": "object",
+        "properties": {
+          "principal": {
+            "type": "string",
+            "description": "the caller's principal ID — the same assertion as Op-Author"
+          },
+          "log": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]+$"
+          },
+          "type": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]+$"
+          },
+          "schema": {
+            "type": [
+              "object",
+              "boolean"
+            ],
+            "description": "a JSON Schema document"
+          },
+          "history": {
+            "type": "string",
+            "enum": [
+              "compactable",
+              "preserved"
+            ]
+          },
+          "aspects": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string",
+              "pattern": "^[a-z0-9-]+$"
+            }
+          },
+          "operations": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "schema": {
+                  "type": [
+                    "object",
+                    "boolean"
+                  ],
+                  "description": "a JSON Schema document"
+                },
+                "effect": {
+                  "type": "string",
+                  "enum": [
+                    "merge",
+                    "none"
+                  ]
+                }
+              },
+              "required": [
+                "schema"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "principal",
+          "log",
+          "type",
+          "schema"
+        ],
+        "additionalProperties": false
+      },
+      "reply": {
+        "type": "object",
+        "properties": {
+          "revision": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "revision"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "500",
+        "bad-request",
+        "forbidden",
+        "not-a-member",
+        "bad-log-name",
+        "bad-type-name",
+        "bad-schema",
+        "bad-history",
+        "bad-effect",
+        "bad-op-type",
+        "bad-aspect-segment",
+        "bad-aspect-type",
+        "no-such-log"
+      ]
+    },
+    {
+      "name": "thing.rollup",
+      "shape": "request-reply",
+      "subject": "CHRON.API.THING.ROLLUP",
+      "role": "admin, writer",
+      "request": {
+        "type": "object",
+        "properties": {
+          "principal": {
+            "type": "string",
+            "description": "the caller's principal ID — the same assertion as Op-Author"
+          },
+          "log": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]+$"
+          },
+          "thing": {
+            "type": "string",
+            "description": "a thing tail: subject-token-safe segments joined with '.'"
+          }
+        },
+        "required": [
+          "principal",
+          "log",
+          "thing"
+        ],
+        "additionalProperties": false
+      },
+      "reply": {
+        "type": "object",
+        "properties": {
+          "rolled": {
+            "type": "boolean"
+          },
+          "seq": {
+            "type": "integer",
+            "description": "the new snapshot's stream sequence when rolled"
+          },
+          "reason": {
+            "type": "string",
+            "description": "why the node declined; declining is an answer, not an error"
+          }
+        },
+        "required": [
+          "rolled"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "500",
+        "bad-request",
+        "forbidden",
+        "not-a-member",
+        "bad-log-name",
+        "bad-thing",
+        "no-such-log",
+        "no-such-thing"
+      ]
+    },
+    {
+      "name": "index.declare",
+      "shape": "request-reply",
+      "subject": "CHRON.API.INDEX.DECLARE",
+      "role": "admin",
+      "request": {
+        "type": "object",
+        "properties": {
+          "principal": {
+            "type": "string",
+            "description": "the caller's principal ID — the same assertion as Op-Author"
+          },
+          "log": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]+$"
+          },
+          "index": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]+$"
+          },
+          "kind": {
+            "type": "string",
+            "description": "search | graph | semantic; state is the node's"
+          },
+          "config": {
+            "description": "any JSON"
+          }
+        },
+        "required": [
+          "principal",
+          "log",
+          "index",
+          "kind"
+        ],
+        "additionalProperties": false
+      },
+      "reply": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "the query subject the index serves once caught up"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "500",
+        "bad-request",
+        "forbidden",
+        "not-a-member",
+        "bad-log-name",
+        "bad-index-name",
+        "bad-kind",
+        "bad-config",
+        "no-such-log",
+        "index-exists",
+        "reserved-state-index"
+      ]
+    },
+    {
+      "name": "index.delete",
+      "shape": "request-reply",
+      "subject": "CHRON.API.INDEX.DELETE",
+      "role": "admin",
+      "request": {
+        "type": "object",
+        "properties": {
+          "principal": {
+            "type": "string",
+            "description": "the caller's principal ID — the same assertion as Op-Author"
+          },
+          "log": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]+$"
+          },
+          "index": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]+$"
+          }
+        },
+        "required": [
+          "principal",
+          "log",
+          "index"
+        ],
+        "additionalProperties": false
+      },
+      "reply": {
+        "type": "object",
+        "properties": {
+          "deleted": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "deleted"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "500",
+        "bad-request",
+        "forbidden",
+        "not-a-member",
+        "bad-log-name",
+        "bad-index-name",
+        "no-such-log",
+        "no-such-index",
+        "reserved-state-index"
+      ]
+    },
+    {
+      "name": "member.add",
+      "shape": "request-reply",
+      "subject": "CHRON.API.MEMBER.ADD",
+      "role": "admin",
+      "request": {
+        "type": "object",
+        "properties": {
+          "principal": {
+            "type": "string",
+            "description": "the caller's principal ID — the same assertion as Op-Author"
+          },
+          "member": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]+$"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "admin",
+              "writer",
+              "reader"
+            ]
+          },
+          "public_key": {
+            "type": "string",
+            "description": "the member's NATS user public key, where known"
+          },
+          "github_id": {
+            "type": "integer",
+            "description": "the GitHub numeric ID the membership is bound to; zero means unbound"
+          }
+        },
+        "required": [
+          "principal",
+          "member"
+        ],
+        "additionalProperties": false
+      },
+      "reply": {
+        "type": "object",
+        "properties": {
+          "member": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "admin",
+              "writer",
+              "reader"
+            ]
+          }
+        },
+        "required": [
+          "member",
+          "role"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "500",
+        "bad-request",
+        "forbidden",
+        "not-a-member",
+        "bad-principal-name",
+        "bad-role",
+        "member-exists"
+      ]
+    },
+    {
+      "name": "member.revoke",
+      "shape": "request-reply",
+      "subject": "CHRON.API.MEMBER.REVOKE",
+      "role": "admin",
+      "request": {
+        "type": "object",
+        "properties": {
+          "principal": {
+            "type": "string",
+            "description": "the caller's principal ID — the same assertion as Op-Author"
+          },
+          "member": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]+$"
+          }
+        },
+        "required": [
+          "principal",
+          "member"
+        ],
+        "additionalProperties": false
+      },
+      "reply": {
+        "type": "object",
+        "properties": {
+          "member": {
+            "type": "string"
+          },
+          "public_key": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "member"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "500",
+        "bad-request",
+        "forbidden",
+        "not-a-member",
+        "bad-principal-name"
+      ]
+    },
+    {
+      "name": "index.query.search",
+      "shape": "streamed-reply",
+      "subject": "CHRON.API.INDEX.QUERY.<log>.<index>",
+      "role": "any",
+      "request": {
+        "type": "object",
+        "properties": {
+          "principal": {
+            "type": "string",
+            "description": "the caller's principal ID — the same assertion as Op-Author"
+          },
+          "query": {
+            "type": "string",
+            "description": "the match text; empty matches everything"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "cap the hits; zero streams every match"
+          }
+        },
+        "required": [
+          "principal",
+          "query"
+        ],
+        "additionalProperties": false
+      },
+      "item": {
+        "type": "object",
+        "properties": {
+          "thing": {
+            "type": "string",
+            "description": "a thing tail: subject-token-safe segments joined with '.'"
+          },
+          "score": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "thing",
+          "score"
+        ],
+        "additionalProperties": false
+      },
+      "trailer": {
+        "type": "object",
+        "properties": {
+          "total": {
+            "type": "integer",
+            "description": "every match, whatever the cap let through"
+          }
+        },
+        "required": [
+          "total"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "500",
+        "bad-request",
+        "forbidden",
+        "not-a-member"
+      ]
+    },
+    {
+      "name": "index.query.graph.neighbors",
+      "shape": "streamed-reply",
+      "subject": "CHRON.API.INDEX.QUERY.<log>.<index>",
+      "role": "any",
+      "request": {
+        "type": "object",
+        "properties": {
+          "principal": {
+            "type": "string",
+            "description": "the caller's principal ID — the same assertion as Op-Author"
+          },
+          "op": {
+            "type": "string",
+            "enum": [
+              "neighbors"
+            ]
+          },
+          "thing": {
+            "type": "string",
+            "description": "a thing tail: subject-token-safe segments joined with '.'"
+          },
+          "direction": {
+            "type": "string",
+            "enum": [
+              "out",
+              "in",
+              "both"
+            ]
+          },
+          "label": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "zero streams every edge"
+          }
+        },
+        "required": [
+          "principal",
+          "thing"
+        ],
+        "additionalProperties": false
+      },
+      "item": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string",
+            "description": "a thing tail: subject-token-safe segments joined with '.'"
+          },
+          "to": {
+            "type": "string",
+            "description": "a thing tail: subject-token-safe segments joined with '.'"
+          },
+          "label": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "from",
+          "to",
+          "label"
+        ],
+        "additionalProperties": false
+      },
+      "trailer": {
+        "type": "object",
+        "properties": {
+          "total": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "total"
+        ]
+      },
+      "errors": [
+        "500",
+        "bad-request",
+        "forbidden",
+        "not-a-member",
+        "bad-op",
+        "bad-direction"
+      ]
+    },
+    {
+      "name": "index.query.graph.walk",
+      "shape": "streamed-reply",
+      "subject": "CHRON.API.INDEX.QUERY.<log>.<index>",
+      "role": "any",
+      "request": {
+        "type": "object",
+        "properties": {
+          "principal": {
+            "type": "string",
+            "description": "the caller's principal ID — the same assertion as Op-Author"
+          },
+          "op": {
+            "type": "string",
+            "enum": [
+              "walk"
+            ]
+          },
+          "thing": {
+            "type": "string",
+            "description": "a thing tail: subject-token-safe segments joined with '.'"
+          },
+          "direction": {
+            "type": "string",
+            "enum": [
+              "out",
+              "in",
+              "both"
+            ]
+          },
+          "labels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "depth": {
+            "type": "integer",
+            "description": "default 1, capped at 6"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "zero streams every reachable thing"
+          }
+        },
+        "required": [
+          "principal",
+          "op",
+          "thing"
+        ],
+        "additionalProperties": false
+      },
+      "item": {
+        "type": "object",
+        "properties": {
+          "thing": {
+            "type": "string",
+            "description": "a thing tail: subject-token-safe segments joined with '.'"
+          },
+          "depth": {
+            "type": "integer"
+          },
+          "via": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "thing",
+          "depth",
+          "via"
+        ],
+        "additionalProperties": false
+      },
+      "trailer": {
+        "type": "object",
+        "properties": {
+          "total": {
+            "type": "integer"
+          },
+          "depth_capped": {
+            "type": "boolean"
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "total"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "500",
+        "bad-request",
+        "forbidden",
+        "not-a-member",
+        "bad-op",
+        "bad-direction"
+      ]
+    },
+    {
+      "name": "index.query.semantic",
+      "shape": "streamed-reply",
+      "subject": "CHRON.API.INDEX.QUERY.<log>.<index>",
+      "role": "any",
+      "request": {
+        "type": "object",
+        "properties": {
+          "principal": {
+            "type": "string",
+            "description": "the caller's principal ID — the same assertion as Op-Author"
+          },
+          "text": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "zero streams every match"
+          }
+        },
+        "required": [
+          "principal",
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "item": {
+        "type": "object",
+        "properties": {
+          "thing": {
+            "type": "string",
+            "description": "a thing tail: subject-token-safe segments joined with '.'"
+          },
+          "score": {
+            "type": "number"
+          },
+          "field": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "thing",
+          "score"
+        ],
+        "additionalProperties": false
+      },
+      "trailer": {
+        "type": "object",
+        "properties": {
+          "total": {
+            "type": "integer"
+          },
+          "unembedded": {
+            "type": "integer",
+            "description": "things folded but not yet embedded — the honest degradation signal"
+          }
+        },
+        "required": [
+          "total",
+          "unembedded"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "500",
+        "bad-request",
+        "forbidden",
+        "not-a-member",
+        "provider-unavailable"
+      ]
+    },
+    {
+      "name": "append",
+      "shape": "publish",
+      "subject": "CHRON.<log>.OPS.<thing>",
+      "headers": [
+        "Nats-Msg-Id",
+        "Op-Type",
+        "Op-Author",
+        "Op-Parents",
+        "Op-Ts",
+        "Op-Version"
+      ],
+      "guards": {
+        "birth": "Nats-Expected-Last-Subject-Sequence: 0",
+        "expected": "Nats-Expected-Last-Subject-Sequence: <seq>",
+        "rollup": "Nats-Rollup: sub"
+      },
+      "payload": "data only; a snapshot op's payload is {state, frontier}",
+      "preflight": "validate the payload against the type's operation schema; refuse a birth under an undeclared aspect; one in-flight publish per subject",
+      "retry": "keep Nats-Msg-Id across retries; after a guard refusal read the subject's last op and compare IDs: equal is landed, different is thing-moved"
+    },
+    {
+      "name": "history",
+      "shape": "subscribe",
+      "source": "ordered consumer on LOG_<LOG> filtered to CHRON.<log>.OPS.<thing>",
+      "start": "sequence 1 (Replay) or after a given sequence (FoldTail)",
+      "bounded": "at the stream head observed at the start",
+      "item": {
+        "type": "object",
+        "properties": {
+          "seq": {
+            "type": "integer",
+            "description": "the stream sequence — the only order"
+          },
+          "id": {
+            "type": "string",
+            "description": "Nats-Msg-Id"
+          },
+          "type": {
+            "type": "string",
+            "description": "Op-Type"
+          },
+          "author": {
+            "type": "string",
+            "description": "Op-Author"
+          },
+          "parents": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "ts": {
+            "type": "string",
+            "description": "Op-Ts, RFC 3339; informational only"
+          },
+          "payload": {
+            "description": "any JSON"
+          }
+        },
+        "required": [
+          "seq",
+          "id",
+          "type",
+          "author",
+          "payload"
+        ]
+      }
+    },
+    {
+      "name": "tail",
+      "shape": "subscribe",
+      "source": "ordered consumer on LOG_<LOG> filtered to CHRON.<log>.OPS.> or one thing's subject",
+      "start": "sequence 1, after a given sequence, or new only",
+      "bounded": "never; the caller cancels",
+      "item": {
+        "type": "object",
+        "properties": {
+          "seq": {
+            "type": "integer",
+            "description": "the stream sequence — the only order"
+          },
+          "id": {
+            "type": "string",
+            "description": "Nats-Msg-Id"
+          },
+          "type": {
+            "type": "string",
+            "description": "Op-Type"
+          },
+          "author": {
+            "type": "string",
+            "description": "Op-Author"
+          },
+          "parents": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "ts": {
+            "type": "string",
+            "description": "Op-Ts, RFC 3339; informational only"
+          },
+          "payload": {
+            "description": "any JSON"
+          }
+        },
+        "required": [
+          "seq",
+          "id",
+          "type",
+          "author",
+          "payload"
+        ]
+      }
+    },
+    {
+      "name": "watch.state",
+      "shape": "subscribe",
+      "source": "KV watch on STATE_<LOG>, key <thing>",
+      "start": "the current value, then every change",
+      "bounded": "never; the caller cancels",
+      "item": {
+        "type": "object",
+        "properties": {
+          "seq": {
+            "type": "integer",
+            "description": "the stream sequence the state was folded to"
+          },
+          "state": {
+            "description": "any JSON"
+          }
+        },
+        "required": [
+          "seq",
+          "state"
+        ]
+      }
+    },
+    {
+      "name": "watch.declarations",
+      "shape": "subscribe",
+      "source": "KV watch on META, keys log.<log>.type.* and index.<log>.*",
+      "start": "every declaration at rest, then every change",
+      "bounded": "never; the caller cancels",
+      "item": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "type",
+              "index"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "integer"
+          },
+          "deleted": {
+            "type": "boolean"
+          },
+          "value": {
+            "description": "any JSON"
+          }
+        },
+        "required": [
+          "kind",
+          "name",
+          "revision"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "list.logs",
+      "shape": "subscribe",
+      "source": "KV scan on META, keys log.*.config, names only",
+      "bounded": "at the values at rest",
+      "item": {
+        "type": "string",
+        "description": "the log name"
+      }
+    },
+    {
+      "name": "list.types",
+      "shape": "subscribe",
+      "source": "KV scan on META, keys log.<log>.type.*, names only",
+      "bounded": "at the values at rest",
+      "item": {
+        "type": "string",
+        "description": "the type name"
+      }
+    },
+    {
+      "name": "list.indexes",
+      "shape": "subscribe",
+      "source": "KV scan on META, keys index.<log>.*",
+      "bounded": "at the values at rest",
+      "item": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "config": {
+            "description": "any JSON"
+          }
+        },
+        "required": [
+          "name",
+          "kind"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "list.members",
+      "shape": "subscribe",
+      "source": "KV scan on META, keys identity.member.*",
+      "bounded": "at the values at rest",
+      "item": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "admin",
+              "writer",
+              "reader"
+            ]
+          },
+          "public_key": {
+            "type": "string"
+          },
+          "github_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "role"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "list.things",
+      "shape": "subscribe",
+      "source": "KV scan on STATE_<LOG>, every key but =fold, narrowed by prefix client-side",
+      "bounded": "at the values at rest",
+      "item": {
+        "type": "string",
+        "description": "a thing tail: subject-token-safe segments joined with '.'"
+      }
+    }
+  ]
+}

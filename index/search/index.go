@@ -65,59 +65,62 @@ func (r *searchRun) UpsertOp(thing string, seq uint64, payload json.RawMessage) 
 	}
 }
 
-// query answers one search over this run's index. Bleve indexes are safe
-// for concurrent search and index.
-func (r *searchRun) query(req client.IndexQueryRequest) (client.IndexQueryResponse, error) {
+// query answers one search over this run's index: every hit under the
+// cap, best first, and the total — the handler streams them (design 12).
+// A zero limit means every match. Bleve indexes are safe for concurrent
+// search and index.
+func (r *searchRun) query(req client.IndexQueryRequest) ([]client.IndexHit, uint64, error) {
 	var q query.Query
 	if req.Query == "" {
 		q = bleve.NewMatchAllQuery()
 	} else {
 		q = bleve.NewMatchQuery(req.Query)
 	}
-	limit := req.Limit
-	if limit <= 0 {
-		limit = 10
-	}
-	if limit > 100 {
-		limit = 100
-	}
-	offset := max(req.Offset, 0)
-
 	if r.ops {
-		return r.queryOps(q, limit, offset)
+		return r.queryOps(q, req.Limit)
 	}
-	res, err := r.idx.Search(bleve.NewSearchRequestOptions(q, limit, offset, false))
+	count, err := r.idx.Search(bleve.NewSearchRequestOptions(q, 0, 0, false))
 	if err != nil {
-		return client.IndexQueryResponse{}, fmt.Errorf("search: %w", err)
+		return nil, 0, fmt.Errorf("search: %w", err)
 	}
-	reply := client.IndexQueryResponse{Hits: []client.IndexHit{}, Total: res.Total}
+	size := int(count.Total)
+	if req.Limit > 0 && req.Limit < size {
+		size = req.Limit
+	}
+	hits := []client.IndexHit{}
+	if size == 0 {
+		return hits, count.Total, nil
+	}
+	res, err := r.idx.Search(bleve.NewSearchRequestOptions(q, size, 0, false))
+	if err != nil {
+		return nil, 0, fmt.Errorf("search: %w", err)
+	}
 	for _, hit := range res.Hits {
-		reply.Hits = append(reply.Hits, client.IndexHit{Thing: hit.ID, Score: hit.Score})
+		hits = append(hits, client.IndexHit{Thing: hit.ID, Score: hit.Score})
 	}
-	return reply, nil
+	return hits, count.Total, nil
 }
 
 // queryOps answers over per-op documents with thing-level hits (0020):
 // score by best op, total counts things. Every matching document is
 // walked so the total stays honest — the index is in-memory and per-log;
 // when that walk is a measured bill, a cheaper answer earns its design.
-func (r *searchRun) queryOps(q query.Query, limit, offset int) (client.IndexQueryResponse, error) {
+func (r *searchRun) queryOps(q query.Query, limit int) ([]client.IndexHit, uint64, error) {
 	count, err := r.idx.Search(bleve.NewSearchRequestOptions(q, 0, 0, false))
 	if err != nil {
-		return client.IndexQueryResponse{}, fmt.Errorf("search: %w", err)
+		return nil, 0, fmt.Errorf("search: %w", err)
 	}
-	reply := client.IndexQueryResponse{Hits: []client.IndexHit{}}
+	things := []client.IndexHit{}
 	if count.Total == 0 {
-		return reply, nil
+		return things, 0, nil
 	}
 	res, err := r.idx.Search(bleve.NewSearchRequestOptions(q, int(count.Total), 0, false))
 	if err != nil {
-		return client.IndexQueryResponse{}, fmt.Errorf("search: %w", err)
+		return nil, 0, fmt.Errorf("search: %w", err)
 	}
 	// Bleve returns hits score-descending, so a thing's first sighting is
 	// its best op.
 	seen := map[string]struct{}{}
-	things := []client.IndexHit{}
 	for _, hit := range res.Hits {
 		thing := projection.DocThing(hit.ID)
 		if _, dup := seen[thing]; dup {
@@ -126,13 +129,11 @@ func (r *searchRun) queryOps(q query.Query, limit, offset int) (client.IndexQuer
 		seen[thing] = struct{}{}
 		things = append(things, client.IndexHit{Thing: thing, Score: hit.Score})
 	}
-	reply.Total = uint64(len(things))
-	if offset > len(things) {
-		offset = len(things)
+	total := uint64(len(things))
+	if limit > 0 && limit < len(things) {
+		things = things[:limit]
 	}
-	end := min(offset+limit, len(things))
-	reply.Hits = things[offset:end]
-	return reply, nil
+	return things, total, nil
 }
 
 // docFor turns a thing's folded state into the indexed document. State is

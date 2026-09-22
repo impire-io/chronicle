@@ -132,12 +132,13 @@ type IndexDeleteResponse struct {
 
 // IndexQueryRequest is one search: a match over every string field of
 // thing state (empty query matches everything). Any registry role may
-// query. Limit defaults to 10 and is capped at 100.
+// query. The reply is a streamed reply (design 12): Limit caps the hits
+// the caller wants — zero or absent streams every match — and there is
+// no offset: a lost stream is re-requested.
 type IndexQueryRequest struct {
 	Principal string `json:"principal"`
 	Query     string `json:"query"`
 	Limit     int    `json:"limit,omitempty"`
-	Offset    int    `json:"offset,omitempty"`
 }
 
 // IndexHit names a thing and its relevance. The index is never authority:
@@ -147,11 +148,10 @@ type IndexHit struct {
 	Score float64 `json:"score"`
 }
 
-// IndexQueryResponse carries the hits, best first, and the total match
-// count.
-type IndexQueryResponse struct {
-	Hits  []IndexHit `json:"hits"`
-	Total uint64     `json:"total"`
+// QueryTrailer closes a search's streamed reply: the total match count,
+// whatever the cap let through.
+type QueryTrailer struct {
+	Total uint64 `json:"total"`
 }
 
 // MemberAddRequest registers a principal as a member of the tenant with
@@ -316,12 +316,11 @@ func (c *Client) DeleteIndex(ctx context.Context, log, index string) (IndexDelet
 // QueryIndex searches one index. No responder means the indexer is not
 // running or still replaying — the honest signal of an index that is not
 // current yet.
-func (c *Client) QueryIndex(ctx context.Context, log, index, query string, limit, offset int) (IndexQueryResponse, error) {
-	return Request[IndexQueryRequest, IndexQueryResponse](ctx, c.nc, IndexQuerySubject(log, index), IndexQueryRequest{
+func (c *Client) QueryIndex(ctx context.Context, log, index, query string, limit int) *Streamed[IndexHit, QueryTrailer] {
+	return RequestStream[IndexQueryRequest, IndexHit, QueryTrailer](ctx, c.nc, IndexQuerySubject(log, index), IndexQueryRequest{
 		Principal: c.author,
 		Query:     query,
 		Limit:     limit,
-		Offset:    offset,
 	})
 }
 
@@ -381,43 +380,37 @@ type GraphQueryRequest struct {
 	Label string `json:"label,omitempty"`
 	// Labels filters a walk's traversable edge types.
 	Labels []string `json:"labels,omitempty"`
-	// Depth bounds a walk; default 1, capped (the reply says when).
-	Depth  int `json:"depth,omitempty"`
-	Limit  int `json:"limit,omitempty"`
-	Offset int `json:"offset,omitempty"`
+	// Depth bounds a walk; default 1, capped (the trailer says when).
+	Depth int `json:"depth,omitempty"`
+	// Limit caps the items the caller wants; zero streams them all.
+	Limit int `json:"limit,omitempty"`
 }
 
-// GraphNeighborsResponse answers op neighbors: edges in stable order.
-// A target may be dangling — data, not corruption; resolution is the
-// caller's state read.
-type GraphNeighborsResponse struct {
-	Edges []contract.GraphEdge `json:"edges"`
-	Total uint64               `json:"total"`
+// GraphTrailer closes a graph query's streamed reply. Total counts what
+// matched, whatever the cap let through; on a walk, DepthCapped says the
+// requested depth exceeded the cap and Truncated says the limit bit
+// before the frontier emptied.
+type GraphTrailer struct {
+	Total       uint64 `json:"total"`
+	DepthCapped bool   `json:"depth_capped,omitempty"`
+	Truncated   bool   `json:"truncated,omitempty"`
 }
 
-// GraphWalkResponse answers op walk: things first reached, breadth
-// first, with the depth and label they arrived through. DepthCapped
-// says the requested depth exceeded the cap; Truncated says the limit
-// bit before the frontier emptied.
-type GraphWalkResponse struct {
-	Things      []contract.GraphVisit `json:"things"`
-	Total       uint64                `json:"total"`
-	DepthCapped bool                  `json:"depth_capped,omitempty"`
-	Truncated   bool                  `json:"truncated,omitempty"`
-}
-
-// GraphNeighbors reads the edges at a thing in one graph index.
-func (c *Client) GraphNeighbors(ctx context.Context, log, index string, q GraphQueryRequest) (GraphNeighborsResponse, error) {
+// GraphNeighbors streams the edges at a thing in one graph index, in
+// stable order. A target may be dangling — data, not corruption;
+// resolution is the caller's state read.
+func (c *Client) GraphNeighbors(ctx context.Context, log, index string, q GraphQueryRequest) *Streamed[contract.GraphEdge, GraphTrailer] {
 	q.Principal = c.author
 	q.Op = contract.GraphOpNeighbors
-	return Request[GraphQueryRequest, GraphNeighborsResponse](ctx, c.nc, IndexQuerySubject(log, index), q)
+	return RequestStream[GraphQueryRequest, contract.GraphEdge, GraphTrailer](ctx, c.nc, IndexQuerySubject(log, index), q)
 }
 
-// GraphWalk traverses one graph index breadth-first from a thing.
-func (c *Client) GraphWalk(ctx context.Context, log, index string, q GraphQueryRequest) (GraphWalkResponse, error) {
+// GraphWalk streams one graph index's things breadth-first from a thing,
+// each with the depth and label it was first reached through.
+func (c *Client) GraphWalk(ctx context.Context, log, index string, q GraphQueryRequest) *Streamed[contract.GraphVisit, GraphTrailer] {
 	q.Principal = c.author
 	q.Op = contract.GraphOpWalk
-	return Request[GraphQueryRequest, GraphWalkResponse](ctx, c.nc, IndexQuerySubject(log, index), q)
+	return RequestStream[GraphQueryRequest, contract.GraphVisit, GraphTrailer](ctx, c.nc, IndexQuerySubject(log, index), q)
 }
 
 // SemanticQueryRequest is the semantic kind's payload on the standard
@@ -425,8 +418,8 @@ func (c *Client) GraphWalk(ctx context.Context, log, index string, q GraphQueryR
 type SemanticQueryRequest struct {
 	Principal string `json:"principal"`
 	Text      string `json:"text"`
-	Limit     int    `json:"limit,omitempty"`
-	Offset    int    `json:"offset,omitempty"`
+	// Limit caps the hits the caller wants; zero streams them all.
+	Limit int `json:"limit,omitempty"`
 }
 
 // SemanticHit names a thing, its best-chunk score, and the field the
@@ -437,20 +430,19 @@ type SemanticHit struct {
 	Field string  `json:"field,omitempty"`
 }
 
-// SemanticQueryResponse carries the hits, best first, and the honest
-// degradation signal: how many things are folded but not yet embedded.
-type SemanticQueryResponse struct {
-	Hits       []SemanticHit `json:"hits"`
-	Total      uint64        `json:"total"`
-	Unembedded int           `json:"unembedded"`
+// SemanticTrailer closes a semantic query's streamed reply: the total
+// match count and the honest degradation signal — how many things are
+// folded but not yet embedded.
+type SemanticTrailer struct {
+	Total      uint64 `json:"total"`
+	Unembedded int    `json:"unembedded"`
 }
 
-// QuerySemantic searches one semantic index by meaning.
-func (c *Client) QuerySemantic(ctx context.Context, log, index, text string, limit, offset int) (SemanticQueryResponse, error) {
-	return Request[SemanticQueryRequest, SemanticQueryResponse](ctx, c.nc, IndexQuerySubject(log, index), SemanticQueryRequest{
+// QuerySemantic streams one semantic index's hits by meaning, best first.
+func (c *Client) QuerySemantic(ctx context.Context, log, index, text string, limit int) *Streamed[SemanticHit, SemanticTrailer] {
+	return RequestStream[SemanticQueryRequest, SemanticHit, SemanticTrailer](ctx, c.nc, IndexQuerySubject(log, index), SemanticQueryRequest{
 		Principal: c.author,
 		Text:      text,
 		Limit:     limit,
-		Offset:    offset,
 	})
 }

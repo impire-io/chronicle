@@ -299,10 +299,10 @@ func (r *semanticRun) unembedded() int {
 
 // query embeds the text once and scores things by their best chunk —
 // max, not mean (0016) — carrying the field the meaning matched in.
-func (r *semanticRun) query(ctx context.Context, req client.SemanticQueryRequest) (client.SemanticQueryResponse, error) {
+func (r *semanticRun) query(ctx context.Context, req client.SemanticQueryRequest) ([]client.SemanticHit, client.SemanticTrailer, error) {
 	vecs, err := r.provider.Embed(ctx, r.model, []string{req.Text})
 	if err != nil {
-		return client.SemanticQueryResponse{}, err
+		return nil, client.SemanticTrailer{}, err
 	}
 	qv := vecs[0]
 
@@ -343,19 +343,10 @@ func (r *semanticRun) query(ctx context.Context, req client.SemanticQueryRequest
 		return hits[i].Thing < hits[j].Thing
 	})
 	total := uint64(len(hits))
-	limit := req.Limit
-	if limit <= 0 {
-		limit = 10
+	if req.Limit > 0 && req.Limit < len(hits) {
+		hits = hits[:req.Limit]
 	}
-	if limit > 100 {
-		limit = 100
-	}
-	offset := max(req.Offset, 0)
-	if offset > len(hits) {
-		offset = len(hits)
-	}
-	end := min(offset+limit, len(hits))
-	return client.SemanticQueryResponse{Hits: hits[offset:end], Total: total, Unembedded: pending}, nil
+	return hits, client.SemanticTrailer{Total: total, Unembedded: pending}, nil
 }
 
 // cosine is the similarity of two vectors; mismatched or zero vectors

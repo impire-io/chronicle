@@ -1,0 +1,121 @@
+{
+  "name": "the live surface",
+  "$comment": "The subscribe shape: a watch yields the current value then every change; a tail yields what lands after it started; declarations arrive as they are made. Each subscribe step opens the iterator, performs the write in `then`, and expects the item within the timeout.",
+  "steps": [
+    {
+      "do": "log.create",
+      "log": "orders"
+    },
+    {
+      "do": "type.define",
+      "log": "orders",
+      "type": "invoice",
+      "def": {
+        "schema": {
+          "type": "object"
+        },
+        "operations": {
+          "create": {
+            "schema": {
+              "type": "object"
+            },
+            "effect": "merge"
+          },
+          "send": {
+            "schema": {
+              "type": "object"
+            },
+            "effect": "merge"
+          }
+        }
+      }
+    },
+    {
+      "do": "create.op",
+      "log": "orders",
+      "thing": "invoice.inv-1",
+      "payload": {
+        "total": 1
+      }
+    },
+    {
+      "do": "get",
+      "log": "orders",
+      "thing": "invoice.inv-1",
+      "expect": {
+        "state": {
+          "total": 1
+        }
+      }
+    },
+    {
+      "do": "watch",
+      "log": "orders",
+      "thing": "invoice.inv-1",
+      "then": {
+        "do": "do",
+        "log": "orders",
+        "thing": "invoice.inv-1",
+        "op": "send",
+        "payload": {
+          "to": "y"
+        }
+      },
+      "expect": {
+        "first": {
+          "total": 1
+        },
+        "contains": {
+          "to": "y"
+        }
+      }
+    },
+    {
+      "do": "tail",
+      "log": "orders",
+      "thing": "",
+      "live": true,
+      "then": {
+        "do": "do",
+        "log": "orders",
+        "thing": "invoice.inv-1",
+        "op": "send",
+        "payload": {
+          "to": "z"
+        }
+      },
+      "expect": {
+        "type": "send"
+      }
+    },
+    {
+      "do": "tail",
+      "log": "orders",
+      "thing": "invoice.inv-1",
+      "after": 1,
+      "expect": {
+        "types": [
+          "send",
+          "send"
+        ]
+      }
+    },
+    {
+      "do": "watch.declarations",
+      "log": "orders",
+      "then": {
+        "do": "index.declare",
+        "log": "orders",
+        "index": "text",
+        "kind": "search"
+      },
+      "expect": {
+        "first": [
+          "type:invoice",
+          "index:state"
+        ],
+        "arrives": "index:text"
+      }
+    }
+  ]
+}

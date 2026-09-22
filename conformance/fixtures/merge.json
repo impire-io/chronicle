@@ -1,0 +1,203 @@
+{
+  "$comment": "RFC 7386 JSON Merge Patch, appendix A — the effect merge (decision 0011).",
+  "cases": [
+    {
+      "target": {
+        "a": "b"
+      },
+      "patch": {
+        "a": "c"
+      },
+      "result": {
+        "a": "c"
+      }
+    },
+    {
+      "target": {
+        "a": "b"
+      },
+      "patch": {
+        "b": "c"
+      },
+      "result": {
+        "a": "b",
+        "b": "c"
+      }
+    },
+    {
+      "target": {
+        "a": "b"
+      },
+      "patch": {
+        "a": null
+      },
+      "result": {}
+    },
+    {
+      "target": {
+        "a": "b",
+        "b": "c"
+      },
+      "patch": {
+        "a": null
+      },
+      "result": {
+        "b": "c"
+      }
+    },
+    {
+      "target": {
+        "a": [
+          "b"
+        ]
+      },
+      "patch": {
+        "a": "c"
+      },
+      "result": {
+        "a": "c"
+      }
+    },
+    {
+      "target": {
+        "a": "c"
+      },
+      "patch": {
+        "a": [
+          "b"
+        ]
+      },
+      "result": {
+        "a": [
+          "b"
+        ]
+      }
+    },
+    {
+      "target": {
+        "a": {
+          "b": "c"
+        }
+      },
+      "patch": {
+        "a": {
+          "b": "d",
+          "c": null
+        }
+      },
+      "result": {
+        "a": {
+          "b": "d"
+        }
+      }
+    },
+    {
+      "target": {
+        "a": [
+          {
+            "b": "c"
+          }
+        ]
+      },
+      "patch": {
+        "a": [
+          1
+        ]
+      },
+      "result": {
+        "a": [
+          1
+        ]
+      }
+    },
+    {
+      "target": [
+        "a",
+        "b"
+      ],
+      "patch": [
+        "c",
+        "d"
+      ],
+      "result": [
+        "c",
+        "d"
+      ]
+    },
+    {
+      "target": {
+        "a": "b"
+      },
+      "patch": [
+        "c"
+      ],
+      "result": [
+        "c"
+      ]
+    },
+    {
+      "target": {
+        "a": "foo"
+      },
+      "patch": null,
+      "result": null
+    },
+    {
+      "target": {
+        "a": "foo"
+      },
+      "patch": "bar",
+      "result": "bar"
+    },
+    {
+      "target": {
+        "e": null
+      },
+      "patch": {
+        "a": 1
+      },
+      "result": {
+        "e": null,
+        "a": 1
+      }
+    },
+    {
+      "target": [
+        1,
+        2
+      ],
+      "patch": {
+        "a": "b",
+        "c": null
+      },
+      "result": {
+        "a": "b"
+      }
+    },
+    {
+      "target": {},
+      "patch": {
+        "a": {
+          "bb": {
+            "ccc": null
+          }
+        }
+      },
+      "result": {
+        "a": {
+          "bb": {}
+        }
+      }
+    },
+    {
+      "$comment": "chronicle's birth case: a declared merge onto no state",
+      "target": null,
+      "patch": {
+        "total": 1
+      },
+      "result": {
+        "total": 1
+      }
+    }
+  ]
+}

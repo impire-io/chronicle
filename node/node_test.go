@@ -193,10 +193,7 @@ func TestCreateLogAndSpine(t *testing.T) {
 	if rec.Revision != 2 || len(rec.Operations) != 1 {
 		t.Fatalf("read-back record: %+v", rec)
 	}
-	names, err := alice.ListTypes(ctx, "orders")
-	if err != nil {
-		t.Fatalf("list types: %v", err)
-	}
+	names := collect(t, alice.ListTypes(ctx, "orders"))
 	if len(names) != 1 || names[0] != "invoice" {
 		t.Fatalf("type list: %v", names)
 	}
@@ -268,10 +265,7 @@ func TestCreateLogAndSpine(t *testing.T) {
 
 	// FR-05: replay returns the full history in stream order; FoldTail
 	// picks up exactly after the state's seq.
-	ops, err := alice.Replay(ctx, "orders", "invoice.invoice-1")
-	if err != nil {
-		t.Fatalf("replay: %v", err)
-	}
+	ops := collect(t, alice.Replay(ctx, "orders", "invoice.invoice-1"))
 	if len(ops) != 3 {
 		t.Fatalf("replay returned %d ops", len(ops))
 	}
@@ -281,13 +275,7 @@ func TestCreateLogAndSpine(t *testing.T) {
 	if ops[1].Author != "alice" || ops[1].Parents[0] != birth.OpID {
 		t.Fatalf("the record lost author or parents: %+v", ops[1])
 	}
-	var tail []contract.Op
-	if err := alice.FoldTail(ctx, "orders", "invoice.invoice-1", sv.Seq, func(op contract.Op) error {
-		tail = append(tail, op)
-		return nil
-	}); err != nil {
-		t.Fatalf("fold tail: %v", err)
-	}
+	tail := collect(t, alice.FoldTail(ctx, "orders", "invoice.invoice-1", sv.Seq))
 	if len(tail) != 0 {
 		t.Fatalf("tail after the latest snapshot must be empty, got %d", len(tail))
 	}
@@ -316,10 +304,7 @@ func TestCreateLogAndSpine(t *testing.T) {
 		t.Fatalf("raw invalid publish: %v", err)
 	}
 	catcher.wait(t, "marked invalid payload")
-	ops, err = alice.Replay(ctx, "orders", "invoice.invoice-1")
-	if err != nil {
-		t.Fatalf("replay after junk: %v", err)
-	}
+	ops = collect(t, alice.Replay(ctx, "orders", "invoice.invoice-1"))
 	if len(ops) != 5 {
 		t.Fatalf("the log must keep junk, warts included: %d ops", len(ops))
 	}

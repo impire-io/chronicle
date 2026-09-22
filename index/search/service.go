@@ -124,29 +124,24 @@ func (s *Service) handleQuery(req micro.Request) {
 
 	var r client.IndexQueryRequest
 	if err := json.Unmarshal(req.Data(), &r); err != nil {
-		_ = req.Error("bad-request", err.Error(), nil)
+		_ = req.Error(contract.CodeBadRequest, err.Error(), nil)
 		return
 	}
 	if err := registry.RequireRole(ctx, s.proj.Meta(), r.Principal, contract.RoleAdmin, contract.RoleWriter, contract.RoleReader); err != nil {
-		_ = req.Error("forbidden", err.Error(), nil)
+		_ = req.Error(contract.CodeForbidden, err.Error(), nil)
 		return
 	}
 	run, ok := s.proj.Serving().(*searchRun)
 	if !ok {
 		// Unreachable once Start has returned: the endpoint registers only
 		// after the first fold catches up and swaps its run in.
-		_ = req.Error("500", "index not caught up", nil)
+		_ = req.Error(contract.CodeInternal, "index not caught up", nil)
 		return
 	}
-	reply, err := run.query(r)
+	hits, total, err := run.query(r)
 	if err != nil {
-		_ = req.Error("500", err.Error(), nil)
+		_ = req.Error(contract.CodeInternal, err.Error(), nil)
 		return
 	}
-	data, err := json.Marshal(reply)
-	if err != nil {
-		_ = req.Error("500", err.Error(), nil)
-		return
-	}
-	_ = req.Respond(data)
+	projection.Stream(req, hits, client.QueryTrailer{Total: total})
 }

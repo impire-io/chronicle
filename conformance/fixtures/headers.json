@@ -1,0 +1,98 @@
+{
+  "$comment": "The operation record on the wire (design 02 § the operation record): op is the record, headers is exactly what the SDK publishes for it and parses back. Op-Parents is one header value per parent; an unset version is the envelope version; a zero ts sets no Op-Ts.",
+  "cases": [
+    {
+      "name": "a full record",
+      "op": {
+        "id": "op-1",
+        "type": "send",
+        "author": "alice",
+        "parents": [
+          "op-0",
+          "op-x"
+        ],
+        "ts": "2026-09-21T10:00:00Z",
+        "version": "1"
+      },
+      "headers": {
+        "Nats-Msg-Id": [
+          "op-1"
+        ],
+        "Op-Type": [
+          "send"
+        ],
+        "Op-Author": [
+          "alice"
+        ],
+        "Op-Parents": [
+          "op-0",
+          "op-x"
+        ],
+        "Op-Ts": [
+          "2026-09-21T10:00:00Z"
+        ],
+        "Op-Version": [
+          "1"
+        ]
+      }
+    },
+    {
+      "name": "no parents, no clock, version defaulted",
+      "op": {
+        "id": "op-2",
+        "type": "snapshot",
+        "author": "svc",
+        "parents": [],
+        "ts": "",
+        "version": ""
+      },
+      "headers": {
+        "Nats-Msg-Id": [
+          "op-2"
+        ],
+        "Op-Type": [
+          "snapshot"
+        ],
+        "Op-Author": [
+          "svc"
+        ],
+        "Op-Version": [
+          "1"
+        ]
+      }
+    },
+    {
+      "name": "a sub-second clock",
+      "op": {
+        "id": "op-3",
+        "type": "comment.add",
+        "author": "bob",
+        "parents": [
+          "op-2"
+        ],
+        "ts": "2026-09-21T10:00:00.5Z",
+        "version": "1"
+      },
+      "headers": {
+        "Nats-Msg-Id": [
+          "op-3"
+        ],
+        "Op-Type": [
+          "comment.add"
+        ],
+        "Op-Author": [
+          "bob"
+        ],
+        "Op-Parents": [
+          "op-2"
+        ],
+        "Op-Ts": [
+          "2026-09-21T10:00:00.5Z"
+        ],
+        "Op-Version": [
+          "1"
+        ]
+      }
+    }
+  ]
+}

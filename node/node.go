@@ -212,7 +212,7 @@ func Start(ctx context.Context, nc *nats.Conn, cfg Config) (*Node, error) {
 func (n *node) handlePing(req micro.Request) {
 	reply, err := json.Marshal(client.About{Name: "chronicle-node", Version: version.Version})
 	if err != nil {
-		_ = req.Error("500", "encode ping reply", nil)
+		_ = req.Error(contract.CodeInternal, "encode ping reply", nil)
 		return
 	}
 	_ = req.Respond(reply)
@@ -224,21 +224,21 @@ func (n *node) handleLogCreate(req micro.Request) {
 
 	var r client.LogCreateRequest
 	if err := json.Unmarshal(req.Data(), &r); err != nil {
-		_ = req.Error("bad-request", err.Error(), nil)
+		_ = req.Error(contract.CodeBadRequest, err.Error(), nil)
 		return
 	}
 	if err := n.requireRole(ctx, r.Principal, contract.RoleAdmin); err != nil {
-		_ = req.Error("forbidden", err.Error(), nil)
+		_ = req.Error(contract.CodeForbidden, err.Error(), nil)
 		return
 	}
 	if err := contract.ValidateLogName(r.Log); err != nil {
-		_ = req.Error("bad-log-name", err.Error(), nil)
+		_ = req.Error(contract.CodeBadLogName, err.Error(), nil)
 		return
 	}
 	// Write-side strict, like effects and index kinds: the history
 	// vocabulary (0019) refuses values outside it.
 	if h := contract.NormalizeHistory(r.History); h != contract.HistoryCompactable && h != contract.HistoryPreserved {
-		_ = req.Error("bad-history", fmt.Sprintf("history %q: %q or %q", r.History, contract.HistoryCompactable, contract.HistoryPreserved), nil)
+		_ = req.Error(contract.CodeBadHistory, fmt.Sprintf("history %q: %q or %q", r.History, contract.HistoryCompactable, contract.HistoryPreserved), nil)
 		return
 	}
 
@@ -251,45 +251,45 @@ func (n *node) handleLogCreate(req micro.Request) {
 		History:     r.History,
 	})
 	if err != nil {
-		_ = req.Error("500", err.Error(), nil)
+		_ = req.Error(contract.CodeInternal, err.Error(), nil)
 		return
 	}
 	if _, err := n.meta.Create(ctx, contract.MetaLogConfig(r.Log), cfg); err != nil {
 		if errors.Is(err, jetstream.ErrKeyExists) {
-			_ = req.Error("log-exists", fmt.Sprintf("log %q already exists", r.Log), nil)
+			_ = req.Error(contract.CodeLogExists, fmt.Sprintf("log %q already exists", r.Log), nil)
 			return
 		}
-		_ = req.Error("500", err.Error(), nil)
+		_ = req.Error(contract.CodeInternal, err.Error(), nil)
 		return
 	}
 
 	if _, err := n.js.CreateStream(ctx, contract.LogStreamConfig(r.Log, r.MaxBytes, r.History)); err != nil {
-		_ = req.Error("500", fmt.Sprintf("create stream: %v", err), nil)
+		_ = req.Error(contract.CodeInternal, fmt.Sprintf("create stream: %v", err), nil)
 		return
 	}
 	if _, err := n.js.CreateKeyValue(ctx, contract.StateBucketConfig(r.Log)); err != nil {
-		_ = req.Error("500", fmt.Sprintf("create state bucket: %v", err), nil)
+		_ = req.Error(contract.CodeInternal, fmt.Sprintf("create state bucket: %v", err), nil)
 		return
 	}
 	// State joins the index framework (0023): the declaration is born
 	// with the log — kind state, node-materialized, refused deletion.
 	decl, err := json.Marshal(contract.IndexDeclaration{Kind: contract.IndexKindState})
 	if err != nil {
-		_ = req.Error("500", err.Error(), nil)
+		_ = req.Error(contract.CodeInternal, err.Error(), nil)
 		return
 	}
 	if _, err := n.meta.Create(ctx, contract.MetaIndex(r.Log, contract.StateIndexName), decl); err != nil && !errors.Is(err, jetstream.ErrKeyExists) {
-		_ = req.Error("500", fmt.Sprintf("declare state index: %v", err), nil)
+		_ = req.Error(contract.CodeInternal, fmt.Sprintf("declare state index: %v", err), nil)
 		return
 	}
 	if err := n.startFold(ctx, r.Log); err != nil {
-		_ = req.Error("500", fmt.Sprintf("start fold: %v", err), nil)
+		_ = req.Error(contract.CodeInternal, fmt.Sprintf("start fold: %v", err), nil)
 		return
 	}
 
 	reply, err := json.Marshal(client.LogCreateResponse{Stream: contract.StreamName(r.Log)})
 	if err != nil {
-		_ = req.Error("500", err.Error(), nil)
+		_ = req.Error(contract.CodeInternal, err.Error(), nil)
 		return
 	}
 	_ = req.Respond(reply)
@@ -301,68 +301,68 @@ func (n *node) handleTypeDefine(req micro.Request) {
 
 	var r client.TypeDefineRequest
 	if err := json.Unmarshal(req.Data(), &r); err != nil {
-		_ = req.Error("bad-request", err.Error(), nil)
+		_ = req.Error(contract.CodeBadRequest, err.Error(), nil)
 		return
 	}
 	if err := n.requireRole(ctx, r.Principal, contract.RoleAdmin); err != nil {
-		_ = req.Error("forbidden", err.Error(), nil)
+		_ = req.Error(contract.CodeForbidden, err.Error(), nil)
 		return
 	}
 	if err := contract.ValidateLogName(r.Log); err != nil {
-		_ = req.Error("bad-log-name", err.Error(), nil)
+		_ = req.Error(contract.CodeBadLogName, err.Error(), nil)
 		return
 	}
 	if err := contract.ValidateTypeName(r.Type); err != nil {
-		_ = req.Error("bad-type-name", err.Error(), nil)
+		_ = req.Error(contract.CodeBadTypeName, err.Error(), nil)
 		return
 	}
 	// Write-side strict on every facet's vocabulary; the fold stays
 	// tolerant of values a newer node recorded.
 	if h := contract.NormalizeHistory(r.History); h != contract.HistoryCompactable && h != contract.HistoryPreserved {
-		_ = req.Error("bad-history", fmt.Sprintf("history %q: %q or %q", r.History, contract.HistoryCompactable, contract.HistoryPreserved), nil)
+		_ = req.Error(contract.CodeBadHistory, fmt.Sprintf("history %q: %q or %q", r.History, contract.HistoryCompactable, contract.HistoryPreserved), nil)
 		return
 	}
 	for seg, target := range r.Aspects {
 		if err := contract.ValidateTypeName(seg); err != nil {
-			_ = req.Error("bad-aspect-segment", err.Error(), nil)
+			_ = req.Error(contract.CodeBadAspectSegment, err.Error(), nil)
 			return
 		}
 		// The target may be defined later — latest declaration wins; only
 		// its grammar is checked here.
 		if err := contract.ValidateTypeName(target); err != nil {
-			_ = req.Error("bad-aspect-type", err.Error(), nil)
+			_ = req.Error(contract.CodeBadAspectType, err.Error(), nil)
 			return
 		}
 	}
 	for opType, def := range r.Operations {
 		if opType == "" || opType == contract.OpTypeSnapshot {
-			_ = req.Error("bad-op-type", "operation name must be non-empty and not the reserved snapshot type", nil)
+			_ = req.Error(contract.CodeBadOpType, "operation name must be non-empty and not the reserved snapshot type", nil)
 			return
 		}
 		if e := contract.NormalizeEffect(def.Effect); !contract.KnownEffect(e) {
-			_ = req.Error("bad-effect", fmt.Sprintf("operation %s: effect %q is not in this node's vocabulary (none, merge)", opType, def.Effect), nil)
+			_ = req.Error(contract.CodeBadEffect, fmt.Sprintf("operation %s: effect %q is not in this node's vocabulary (none, merge)", opType, def.Effect), nil)
 			return
 		}
-		if _, err := client.CompileSchema(def.Schema); err != nil {
-			_ = req.Error("bad-schema", fmt.Sprintf("operation %s: %v", opType, err), nil)
+		if _, err := contract.CompileSchema(def.Schema); err != nil {
+			_ = req.Error(contract.CodeBadSchema, fmt.Sprintf("operation %s: %v", opType, err), nil)
 			return
 		}
 	}
 	if _, err := n.meta.Get(ctx, contract.MetaLogConfig(r.Log)); err != nil {
-		_ = req.Error("no-such-log", fmt.Sprintf("log %q is not created", r.Log), nil)
+		_ = req.Error(contract.CodeNoSuchLog, fmt.Sprintf("log %q is not created", r.Log), nil)
 		return
 	}
 	// The thing schema must compile before it is declared: type and schema
 	// are born together (0021), and a shape nobody can validate against is
 	// noise.
-	if _, err := client.CompileSchema(r.Schema); err != nil {
-		_ = req.Error("bad-schema", err.Error(), nil)
+	if _, err := contract.CompileSchema(r.Schema); err != nil {
+		_ = req.Error(contract.CodeBadSchema, err.Error(), nil)
 		return
 	}
 
 	rev, changed, err := n.recordType(ctx, r)
 	if err != nil {
-		_ = req.Error("500", err.Error(), nil)
+		_ = req.Error(contract.CodeInternal, err.Error(), nil)
 		return
 	}
 	// Latest declaration wins: a changed effect, aspect, or history makes
@@ -370,13 +370,13 @@ func (n *node) handleTypeDefine(req micro.Request) {
 	// replay (0011 § 3, 0021 § 5).
 	if changed {
 		if err := n.rebuildLog(ctx, r.Log); err != nil {
-			_ = req.Error("500", fmt.Sprintf("rebuild state: %v", err), nil)
+			_ = req.Error(contract.CodeInternal, fmt.Sprintf("rebuild state: %v", err), nil)
 			return
 		}
 	}
 	reply, err := json.Marshal(client.TypeDefineResponse{Revision: rev})
 	if err != nil {
-		_ = req.Error("500", err.Error(), nil)
+		_ = req.Error(contract.CodeInternal, err.Error(), nil)
 		return
 	}
 	_ = req.Respond(reply)
@@ -392,38 +392,38 @@ func (n *node) handleThingRollup(req micro.Request) {
 
 	var r client.ThingRollupRequest
 	if err := json.Unmarshal(req.Data(), &r); err != nil {
-		_ = req.Error("bad-request", err.Error(), nil)
+		_ = req.Error(contract.CodeBadRequest, err.Error(), nil)
 		return
 	}
 	if err := n.requireRole(ctx, r.Principal, contract.RoleAdmin, contract.RoleWriter); err != nil {
-		_ = req.Error("forbidden", err.Error(), nil)
+		_ = req.Error(contract.CodeForbidden, err.Error(), nil)
 		return
 	}
 	if err := contract.ValidateLogName(r.Log); err != nil {
-		_ = req.Error("bad-log-name", err.Error(), nil)
+		_ = req.Error(contract.CodeBadLogName, err.Error(), nil)
 		return
 	}
 	if err := contract.ValidateThing(r.Thing); err != nil {
-		_ = req.Error("bad-thing", err.Error(), nil)
+		_ = req.Error(contract.CodeBadThing, err.Error(), nil)
 		return
 	}
 	if _, err := n.meta.Get(ctx, contract.MetaLogConfig(r.Log)); err != nil {
-		_ = req.Error("no-such-log", fmt.Sprintf("log %q is not created", r.Log), nil)
+		_ = req.Error(contract.CodeNoSuchLog, fmt.Sprintf("log %q is not created", r.Log), nil)
 		return
 	}
 
 	res, err := n.rollupThing(ctx, r.Log, r.Thing)
 	if errors.Is(err, errNoThing) {
-		_ = req.Error("no-such-thing", fmt.Sprintf("thing %q has no history in %s", r.Thing, r.Log), nil)
+		_ = req.Error(contract.CodeNoSuchThing, fmt.Sprintf("thing %q has no history in %s", r.Thing, r.Log), nil)
 		return
 	}
 	if err != nil {
-		_ = req.Error("500", err.Error(), nil)
+		_ = req.Error(contract.CodeInternal, err.Error(), nil)
 		return
 	}
 	reply, err := json.Marshal(client.ThingRollupResponse{Rolled: res.rolled, Seq: res.seq, Reason: res.reason})
 	if err != nil {
-		_ = req.Error("500", err.Error(), nil)
+		_ = req.Error(contract.CodeInternal, err.Error(), nil)
 		return
 	}
 	_ = req.Respond(reply)

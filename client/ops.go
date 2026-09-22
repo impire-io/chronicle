@@ -1,7 +1,6 @@
 package client
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -445,7 +444,7 @@ func (t *typeCache) compile(key string, raw json.RawMessage) (*jsonschema.Schema
 	if ok {
 		return cached, nil
 	}
-	compiled, err := CompileSchema(raw)
+	compiled, err := contract.CompileSchema(raw)
 	if err != nil {
 		return nil, fmt.Errorf("compile schema %s: %w", key, err)
 	}
@@ -523,18 +522,4 @@ func (t *typeCache) preflightSnapshot(ctx context.Context, log, thing string, st
 		}
 	}
 	return nil
-}
-
-// CompileSchema compiles one JSON Schema document — the same validator the
-// SDK pre-flight and the node's read-side marking share.
-func CompileSchema(raw json.RawMessage) (*jsonschema.Schema, error) {
-	doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(raw))
-	if err != nil {
-		return nil, err
-	}
-	compiler := jsonschema.NewCompiler()
-	if err := compiler.AddResource("schema.json", doc); err != nil {
-		return nil, err
-	}
-	return compiler.Compile("schema.json")
 }

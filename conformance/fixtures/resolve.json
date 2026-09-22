@@ -1,0 +1,109 @@
+{
+  "$comment": "Tail resolution (decisions 0021 § 4, 0022 § 2): alternating <segment>.<id> pairs, the first against the log's types, each further pair through the current type's aspects map. kind is typed, untyped, or undeclared; type is the final type when typed.",
+  "types": {
+    "invoice": {
+      "revision": 1,
+      "schema": {
+        "type": "object",
+        "required": [
+          "total"
+        ]
+      },
+      "aspects": {
+        "comments": "comment"
+      },
+      "operations": {
+        "create": {
+          "schema": {
+            "type": "object"
+          },
+          "effect": "merge"
+        },
+        "send": {
+          "schema": {
+            "type": "object",
+            "required": [
+              "to"
+            ]
+          },
+          "effect": "merge"
+        },
+        "note": {
+          "schema": {
+            "type": "object"
+          },
+          "effect": "none"
+        },
+        "odd": {
+          "schema": {
+            "type": "object"
+          },
+          "effect": "frobnicate"
+        }
+      }
+    },
+    "comment": {
+      "revision": 1,
+      "schema": {},
+      "aspects": {
+        "reactions": "reaction"
+      },
+      "operations": {
+        "create": {
+          "schema": {
+            "type": "object"
+          },
+          "effect": "merge"
+        }
+      }
+    },
+    "reaction": {
+      "revision": 1,
+      "schema": {}
+    },
+    "orphan-parent": {
+      "revision": 1,
+      "schema": {},
+      "aspects": {
+        "kids": "ghost"
+      }
+    }
+  },
+  "cases": [
+    {
+      "thing": "invoice.inv-1",
+      "kind": "typed",
+      "type": "invoice"
+    },
+    {
+      "thing": "invoice.inv-1.comments.c-1",
+      "kind": "typed",
+      "type": "comment"
+    },
+    {
+      "thing": "invoice.inv-1.comments.c-1.reactions.r-1",
+      "kind": "typed",
+      "type": "reaction"
+    },
+    {
+      "thing": "invoice.inv-1.notes.n-1",
+      "kind": "undeclared"
+    },
+    {
+      "thing": "orphan-parent.p-1.kids.k-1",
+      "kind": "undeclared"
+    },
+    {
+      "thing": "widget.w-1",
+      "kind": "untyped"
+    },
+    {
+      "thing": "invoice",
+      "kind": "untyped"
+    },
+    {
+      "thing": "invoice.inv-1.comments",
+      "kind": "untyped"
+    }
+  ]
+}
