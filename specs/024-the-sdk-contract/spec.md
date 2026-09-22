@@ -1,13 +1,13 @@
 # Spec 024 — the SDK contract
 
 **Work ID:** `012-the-sdk-contract` (chronicle-hq research 012, graduated)
-**Design:** `chronicle-hq` @ `dd0aa5a` (hq PR #36 — re-cite on merge) —
+**Design:** `chronicle-hq` @ `9ce9669` (hq PR #36, merged) —
 [`03-DECISIONS/0036-the-sdk-contract.md`](../../../chronicle-hq/03-DECISIONS/0036-the-sdk-contract.md),
 [`02-DESIGN/12-the-sdk-contract.md`](../../../chronicle-hq/02-DESIGN/12-the-sdk-contract.md),
 and the amended [`02-DESIGN/05-indexes.md`](../../../chronicle-hq/02-DESIGN/05-indexes.md)
 and [`02-DESIGN/07-the-cli.md`](../../../chronicle-hq/02-DESIGN/07-the-cli.md).
-**Status:** implemented on this branch ([plan.md](plan.md)) — awaiting
-review and merge; hq PR #36 lands first.
+**Status:** implemented ([plan.md](plan.md)) — on this repo's main since
+2026-09-22 (PR #32); the designs read `implemented` (hq PR #37).
 
 ## What this delivers
 
