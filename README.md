@@ -131,6 +131,15 @@ export CHRONICLE_EMBEDDING_API_KEY=...   # whatever the provider expects
 chronicle up --embedding-url http://localhost:11434/v1 --embedding-model nomic-embed-text
 ```
 
+**Optional: a browser.** A browser speaks NATS only over a websocket.
+`--websocket-port` opens one on loopback, in the clear, for the same one
+user; `--websocket-origin` (repeatable) limits which pages may open it.
+The URL is printed and recorded as `websocket.url` in the data dir:
+
+```sh
+chronicle up --websocket-port 9222 --websocket-origin http://localhost:3000
+```
+
 ## Bring your own NATS
 
 Any NATS in any auth mode — a plain server with accounts in its config, an

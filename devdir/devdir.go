@@ -14,6 +14,9 @@ import (
 const (
 	// ClientURLFile records the running server's client URL.
 	ClientURLFile = "client.url"
+	// WebsocketURLFile records the running server's websocket URL, when
+	// `chronicle up` was asked for the listener; absent otherwise.
+	WebsocketURLFile = "websocket.url"
 	// UserNkeyFile is the seed of the one user the quick start's account
 	// has — the operator's own identity on their own machine.
 	UserNkeyFile = "user.nk"
@@ -34,6 +37,9 @@ func Default() string {
 
 // ClientURLPath is where the running server records its client URL.
 func ClientURLPath(dir string) string { return filepath.Join(dir, ClientURLFile) }
+
+// WebsocketURLPath is where the running server records its websocket URL.
+func WebsocketURLPath(dir string) string { return filepath.Join(dir, WebsocketURLFile) }
 
 // UserNkeyPath is where the quick start keeps its user's seed.
 func UserNkeyPath(dir string) string { return filepath.Join(dir, UserNkeyFile) }
