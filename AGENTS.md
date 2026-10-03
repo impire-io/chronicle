@@ -59,4 +59,5 @@ non-negotiables.
   never committed.
 - **Work follows [playbook 07](../chronicle-hq/00-META/process/07-parallel-work.md)**:
   one work ID as branch, workspace, and PR label; draft PR from the first
-  push; a human merges.
+  push; marked ready and merged by whoever did the work once the gate is
+  green and every predecessor has merged, in `lands` order.
