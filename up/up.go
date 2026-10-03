@@ -37,6 +37,13 @@ type Config struct {
 	Dir string
 	// Port for the embedded server; 0 means 4222, -1 picks a free port.
 	Port int
+	// WebsocketPort opens the browser's listener on loopback, in the clear
+	// (09-hosted-environment.md § the websocket listener): 0 means none,
+	// -1 picks a free port.
+	WebsocketPort int
+	// WebsocketOrigins are the origins a browser may connect from; none
+	// means any — the listener is loopback-only and still authenticates.
+	WebsocketOrigins []string
 	// Embedding is the install's provider (0016) — nil means no provider
 	// and semantic declarations stay honestly unserved.
 	Embedding *semantic.ProviderConfig
@@ -48,6 +55,8 @@ type Config struct {
 type Local struct {
 	// URL is the embedded server's client url.
 	URL string
+	// WebsocketURL is the browser's url, empty when no listener was asked for.
+	WebsocketURL string
 
 	srv   *server.Server
 	node  *node.Node
@@ -85,14 +94,27 @@ func Up(ctx context.Context, cfg Config) (*Local, error) {
 		return nil, fmt.Errorf("user public key: %w", err)
 	}
 
-	srv, err := startServer(port, filepath.Join(dir, "jetstream"), pub)
+	srv, err := startServer(serverConfig{
+		port:      port,
+		storeDir:  filepath.Join(dir, "jetstream"),
+		userPub:   pub,
+		wsPort:    cfg.WebsocketPort,
+		wsOrigins: cfg.WebsocketOrigins,
+	})
 	if err != nil {
 		return nil, err
 	}
 	l := &Local{URL: srv.ClientURL(), srv: srv}
+	if cfg.WebsocketPort != 0 {
+		l.WebsocketURL = srv.WebsocketURL()
+	}
 	if err := os.WriteFile(devdir.ClientURLPath(dir), []byte(l.URL), 0o600); err != nil {
 		l.Stop()
 		return nil, fmt.Errorf("record client url: %w", err)
+	}
+	if err := recordWebsocketURL(dir, l.WebsocketURL); err != nil {
+		l.Stop()
+		return nil, err
 	}
 
 	connect := func(name string) (*nats.Conn, error) {
@@ -192,19 +214,54 @@ func loadOrCreateUser(path string) (nkeys.KeyPair, error) {
 	return kp, nil
 }
 
+// recordWebsocketURL writes the browser's url beside the client url, or
+// removes a stale one: the file never names a socket that is not there.
+func recordWebsocketURL(dir, url string) error {
+	path := devdir.WebsocketURLPath(dir)
+	if url == "" {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove stale websocket url: %w", err)
+		}
+		return nil
+	}
+	if err := os.WriteFile(path, []byte(url), 0o600); err != nil {
+		return fmt.Errorf("record websocket url: %w", err)
+	}
+	return nil
+}
+
+// serverConfig is what the embedded server is started with.
+type serverConfig struct {
+	port      int
+	storeDir  string
+	userPub   string
+	wsPort    int // 0: no websocket listener
+	wsOrigins []string
+}
+
 // startServer runs the embedded server: one account — the server's own
 // global account, JetStream on — with one nkey user, and nothing else
 // may connect. Any NATS in any auth mode is the production shape; this
-// is the smallest one that has an account and a user at all.
-func startServer(port int, storeDir, userPub string) (*server.Server, error) {
+// is the smallest one that has an account and a user at all. The
+// websocket listener, when asked for, binds loopback in the clear — the
+// one place design 09 allows it — and authenticates the same one user.
+func startServer(sc serverConfig) (*server.Server, error) {
 	opts := &server.Options{
 		ServerName: "chronicle-local",
 		Host:       "127.0.0.1",
-		Port:       port,
+		Port:       sc.port,
 		JetStream:  true,
-		StoreDir:   storeDir,
-		Nkeys:      []*server.NkeyUser{{Nkey: userPub}},
+		StoreDir:   sc.storeDir,
+		Nkeys:      []*server.NkeyUser{{Nkey: sc.userPub}},
 		NoSigs:     true,
+	}
+	if sc.wsPort != 0 {
+		opts.Websocket = server.WebsocketOpts{
+			Host:           "127.0.0.1",
+			Port:           sc.wsPort,
+			NoTLS:          true,
+			AllowedOrigins: sc.wsOrigins,
+		}
 	}
 	srv, err := server.NewServer(opts)
 	if err != nil {
@@ -225,6 +282,12 @@ func Run(ctx context.Context, args []string, out io.Writer) error {
 	fs.SetOutput(out)
 	dir := fs.String("dir", devdir.Default(), "data dir: the user's seed, the recorded url, the store")
 	port := fs.Int("port", 4222, "port for the embedded NATS server (-1 picks a free one)")
+	wsPort := fs.Int("websocket-port", 0, "open a websocket listener for a browser on loopback, in the clear (-1 picks a free port; 0 means none)")
+	var wsOrigins []string
+	fs.Func("websocket-origin", "an origin a browser may connect from, e.g. http://localhost:3000 (repeatable; none means any)", func(v string) error {
+		wsOrigins = append(wsOrigins, v)
+		return nil
+	})
 	embedURL := fs.String("embedding-url", "", "OpenAI-compatible embedding endpoint for the semantic kind (key via CHRONICLE_EMBEDDING_API_KEY)")
 	embedModel := fs.String("embedding-model", "", "default embedding model for the semantic kind")
 	if err := fs.Parse(args); err != nil {
@@ -235,7 +298,7 @@ func Run(ctx context.Context, args []string, out io.Writer) error {
 		embedding = &semantic.ProviderConfig{BaseURL: *embedURL, Model: *embedModel, APIKey: os.Getenv("CHRONICLE_EMBEDDING_API_KEY")}
 	}
 
-	l, err := Up(ctx, Config{Dir: *dir, Port: *port, Embedding: embedding})
+	l, err := Up(ctx, Config{Dir: *dir, Port: *port, WebsocketPort: *wsPort, WebsocketOrigins: wsOrigins, Embedding: embedding})
 	if err != nil {
 		return err
 	}
@@ -243,6 +306,9 @@ func Run(ctx context.Context, args []string, out io.Writer) error {
 
 	fmt.Fprintf(out, "chronicle %s up — one account, one user (%s), the node, its indexers\n", version.Version, devdir.LocalPrincipal)
 	fmt.Fprintf(out, "  url:  %s\n", l.URL)
+	if l.WebsocketURL != "" {
+		fmt.Fprintf(out, "  ws:   %s\n", l.WebsocketURL)
+	}
 	fmt.Fprintf(out, "  dir:  %s\n", *dir)
 	fmt.Fprintf(out, "create a log:  chronicle log create <log>")
 	if *dir != devdir.Default() {
