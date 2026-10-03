@@ -1,5 +1,5 @@
-// Command chronicle-node runs one tenant's node: fold, state buckets, and
-// the CHRON.API.> verbs, connected to the tenant's account on the
+// Command chronicle-node runs one account's node: fold, state buckets, and
+// the CHRON.API.> verbs, connected to that account on the
 // operator's own NATS — with a creds file, or an nkey seed. The first
 // run of a fresh account seeds the registry with its admin (--admin);
 // after that, membership is the registry's.
@@ -31,8 +31,8 @@ func main() {
 
 func run() error {
 	url := flag.String("url", "nats://127.0.0.1:4222", "NATS url")
-	creds := flag.String("creds", "", "the tenant's service-user credentials (.creds)")
-	nkey := flag.String("nkey", "", "the tenant's service user as an nkey seed file (instead of --creds)")
+	creds := flag.String("creds", "", "the account's service-user credentials (.creds)")
+	nkey := flag.String("nkey", "", "the account's service user as an nkey seed file (instead of --creds)")
 	admin := flag.String("admin", "", "seed the registry with this admin principal when the account has none yet")
 	flag.Parse()
 	if (*creds == "") == (*nkey == "") {

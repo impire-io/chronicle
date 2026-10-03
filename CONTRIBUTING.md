@@ -1,7 +1,7 @@
 # Contributing to chronicle
 
-This repository is the open tenant plane of chronicle: everything that
-runs, or is used, inside one tenant, on any NATS the operator already has
+This repository is the open account plane of chronicle: everything that
+runs, or is used, inside one account, on any NATS the operator already has
 (chronicle-hq design
 [11-the-two-forms](https://github.com/impire-io/chronicle-hq/blob/main/02-DESIGN/11-the-two-forms.md),
 decision

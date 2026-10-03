@@ -13,7 +13,7 @@ non-negotiables.
    every component a NATS micro service, headless. When this repo and that
    document disagree, that document wins.
 3. [`../chronicle-hq/00-META/repos.md`](../chronicle-hq/00-META/repos.md) — the
-   repo map and what this repo owns: the **open tenant plane** and nothing of
+   repo map and what this repo owns: the **open account plane** and nothing of
    the managed service ([`02-DESIGN/11-the-two-forms.md`](../chronicle-hq/02-DESIGN/11-the-two-forms.md),
    decision [0031](../chronicle-hq/03-DECISIONS/0031-open-is-one-tenant-the-service-is-managed.md)).
 4. [`../chronicle-hq/02-DESIGN/`](../chronicle-hq/02-DESIGN/) — the designs
@@ -24,7 +24,7 @@ non-negotiables.
 
 ## Non-negotiables
 
-- **The boundary is the tenant.** Nothing here creates tenants, issues
+- **The boundary is the account.** Nothing here creates accounts, issues
   credentials, places workloads across hosts, or knows the managed
   service's repositories exist. The packages are public because the
   service composes them; the dependency runs one way, and `.golangci.yml`
