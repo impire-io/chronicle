@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -503,5 +504,24 @@ func TestCLIExtension(t *testing.T) {
 	}
 	if err := cli.RunWith(ctx, []string{"context", "save", "half", "--bridge", "p.json"}, &out, bridged); err == nil || !strings.Contains(err.Error(), "--account") {
 		t.Fatalf("context save --bridge without --account not refused: %v", err)
+	}
+}
+
+// TestConfigRootIsWhereContextsLive: the exported root is the directory a
+// saved context lands in — what a build adding verbs keeps its files
+// beside — and CHRONICLE_CONFIG_HOME moves it.
+func TestConfigRootIsWhereContextsLive(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CHRONICLE_CONFIG_HOME", home)
+	root, err := cli.ConfigRoot()
+	if err != nil || root != home {
+		t.Fatalf("ConfigRoot = %q, %v; want %q", root, err, home)
+	}
+	var out bytes.Buffer
+	if err := cli.Run(context.Background(), []string{"context", "save", "probe", "--creds", "x.creds", "--url", "nats://127.0.0.1:4222"}, &out); err != nil {
+		t.Fatalf("context save: %v (%s)", err, out.String())
+	}
+	if _, err := os.Stat(filepath.Join(root, "contexts", "probe.json")); err != nil {
+		t.Fatalf("the saved context is not under ConfigRoot: %v", err)
 	}
 }

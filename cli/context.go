@@ -32,9 +32,11 @@ type storedContext struct {
 
 var contextName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
 
-// configRoot is the store's directory: CHRONICLE_CONFIG_HOME when set
-// (tests and scripts isolate), the user config dir otherwise.
-func configRoot() (string, error) {
+// ConfigRoot is the CLI's config directory, where saved contexts live:
+// CHRONICLE_CONFIG_HOME when set (tests and scripts isolate), the user
+// config dir otherwise. Exported so a build that adds verbs keeps its own
+// files beside the contexts (chronicle-hq decision 0038).
+func ConfigRoot() (string, error) {
 	if v := os.Getenv("CHRONICLE_CONFIG_HOME"); v != "" {
 		return v, nil
 	}
@@ -181,7 +183,7 @@ type Context struct {
 // over what the name already holds: an empty field keeps the stored one,
 // and one way of being someone replaces the others.
 func SaveContext(name string, c Context) error {
-	root, err := configRoot()
+	root, err := ConfigRoot()
 	if err != nil {
 		return err
 	}
@@ -204,7 +206,7 @@ func SaveContext(name string, c Context) error {
 // extension's way to speak from the context the user selected: the
 // managed build's `account create` finds the bridge login there.
 func LoadContext(name string) (Context, bool, error) {
-	root, err := configRoot()
+	root, err := ConfigRoot()
 	if err != nil {
 		return Context{}, false, err
 	}
@@ -223,7 +225,7 @@ func LoadContext(name string) (Context, bool, error) {
 
 // SelectContext makes a saved context the selection.
 func SelectContext(name string) error {
-	root, err := configRoot()
+	root, err := ConfigRoot()
 	if err != nil {
 		return err
 	}

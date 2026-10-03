@@ -270,7 +270,7 @@ type resolved struct {
 }
 
 func (cf connectFlags) resolve() (resolved, error) {
-	root, err := configRoot()
+	root, err := ConfigRoot()
 	if err != nil {
 		return resolved{}, err
 	}
@@ -392,7 +392,7 @@ func contextSave(args []string, out io.Writer) error {
 	case *bridge == "" && *account != "":
 		return fmt.Errorf("context save: --account goes with --bridge; a creds file or an nkey is already placed")
 	}
-	root, err := configRoot()
+	root, err := ConfigRoot()
 	if err != nil {
 		return err
 	}
@@ -436,7 +436,7 @@ func contextSelect(args []string, out io.Writer) error {
 	if len(args) != 1 {
 		return fmt.Errorf("context select: exactly one context name")
 	}
-	root, err := configRoot()
+	root, err := ConfigRoot()
 	if err != nil {
 		return err
 	}
@@ -455,7 +455,7 @@ func contextSelect(args []string, out io.Writer) error {
 }
 
 func contextList(out io.Writer) error {
-	root, err := configRoot()
+	root, err := ConfigRoot()
 	if err != nil {
 		return err
 	}
@@ -475,7 +475,7 @@ func contextList(out io.Writer) error {
 }
 
 func contextShow(args []string, out io.Writer) error {
-	root, err := configRoot()
+	root, err := ConfigRoot()
 	if err != nil {
 		return err
 	}
@@ -523,7 +523,7 @@ func contextRm(args []string, out io.Writer) error {
 	if len(args) != 1 {
 		return fmt.Errorf("context rm: exactly one context name")
 	}
-	root, err := configRoot()
+	root, err := ConfigRoot()
 	if err != nil {
 		return err
 	}
@@ -568,7 +568,7 @@ func (x *runner) logCreate(ctx context.Context, args []string, out io.Writer) er
 
 	// The log just made becomes the working log (0025 § 1) — when there
 	// is a context to remember it on.
-	root, rerr := configRoot()
+	root, rerr := ConfigRoot()
 	if rerr != nil {
 		return nil
 	}
@@ -593,7 +593,7 @@ func (x *runner) logSelect(ctx context.Context, args []string, out io.Writer) er
 	if len(pos) != 1 {
 		return fmt.Errorf("log select: exactly one log name")
 	}
-	root, err := configRoot()
+	root, err := ConfigRoot()
 	if err != nil {
 		return err
 	}
