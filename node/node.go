@@ -242,6 +242,18 @@ func (n *node) handleLogCreate(req micro.Request) {
 		return
 	}
 
+	// The budget is the account's to bound (decision 0039): read before
+	// the claim, so a refusal leaves nothing behind.
+	budget, err := n.logBudget(ctx, r.MaxBytes)
+	if err != nil {
+		code := contract.CodeInternal
+		if errors.Is(err, errAboveAccountCap) {
+			code = contract.CodeBadRequest
+		}
+		_ = req.Error(code, err.Error(), nil)
+		return
+	}
+
 	// The META key is the claim: create-if-absent, so two racing creates
 	// settle without a lock.
 	cfg, err := json.Marshal(contract.LogConfig{
@@ -263,7 +275,7 @@ func (n *node) handleLogCreate(req micro.Request) {
 		return
 	}
 
-	if _, err := n.js.CreateStream(ctx, contract.LogStreamConfig(r.Log, r.MaxBytes, r.History)); err != nil {
+	if _, err := n.js.CreateStream(ctx, contract.LogStreamConfig(r.Log, budget, r.History)); err != nil {
 		_ = req.Error(contract.CodeInternal, fmt.Sprintf("create stream: %v", err), nil)
 		return
 	}
@@ -293,6 +305,26 @@ func (n *node) handleLogCreate(req micro.Request) {
 		return
 	}
 	_ = req.Respond(reply)
+}
+
+// errAboveAccountCap is a log create whose budget the account's plan does
+// not allow — the creator's to fix, not the node's.
+var errAboveAccountCap = errors.New("above the account's per-log cap")
+
+// logBudget is a new log's byte budget: the request's override, or the
+// default bounded by the account's per-stream cap, which JetStream's own
+// account information carries — any NATS, any auth mode. An override above
+// the cap is refused here, where the server would refuse the stream.
+func (n *node) logBudget(ctx context.Context, requested int64) (int64, error) {
+	ai, err := n.js.AccountInfo(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("account limits: %w", err)
+	}
+	limit := ai.Limits.StoreMaxStreamBytes
+	if requested > 0 && limit > 0 && requested > limit {
+		return 0, fmt.Errorf("%w: max bytes %d, cap %d", errAboveAccountCap, requested, limit)
+	}
+	return contract.LogBudget(requested, limit), nil
 }
 
 func (n *node) handleTypeDefine(req micro.Request) {

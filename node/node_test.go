@@ -68,7 +68,13 @@ func startNode(t *testing.T, catcher *logCatcher) (nc *nats.Conn, alice *client.
 // (the rollup timer tests shrink RollupEvery).
 func startNodeWith(t *testing.T, catcher *logCatcher, cfg node.Config) (nc *nats.Conn, alice *client.Client) {
 	t.Helper()
-	url := natstest.StartJetStream(t)
+	return startNodeOn(t, natstest.StartJetStream(t), catcher, cfg)
+}
+
+// startNodeOn is startNodeWith over a server the caller started — one
+// whose account carries JetStream limits, for the budget tests.
+func startNodeOn(t *testing.T, url string, catcher *logCatcher, cfg node.Config) (nc *nats.Conn, alice *client.Client) {
+	t.Helper()
 	nc, err := nats.Connect(url)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
@@ -358,5 +364,67 @@ func TestNodeRestartsFoldsFromMeta(t *testing.T) {
 			t.Fatalf("state not folded after restart: %v", err)
 		}
 		time.Sleep(25 * time.Millisecond)
+	}
+}
+
+// TestLogBudgetFollowsTheAccountsCap is decision 0039 on a real server: in
+// an account whose JetStream limits carry a per-stream cap, a log created
+// with no budget gets the cap — not the contract's 1 GiB, which the server
+// would refuse — an override within the cap is kept, and one above it is
+// refused before anything is claimed, so the name stays free.
+func TestLogBudgetFollowsTheAccountsCap(t *testing.T) {
+	url := natstest.StartJetStreamLimited(t, "max_file: 1073741824, disk_max_stream_bytes: 67108864")
+	nc, alice := startNodeOn(t, url, nil, node.Config{})
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	budgetOf := func(log string) int64 {
+		t.Helper()
+		s, err := js.Stream(ctx, contract.StreamName(log))
+		if err != nil {
+			t.Fatalf("stream of %s: %v", log, err)
+		}
+		return s.CachedInfo().Config.MaxBytes
+	}
+	withBudget := func(n int64) client.LogOpt { return func(r *client.LogCreateRequest) { r.MaxBytes = n } }
+
+	if _, err := alice.CreateLog(ctx, "orders", ""); err != nil {
+		t.Fatalf("create under the cap: %v", err)
+	}
+	if got := budgetOf("orders"); got != 64<<20 {
+		t.Fatalf("default budget = %d, want the account's cap %d", got, 64<<20)
+	}
+	if _, err := alice.CreateLog(ctx, "small", "", withBudget(8<<20)); err != nil {
+		t.Fatalf("create with an override inside the cap: %v", err)
+	}
+	if got := budgetOf("small"); got != 8<<20 {
+		t.Fatalf("override = %d, want %d", got, 8<<20)
+	}
+	_, err = alice.CreateLog(ctx, "big", "", withBudget(128<<20))
+	var serr *client.ServiceError
+	if !errors.As(err, &serr) || serr.Code != contract.CodeBadRequest || !strings.Contains(serr.Desc, "per-log cap") {
+		t.Fatalf("an override above the cap: %v", err)
+	}
+	if _, err := alice.CreateLog(ctx, "big", ""); err != nil {
+		t.Fatalf("the refused name was claimed anyway: %v", err)
+	}
+}
+
+// TestLogBudgetWithoutACapIsTheDefault: the open form's account has no
+// per-stream cap, and a log keeps the contract's 1 GiB.
+func TestLogBudgetWithoutACapIsTheDefault(t *testing.T) {
+	nc, alice := startNode(t, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if _, err := alice.CreateLog(ctx, "orders", ""); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	js, _ := jetstream.New(nc)
+	s, err := js.Stream(ctx, contract.StreamName("orders"))
+	if err != nil || s.CachedInfo().Config.MaxBytes != contract.DefaultMaxBytes {
+		t.Fatalf("budget without a cap: %v, %v", s, err)
 	}
 }
