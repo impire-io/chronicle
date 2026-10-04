@@ -178,7 +178,9 @@ func (n *node) rollupThing(ctx context.Context, log, thing string) (rollupResult
 // replayWait is one fetch's wait; replayBudget is the whole replay's. A
 // peer's rollup mid-replay destroys the messages this replay still
 // expects, so a fetch that would only time out is checked against the
-// subject after every wait: the stall is one wait, not the budget.
+// subject after every wait: the stall is one wait, not the budget — and a
+// rollup the replay already fetched as its first message counts, since its
+// pending count may predate it.
 const (
 	replayWait   = 1 * time.Second
 	replayBudget = 10 * time.Second
@@ -199,8 +201,13 @@ func replayNext(ctx context.Context, cons jetstream.Consumer, stream jetstream.S
 		if !errors.Is(err, nats.ErrTimeout) && !errors.Is(err, jetstream.ErrNoMessages) {
 			return nil, false, fmt.Errorf("replay next: %w", err)
 		}
+		// A rollup at the cursor counts too: this replay's first message was
+		// a peer's rollup that landed after the pending count, so the
+		// messages still expected were destroyed before they were fetched
+		// (tracker chronicle-49). Nothing can follow a rollup that is still
+		// the subject's last message.
 		last, lerr := stream.GetLastMsgForSubject(ctx, subject)
-		if lerr == nil && last.Sequence > cursor && last.Header.Get(contract.HdrRollup) != "" {
+		if lerr == nil && last.Sequence >= cursor && last.Header.Get(contract.HdrRollup) != "" {
 			return nil, true, nil
 		}
 		if time.Now().After(deadline) {
