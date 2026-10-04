@@ -10,6 +10,20 @@ import (
 // at the cap, per-log override in META (0008 point 3).
 const DefaultMaxBytes = 1 << 30
 
+// LogBudget is the byte budget a new log's stream gets (decision 0039):
+// the creator's override when it names one, else the contract's default
+// — or the account's per-stream cap when that is smaller. An account cap
+// of zero or less means none.
+func LogBudget(requested, accountCap int64) int64 {
+	if requested > 0 {
+		return requested
+	}
+	if accountCap > 0 && accountCap < DefaultMaxBytes {
+		return accountCap
+	}
+	return DefaultMaxBytes
+}
+
 // DuplicateWindow is the stream dedup window: longer than any SDK retry, so
 // a retried publish dedups instead of double-appending.
 const DuplicateWindow = 2 * time.Minute

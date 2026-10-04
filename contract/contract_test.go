@@ -152,3 +152,20 @@ func TestMetaKeys(t *testing.T) {
 		}
 	}
 }
+
+// TestLogBudget: an override wins; otherwise the default, bounded by the
+// account's per-stream cap when there is one (decision 0039).
+func TestLogBudget(t *testing.T) {
+	for _, c := range []struct{ requested, accountCap, want int64 }{
+		{0, 0, DefaultMaxBytes},
+		{0, -1, DefaultMaxBytes},
+		{0, 64 << 20, 64 << 20},
+		{0, 4 << 30, DefaultMaxBytes},
+		{8 << 20, 64 << 20, 8 << 20},
+		{8 << 20, 0, 8 << 20},
+	} {
+		if got := LogBudget(c.requested, c.accountCap); got != c.want {
+			t.Errorf("LogBudget(%d, %d) = %d, want %d", c.requested, c.accountCap, got, c.want)
+		}
+	}
+}
