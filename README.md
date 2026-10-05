@@ -14,8 +14,10 @@ decision
 [0031](../chronicle-hq/03-DECISIONS/0031-open-is-one-tenant-the-service-is-managed.md)):
 everything that runs, or is used, inside one account. Creating accounts for
 strangers, placing their workloads across hosts, running them in microVMs,
-and logging humans in are the managed service at chronicle.impire.dev,
-built on this code in its own repositories. The repo exists by decision
+and the identity bridge that signs humans in are the managed service at
+chronicle.impire.dev, built on this code in its own repositories; this CLI
+signs in to it (`chronicle login`, decision
+[0043](../chronicle-hq/03-DECISIONS/0043-the-client-half-of-the-identity-bridge-is-open.md)). The repo exists by decision
 [0010](../chronicle-hq/03-DECISIONS/0010-chronicle-repo.md) of
 [`chronicle-hq`](https://github.com/impire-io/chronicle-hq) — the source
 of truth for mission, research, designs, and decisions. Capabilities land
@@ -174,8 +176,23 @@ things: **one account**, **JetStream** on it, and users in it. Then:
   ```
 
 What this form cannot do, by construction: create a second account, place
-a workload on another host, run anything in a microVM, log a human in
-with GitHub, invite anyone. Those are the managed service.
+a workload on another host, run anything in a microVM, run the bridge that
+signs a human in with GitHub, invite anyone. Those are the managed service.
+
+## Sign in to the hosted service
+
+The same CLI signs in to chronicle.impire.dev with your GitHub account —
+no credentials file, no operator:
+
+```sh
+chronicle login                     # GitHub's device flow; ends inside your account, created at the first login
+chronicle log create orders         # the account sentences run from the context login saved
+chronicle account create side-project   # a further account of your own, as the plan allows
+```
+
+`--site https://…` signs in to another install that runs a bridge. The
+install profile is fetched over HTTPS from the site and cached beside your
+contexts; the GitHub login is kept beside it, readable by you alone.
 
 ## Layout
 
@@ -186,6 +203,7 @@ with GitHub, invite anyone. Those are the managed service.
 | `cmd/chronicle-workload` | The placement binary: a node or an index kind as one process, whoever starts it — your unit, the quick start, or the managed executor's guest (thin main). `--creds` or `--nkey` for the user, `--url` for the server; a guest that reaches a TLS server through an address its certificate cannot name adds `--tls-server-name` — the name is verified, never skipped. |
 | `contract` | The account wire contract: subjects, headers, stream/bucket names, META grammar, the placement kinds and the node's index report. |
 | `client` | The public Go client package — the one way callers talk to an account, on any NATS in any auth mode. |
+| `bridge` | The client half of an install's identity bridge: the install profile, GitHub's device flow, the bridge and identity-plane connections. |
 | `node`, `index/*`, `foldcore`, `registry` | The node, the three index kinds and their shared projection, the fold judgment, the membership registry. Public so the managed service composes them; the dependency runs one way. |
 | `cli`, `up`, `devdir`, `guestnet` | The account sentences (with the seam a build adds verbs through), the quick start, its data-dir conventions, a guest's way to its host. |
 | `specs/` | The spec-kit increments this repo was built through. |

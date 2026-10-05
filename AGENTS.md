@@ -24,11 +24,14 @@ non-negotiables.
 
 ## Non-negotiables
 
-- **The boundary is the account.** Nothing here creates accounts, issues
+- **The boundary is the account.** Nothing here mints accounts, issues
   credentials, places workloads across hosts, or knows the managed
-  service's repositories exist. The packages are public because the
-  service composes them; the dependency runs one way, and `.golangci.yml`
-  states the seams between them.
+  service's repositories exist. The `bridge` package is a client of an
+  install's identity bridge — it asks the install to sign someone in or
+  create their account, as any client does (chronicle-hq decision 0043);
+  the callout, custody and minting that answer it are the service's. The
+  packages are public because the service composes them; the dependency
+  runs one way, and `.golangci.yml` states the seams between them.
 - **Quality gate before "done"**: `make fmt && make test && make lint` — all
   green, no skipped tests, race detector on.
 - **The wire contract is tested against real NATS** (embedded server in

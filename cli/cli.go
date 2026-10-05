@@ -3,9 +3,10 @@
 // decision 0025's: vocabulary nouns get noun-verb, everyday sentences get
 // bare verbs, and the connection and working log come from the selected
 // context instead of every invocation. The package carries the account
-// sentences — the open form (11-the-two-forms.md § the managed CLI); a
-// build that owns more, the managed service's, adds its verbs through an
-// Extension and ships the same binary as a superset.
+// sentences and signing in through an install's identity bridge — `login`
+// and `account create` (decision 0043) — the open form (11-the-two-forms.md
+// § the managed CLI); a build that owns more, the managed service's, adds
+// its verbs through an Extension and ships the same binary as a superset.
 package cli
 
 import (
@@ -32,8 +33,9 @@ import (
 type Verb func(ctx context.Context, args []string, out io.Writer) error
 
 // Extension is what a build adds to the open CLI. The open binary itself
-// adds `up`; the managed build adds the fleet and its accounts' verbs and
-// a second way of being someone. Nothing here changes an account sentence.
+// adds `up`; the managed build adds the fleet's verbs and the operator's
+// forms of `account` and `member`. Nothing here changes an account
+// sentence.
 type Extension struct {
 	// Verbs are the top-level verbs the build adds, dispatched before the
 	// open sentences by name; a name the open grammar already uses is
@@ -48,11 +50,6 @@ type Extension struct {
 	// Usage is the help for the added verbs — the sections printed ahead
 	// of the account sentences, in the same sectioned shape.
 	Usage string
-	// BridgeDial dials an account sentence through a way of being someone
-	// the open form does not have — the managed service's browser
-	// identity bridge (decision 0026): the profile and the account, a
-	// client back. Nil means --bridge is refused with the reason.
-	BridgeDial func(profile, account string) (*client.Client, error)
 }
 
 // Run dispatches one CLI invocation with no extension: the open grammar.
@@ -122,6 +119,8 @@ func (x *runner) openVerbs() map[string]Verb {
 		"op":        sub(map[string]Verb{"define": x.opDefine, "list": x.opList, "inspect": x.opInspect, "rm": x.opRm}),
 		"index":     sub(map[string]Verb{"declare": x.indexDeclare, "delete": x.indexDelete, "list": x.indexList}),
 		"member":    sub(map[string]Verb{"add": x.memberAdd, "revoke": x.memberRevoke, "list": x.memberList}),
+		"login":     login,
+		"account":   accountVerb,
 		"create":    x.createThing,
 		"do":        x.doOperation,
 		"get":       x.getState,
@@ -144,7 +143,13 @@ type runner struct {
 
 // OpenUsage is the help for the account sentences — what every build
 // prints after its own sections.
-const OpenUsage = `define vocabulary (your context)
+const OpenUsage = `be someone (GitHub, through an install's identity bridge)
+  chronicle login [--site URL | --bridge F] [--account A]  sign in; ends inside your account, created at the first login
+      the install profile comes from the site (default chronicle.impire.dev), cached beside your contexts
+  chronicle account create <name> [--bridge F]          a further account of your own (the plan says how many)
+      every account sentence also takes --bridge F --account A instead of creds; login saves both on a context
+
+define vocabulary (your context)
   chronicle context save <name> (--creds F | --nkey F --principal P) [--url U]
   chronicle context select <name> | show | list | rm <name>
   chronicle log create <log> [--desc S] [--history H]    creates and selects the working log
@@ -225,8 +230,6 @@ type connectFlags struct {
 	ctxName   *string
 	bridge    *string
 	account   *string
-
-	bridgeDial func(profile, account string) (*client.Client, error)
 }
 
 func (x *runner) addConnectFlags(fs *flag.FlagSet) connectFlags {
@@ -238,11 +241,8 @@ func (x *runner) addConnectFlags(fs *flag.FlagSet) connectFlags {
 		dir:       fs.String("dir", devdir.Default(), "the quick start's data dir (chronicle up): the url and identity fallback"),
 		logName:   fs.String("log", "", "the log to speak to (default: CHRONICLE_LOG, else the selected log)"),
 		ctxName:   fs.String("context", "", "context name (default: CHRONICLE_CONTEXT, else the selection)"),
-		bridge:    fs.String("bridge", "", "bridge profile from a managed install; dial via GitHub login (default: the context's; see: chronicle login)"),
+		bridge:    fs.String("bridge", "", "an install's profile: dial through its identity bridge with your GitHub login (default: the context's; see: chronicle login)"),
 		account:   fs.String("account", "", "the account a --bridge dial lands in (default: the context's)"),
-	}
-	if x.ext != nil {
-		cf.bridgeDial = x.ext.BridgeDial
 	}
 	return cf
 }
@@ -265,8 +265,6 @@ type resolved struct {
 	log       string // may be empty; verbs that need one call needLog
 	bridge    string
 	account   string
-
-	bridgeDial func(profile, account string) (*client.Client, error)
 }
 
 func (cf connectFlags) resolve() (resolved, error) {
@@ -283,7 +281,7 @@ func (cf connectFlags) resolve() (resolved, error) {
 	}
 	r := resolved{
 		url: *cf.url, creds: *cf.creds, nkey: *cf.nkey, principal: *cf.principal,
-		log: *cf.logName, bridge: *cf.bridge, account: *cf.account, bridgeDial: cf.bridgeDial,
+		log: *cf.logName, bridge: *cf.bridge, account: *cf.account,
 	}
 	ways := 0
 	for _, w := range []string{r.creds, r.nkey, r.bridge} {
@@ -342,13 +340,10 @@ func (r resolved) needLog() (string, error) {
 func (r resolved) dial() (*client.Client, error) {
 	switch {
 	case r.bridge != "":
-		if r.bridgeDial == nil {
-			return nil, fmt.Errorf("--bridge dials through the browser identity bridge, which is the managed service's: this build has none")
-		}
 		if r.account == "" {
 			return nil, fmt.Errorf("--bridge needs the account to land in: --account A, or the context chronicle login saved")
 		}
-		return r.bridgeDial(r.bridge, r.account)
+		return dialThroughBridge(r.bridge, r.account)
 	case r.nkey != "":
 		return client.ConnectNkeyFile(r.url, r.nkey, r.principal)
 	default:

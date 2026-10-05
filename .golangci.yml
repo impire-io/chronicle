@@ -15,9 +15,11 @@ linters:
       # and client types, never through each other; foldcore and registry
       # are shared leaves every projection and API-serving component may
       # use; devdir is the tiny seam the adapters share with the quick
-      # start; up composes; cli adapts. Every package here is public
-      # because the managed service (chronicle-service) composes them — the
-      # dependency runs one way, and nothing here knows that repo exists.
+      # start; bridge is a client of an install's identity bridge, over
+      # client and contract (decision 0043); up composes; cli adapts. Every
+      # package here is public because the managed service
+      # (chronicle-service) composes them — the dependency runs one way, and
+      # nothing here knows that repo exists.
       rules:
         contract-is-a-leaf:
           files: ["**/contract/*.go", "!$test"]
@@ -41,6 +43,23 @@ linters:
               desc: the client never imports the adapters
             - pkg: github.com/impire-io/chronicle/devdir
               desc: the client knows no data-dir conventions
+        bridge-is-a-client:
+          files: ["**/bridge/*.go", "!$test"]
+          deny:
+            - pkg: github.com/impire-io/chronicle/node
+              desc: the bridge package is a client of an install's bridge; it never reaches into a service
+            - pkg: github.com/impire-io/chronicle/index
+              desc: the bridge package is a client of an install's bridge; it never reaches into a service
+            - pkg: github.com/impire-io/chronicle/foldcore
+              desc: the bridge package is a client of an install's bridge; it never reaches into a service
+            - pkg: github.com/impire-io/chronicle/registry
+              desc: the bridge package is a client of an install's bridge; it never reaches into a service
+            - pkg: github.com/impire-io/chronicle/up
+              desc: the bridge client never imports the composition
+            - pkg: "github.com/impire-io/chronicle/cli{,/**}"
+              desc: the bridge client never imports the adapters
+            - pkg: github.com/impire-io/chronicle/devdir
+              desc: the bridge client knows no data-dir conventions
         node-stands-alone:
           files: ["**/node/**", "!$test"]
           deny:

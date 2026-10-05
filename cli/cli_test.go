@@ -464,16 +464,19 @@ func TestCLIExtension(t *testing.T) {
 	if err := cli.RunWith(ctx, []string{"version"}, &out, stray); err == nil || !strings.Contains(err.Error(), "does not have") {
 		t.Fatalf("stray override not refused: %v", err)
 	}
-	if err := runErr(ctx, "log", "list", "--bridge", "p.json", "--account", "acme"); err == nil || !strings.Contains(err.Error(), "this build has none") {
-		t.Fatalf("--bridge without a dialer not refused: %v", err)
+	// Every build dials the bridge itself (0043): a profile that is not
+	// there is the error, not a missing dialer.
+	if err := runErr(ctx, "log", "list", "--bridge", "p.json", "--account", "acme"); err == nil || !strings.Contains(err.Error(), "read install profile") {
+		t.Fatalf("--bridge with no profile on disk: %v", err)
 	}
 	// A bridge context carries the profile and the account: the sentences
-	// need neither flag, and the dial is the build's (0035).
+	// need neither flag (0035).
 	dialed := ""
-	bridged := &cli.Extension{BridgeDial: func(profile, account string) (*client.Client, error) {
+	t.Cleanup(cli.SetBridgeDial(func(profile, account string) (*client.Client, error) {
 		dialed = profile + " " + account
 		return nil, errors.New("dialed")
-	}}
+	}))
+	var bridged *cli.Extension
 	out.Reset()
 	if err := cli.RunWith(ctx, []string{"context", "save", "hosted", "--bridge", "p.json", "--account", "acme"}, &out, bridged); err != nil {
 		t.Fatalf("context save --bridge: %v", err)
