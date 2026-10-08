@@ -302,7 +302,7 @@ func (x *runner) instanceApply(ctx context.Context, args []string, out io.Writer
 	cf := x.connect(fs)
 	data := fs.String("data", "", "the operation's data, inline (JSON)")
 	file := fs.String("f", "", "the operation's data, from a YAML or JSON file")
-	expect := fs.Int64("expect", -1, "the sequence the instance must still stand at (the one instance get printed); refused if it moved")
+	expect := fs.Int64("expect", -1, "the sequence of the instance's last operation (instance apply prints it, instance history shows it); refused if anything landed since")
 	pos, err := parse(fs, args)
 	if err != nil {
 		return done(err)
