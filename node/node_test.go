@@ -135,7 +135,7 @@ func TestCreateLogAndSpine(t *testing.T) {
 	defer cancel()
 
 	// FR-02: create a log — stream plus META entries.
-	created, err := alice.CreateLog(ctx, "orders", "the orders log")
+	created, err := alice.CreateStore(ctx, "orders", "the orders log")
 	if err != nil {
 		t.Fatalf("create log: %v", err)
 	}
@@ -144,17 +144,17 @@ func TestCreateLogAndSpine(t *testing.T) {
 	}
 
 	// Creating it again is refused: the META key is the claim.
-	if _, err := alice.CreateLog(ctx, "orders", ""); err == nil {
+	if _, err := alice.CreateStore(ctx, "orders", ""); err == nil {
 		t.Fatal("duplicate create landed")
 	} else {
 		var serr *client.ServiceError
-		if !errors.As(err, &serr) || serr.Code != "log-exists" {
-			t.Fatalf("expected log-exists, got %v", err)
+		if !errors.As(err, &serr) || serr.Code != "store-exists" {
+			t.Fatalf("expected store-exists, got %v", err)
 		}
 	}
 	// Reserved and malformed names are refused.
 	for _, bad := range []string{"api", "Orders", "my_log"} {
-		if _, err := alice.CreateLog(ctx, bad, ""); err == nil {
+		if _, err := alice.CreateStore(ctx, bad, ""); err == nil {
 			t.Fatalf("bad log name %q accepted", bad)
 		}
 	}
@@ -205,12 +205,12 @@ func TestCreateLogAndSpine(t *testing.T) {
 	}
 
 	// FR-03: birth, then appends with pre-flight.
-	birth, err := alice.CreateThing(ctx, "orders", "invoice.invoice-1", json.RawMessage(`{"total":0}`))
+	birth, err := alice.CreateFromSnapshot(ctx, "orders", "invoice/invoice-1", json.RawMessage(`{"total":0}`))
 	if err != nil {
 		t.Fatalf("create thing: %v", err)
 	}
 	// Idempotent birth retry: same op ID reports the same landing.
-	again, err := alice.CreateThing(ctx, "orders", "invoice.invoice-1", json.RawMessage(`{"total":0}`), client.WithOpID(birth.OpID))
+	again, err := alice.CreateFromSnapshot(ctx, "orders", "invoice/invoice-1", json.RawMessage(`{"total":0}`), client.WithOpID(birth.OpID))
 	if err != nil {
 		t.Fatalf("birth retry: %v", err)
 	}
@@ -218,16 +218,16 @@ func TestCreateLogAndSpine(t *testing.T) {
 		t.Fatalf("birth retry landed elsewhere: %d vs %d", again.Seq, birth.Seq)
 	}
 	// A different writer's birth of the same thing is refused.
-	if _, err := alice.CreateThing(ctx, "orders", "invoice.invoice-1", nil); !errors.Is(err, client.ErrThingExists) {
-		t.Fatalf("expected ErrThingExists, got %v", err)
+	if _, err := alice.CreateFromSnapshot(ctx, "orders", "invoice/invoice-1", nil); !errors.Is(err, client.ErrInstanceExists) {
+		t.Fatalf("expected ErrInstanceExists, got %v", err)
 	}
 
 	// Pre-flight refuses an invalid payload before the wire.
-	if _, err := alice.Append(ctx, "orders", "invoice.invoice-1", "comment.add", []byte(`{"nobody":1}`)); !errors.Is(err, client.ErrSchemaViolation) {
+	if _, err := alice.Apply(ctx, "orders", "invoice/invoice-1", "comment.add", []byte(`{"nobody":1}`)); !errors.Is(err, client.ErrSchemaViolation) {
 		t.Fatalf("expected schema violation, got %v", err)
 	}
 	// A valid op lands.
-	ack, err := alice.Append(ctx, "orders", "invoice.invoice-1", "comment.add", []byte(`{"body":"first"}`), client.WithParents(birth.OpID))
+	ack, err := alice.Apply(ctx, "orders", "invoice/invoice-1", "comment.add", []byte(`{"body":"first"}`), client.WithParents(birth.OpID))
 	if err != nil {
 		t.Fatalf("append: %v", err)
 	}
@@ -240,7 +240,7 @@ func TestCreateLogAndSpine(t *testing.T) {
 		t.Helper()
 		deadline := time.Now().Add(5 * time.Second)
 		for {
-			sv, err := alice.State(ctx, "orders", "invoice.invoice-1")
+			sv, err := alice.State(ctx, "orders", "invoice/invoice-1")
 			if err == nil && sv.Seq == wantSeq {
 				return sv
 			}
@@ -260,7 +260,7 @@ func TestCreateLogAndSpine(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	snapAck, err := alice.Append(ctx, "orders", "invoice.invoice-1", contract.OpTypeSnapshot, snap2)
+	snapAck, err := alice.Apply(ctx, "orders", "invoice/invoice-1", contract.OpTypeSnapshot, snap2)
 	if err != nil {
 		t.Fatalf("snapshot append: %v", err)
 	}
@@ -271,7 +271,7 @@ func TestCreateLogAndSpine(t *testing.T) {
 
 	// FR-05: replay returns the full history in stream order; FoldTail
 	// picks up exactly after the state's seq.
-	ops := collect(t, alice.Replay(ctx, "orders", "invoice.invoice-1"))
+	ops := collect(t, alice.History(ctx, "orders", "invoice/invoice-1"))
 	if len(ops) != 3 {
 		t.Fatalf("replay returned %d ops", len(ops))
 	}
@@ -281,7 +281,7 @@ func TestCreateLogAndSpine(t *testing.T) {
 	if ops[1].Author != "alice" || ops[1].Parents[0] != birth.OpID {
 		t.Fatalf("the record lost author or parents: %+v", ops[1])
 	}
-	tail := collect(t, alice.FoldTail(ctx, "orders", "invoice.invoice-1", sv.Seq))
+	tail := collect(t, alice.FoldTail(ctx, "orders", "invoice/invoice-1", sv.Seq))
 	if len(tail) != 0 {
 		t.Fatalf("tail after the latest snapshot must be empty, got %d", len(tail))
 	}
@@ -310,7 +310,7 @@ func TestCreateLogAndSpine(t *testing.T) {
 		t.Fatalf("raw invalid publish: %v", err)
 	}
 	catcher.wait(t, "marked invalid payload")
-	ops = collect(t, alice.Replay(ctx, "orders", "invoice.invoice-1"))
+	ops = collect(t, alice.History(ctx, "orders", "invoice/invoice-1"))
 	if len(ops) != 5 {
 		t.Fatalf("the log must keep junk, warts included: %d ops", len(ops))
 	}
@@ -320,7 +320,7 @@ func TestCreateLogAndSpine(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ritaClient.CreateLog(ctx, "rogue", ""); err == nil {
+	if _, err := ritaClient.CreateStore(ctx, "rogue", ""); err == nil {
 		t.Fatal("reader created a log")
 	} else {
 		var serr *client.ServiceError
@@ -338,10 +338,10 @@ func TestNodeRestartsFoldsFromMeta(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	if _, err := alice.CreateLog(ctx, "orders", ""); err != nil {
+	if _, err := alice.CreateStore(ctx, "orders", ""); err != nil {
 		t.Fatalf("create log: %v", err)
 	}
-	birth, err := alice.CreateThing(ctx, "orders", "invoice.invoice-1", json.RawMessage(`{"n":1}`))
+	birth, err := alice.CreateFromSnapshot(ctx, "orders", "invoice/invoice-1", json.RawMessage(`{"n":1}`))
 	if err != nil {
 		t.Fatalf("create thing: %v", err)
 	}
@@ -356,7 +356,7 @@ func TestNodeRestartsFoldsFromMeta(t *testing.T) {
 
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		sv, err := alice.State(ctx, "orders", "invoice.invoice-1")
+		sv, err := alice.State(ctx, "orders", "invoice/invoice-1")
 		if err == nil && sv.Seq == birth.Seq {
 			break
 		}
@@ -389,26 +389,26 @@ func TestLogBudgetFollowsTheAccountsCap(t *testing.T) {
 		}
 		return s.CachedInfo().Config.MaxBytes
 	}
-	withBudget := func(n int64) client.LogOpt { return func(r *client.LogCreateRequest) { r.MaxBytes = n } }
+	withBudget := func(n int64) client.StoreOpt { return func(r *client.StoreCreateRequest) { r.MaxBytes = n } }
 
-	if _, err := alice.CreateLog(ctx, "orders", ""); err != nil {
+	if _, err := alice.CreateStore(ctx, "orders", ""); err != nil {
 		t.Fatalf("create under the cap: %v", err)
 	}
 	if got := budgetOf("orders"); got != 64<<20 {
 		t.Fatalf("default budget = %d, want the account's cap %d", got, 64<<20)
 	}
-	if _, err := alice.CreateLog(ctx, "small", "", withBudget(8<<20)); err != nil {
+	if _, err := alice.CreateStore(ctx, "small", "", withBudget(8<<20)); err != nil {
 		t.Fatalf("create with an override inside the cap: %v", err)
 	}
 	if got := budgetOf("small"); got != 8<<20 {
 		t.Fatalf("override = %d, want %d", got, 8<<20)
 	}
-	_, err = alice.CreateLog(ctx, "big", "", withBudget(128<<20))
+	_, err = alice.CreateStore(ctx, "big", "", withBudget(128<<20))
 	var serr *client.ServiceError
 	if !errors.As(err, &serr) || serr.Code != contract.CodeBadRequest || !strings.Contains(serr.Desc, "per-log cap") {
 		t.Fatalf("an override above the cap: %v", err)
 	}
-	if _, err := alice.CreateLog(ctx, "big", ""); err != nil {
+	if _, err := alice.CreateStore(ctx, "big", ""); err != nil {
 		t.Fatalf("the refused name was claimed anyway: %v", err)
 	}
 }
@@ -419,7 +419,7 @@ func TestLogBudgetWithoutACapIsTheDefault(t *testing.T) {
 	nc, alice := startNode(t, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	if _, err := alice.CreateLog(ctx, "orders", ""); err != nil {
+	if _, err := alice.CreateStore(ctx, "orders", ""); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	js, _ := jetstream.New(nc)

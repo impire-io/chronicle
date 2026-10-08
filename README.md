@@ -1,27 +1,35 @@
 # chronicle
 
-Chronicle is ops-logs as a product: append-only event logs whose folded
-state and declared indexes (search, graph, semantic) run as NATS micro
-services — for one account, on any NATS you already have. There is no web
-UI and no side door: a CLI over the one client surface, a node that folds
-your logs, one process per declared index, and a quick start that embeds
-its own server for the five-minute path.
+Chronicle keeps the full history of everything your service does — and
+gives you the current state, search and relationships derived from it,
+without building any of it. You define **types**, each with a schema and
+the **operations** it allows; you create **instances** of those types;
+every change is an operation applied to an instance and kept as its
+**history**; the current **state** is always one read away; the
+**indexes** you declare (search, graph, semantic) are kept current from
+the history. It runs on any NATS you already have, or hosted at
+chronicle.impire.dev — one product, a connection string apart.
 
 This repository is the **open account plane** of chronicle (chronicle-hq
 design
 [`11-the-two-forms.md`](../chronicle-hq/02-DESIGN/11-the-two-forms.md),
 decision
 [0031](../chronicle-hq/03-DECISIONS/0031-open-is-one-tenant-the-service-is-managed.md)):
-everything that runs, or is used, inside one account. Creating accounts for
-strangers, placing their workloads across hosts, running them in microVMs,
-and the identity bridge that signs humans in are the managed service at
-chronicle.impire.dev, built on this code in its own repositories; this CLI
-signs in to it (`chronicle login`, decision
-[0043](../chronicle-hq/03-DECISIONS/0043-the-client-half-of-the-identity-bridge-is-open.md)). The repo exists by decision
+everything that runs, or is used, inside one account — the CLI, the Go
+client, the node that keeps the state, one process per declared index,
+and a quick start that embeds its own server. Creating accounts for
+strangers, placing their workloads across hosts, and the identity bridge
+that signs humans in are the managed service at chronicle.impire.dev,
+built on this code in its own repositories; this CLI signs in to it
+(`chronicle login`, decision
+[0043](../chronicle-hq/03-DECISIONS/0043-the-client-half-of-the-identity-bridge-is-open.md)).
+The repo exists by decision
 [0010](../chronicle-hq/03-DECISIONS/0010-chronicle-repo.md) of
 [`chronicle-hq`](https://github.com/impire-io/chronicle-hq) — the source
-of truth for mission, research, designs, and decisions. Capabilities land
-here through the build handoff
+of truth for mission, research, designs, and decisions; the words it uses
+are the [vocabulary](../chronicle-hq/00-META/vocabulary.md) of decision
+[0044](../chronicle-hq/03-DECISIONS/0044-chronicle-speaks-the-users-language.md).
+Capabilities land here through the build handoff
 ([playbook 04](../chronicle-hq/00-META/process/04-build-handoff.md)), not
 by invention in this repo. Agents start at [AGENTS.md](AGENTS.md).
 
@@ -54,69 +62,72 @@ chronicle up
 
 One process: an embedded NATS server with JetStream, one account, one
 user whose key lives under `~/.chronicle/dev` (change with `--dir`), the
-node, and every index you declare — placed in the same process the moment
-the node reports it. No operator, no JWTs, no ceremony; it listens on 4222
-(`--port`, `-1` picks a free one) and runs in the foreground until
-interrupted. It is a development convenience and says so: production is
-your own NATS (below).
+node, and every index you declare. It saves and selects a context named
+`local` for that user, so every sentence below works without a flag. No
+operator, no JWTs, no ceremony; it listens on 4222 (`--port`, `-1` picks
+a free one) and runs in the foreground until interrupted. It is a
+development convenience and says so: production is your own NATS
+(below).
 
-**3. Work with things** — in another terminal. The quick start's one user
-is the account's admin, and every sentence finds it through the data dir,
-so nothing needs a flag:
+**3. The five-minute path** — in another terminal. The block below is
+run as a test in CI, line by line, so it works as written:
 
-```sh
-chronicle log create orders           # creates and selects the working log
-chronicle type define invoice --def '{
-  "schema": {"type":"object"},
-  "operations": {
-    "create":      {"schema": {"type":"object"}, "effect": "merge"},
-    "comment.add": {"schema": {"type":"object","required":["body"]}},
-    "status.set":  {"schema": {"type":"object"}, "effect": "merge"}
-  }}'
-chronicle create invoice.invoice-1 --payload '{"total":3}'
-chronicle do invoice.invoice-1 comment.add --payload '{"body":"hi"}'
-chronicle get invoice.invoice-1
-chronicle history invoice.invoice-1
+```sh quick-start
+chronicle store create orders                    # creates the store and selects it
+chronicle type init invoice > invoice.yaml       # a commented type file to edit
+chronicle type create invoice -f invoice.yaml
+chronicle op create invoice send --schema '{"type":"object","required":["to"]}' --effect merge
+chronicle instance create invoice/inv-1 --data '{"total":120}'
+chronicle instance apply invoice/inv-1 send --data '{"to":"x"}'
+chronicle instance list --type invoice
+chronicle instance get invoice/inv-1
+chronicle instance history invoice/inv-1
+chronicle instance snapshot invoice/inv-1
+chronicle index create text --kind search
+chronicle index query text x
 ```
 
-A *log* is an append-only event stream; a *type* is the vocabulary you
-define on it — the thing's shape, its operations (each with a schema and
-an effect), its aspects; a *thing* is one entity, its tail naming its
-type (`invoice.invoice-1`). Creating is invoking the type's `create`
-operation with the birth guard; `do` invokes any operation (payloads
-failing the schema are refused before the wire); the node folds ops into
-state; `get` reads the fold; `history` walks the ops. `chronicle type
-init` prints a definition skeleton to start from, `chronicle op
-define|list|inspect|rm` manage a type's operations one at a time, and
-fully merge-covered things compact:
+The grammar is one shape, noun then verb: `store`, `type`, `op`,
+`instance`, `index`, `member`, `service-account`, `context`, `account`,
+and every noun has `list`, `get`, `create` and `delete` where they mean
+something. `--help` works on every command, `chronicle help <noun>` lists
+a noun's verbs, and every list is a table (`--output json|jsonl|yaml` for
+tools).
+
+A **store** holds types, instances and indexes. A **type** says what an
+instance looks like (a JSON Schema), which **operations** it allows (each
+with a schema for its data and an **effect**: `merge` updates the state,
+`none` is recorded in history only), which **children** may be nested
+under it (`invoice/inv-1/comments/c-3`), and its **history policy**
+(`compactable`, or `full` to keep every operation). An **instance** is
+named by its **path**, `type/id`; `instance create` applies the type's
+`create` operation, `instance apply` any other; the data is checked
+against the operation's schema before it is sent. `instance get` reads
+the state, `instance history` the operations, `instance list --type
+invoice --where status=sent` the instances of a type with a filter, and
+`instance snapshot` writes the current state as a snapshot and compacts
+the history before it. `instance apply … --expect SEQ` refuses the write
+if the instance moved past the sequence you read.
+
+**4. Declare indexes.** An index is declared on a store and served by a
+process of its kind; it reads the state (or, with `--source history`,
+every operation) and is kept current:
 
 ```sh
-chronicle rollup invoice.invoice-1
+chronicle index create rel --kind graph --config '{"edges":[{"field":"customer"}]}'
+chronicle index query rel --from invoice/inv-1            # neighbours
+chronicle index query rel --from invoice/inv-1 --depth 2  # a walk
+chronicle index create meaning --kind semantic
+chronicle index query meaning "orders about widgets"
 ```
 
-**4. Declare indexes.** An index is declared on a log and served by a
-process of its kind; search is the default kind, and one `query` verb
-serves every kind — the index's declaration shapes the arguments:
+Hits stream as they arrive, `--limit` caps them, and the total closes the
+listing. The shapes of each kind's `--config` are in
+[`chronicle-hq/02-DESIGN/05-indexes.md`](../chronicle-hq/02-DESIGN/05-indexes.md).
 
-```sh
-chronicle index declare text
-chronicle query text widgets
-```
-
-The graph and semantic kinds are declared the same way with `--kind graph`
-or `--kind semantic` (each takes its `--config`; the designs in
-[`chronicle-hq/02-DESIGN/05-indexes.md`](../chronicle-hq/02-DESIGN/05-indexes.md)
-carry the shapes) and queried through the same verb — text for semantic,
-`--from` (and `--depth` to walk) for graph. Hits stream as they arrive
-and the total closes the listing; `--limit` caps them. `chronicle log
-list`, `chronicle index list`, `chronicle type list`, and `chronicle
-things` say what exists — every collection prints as it arrives, and
-`--json` emits one JSON object per line. Run `chronicle` with no
-arguments for the full verb list.
-
-**5. Build on it.** The Go client is the SDK's Go form: collections are
-iterators, single state is a reply, and the live surface — `Tail`,
-`Watch`, `WatchDeclarations` — is fed by JetStream, never a core
+**5. Build on it.** The Go client is the SDK's Go form: instances by path,
+collections as iterators, single state as a reply, and the live surface
+— `Tail`, `Watch`, `WatchDeclarations` — fed by JetStream, never a core
 subscription. What every SDK restates is described once in
 [`contract/sdk-contract.json`](contract/sdk-contract.json) and checked by
 the [conformance suite](conformance/README.md), which every release
@@ -151,8 +162,8 @@ things: **one account**, **JetStream** on it, and users in it. Then:
 - **The node and the indexers are your processes.** `chronicle-node
   --url U --creds F` (or `--nkey F`) with a user that has full rights in
   the account; on the account's first run add `--admin <principal>` to
-  seed the membership registry with its admin. One `chronicle-workload
-  --kind index-search --log L --index I` (graph, semantic) per declared
+  seed the registry with its admin. One `chronicle-workload
+  --kind index-search --store S --index I` (graph, semantic) per declared
   index, as many instances of each as you want, under whatever
   supervises processes for you already. A declaration without a running
   process stays honestly unserved.
@@ -165,13 +176,15 @@ things: **one account**, **JetStream** on it, and users in it. Then:
   | publish | `CHRON.>`, `$SYS.REQ.USER.INFO`, `$JS.API.CONSUMER.>`, `$JS.API.STREAM.INFO.>`, `$JS.API.STREAM.NAMES`, `$JS.API.STREAM.MSG.GET.>`, `$JS.API.DIRECT.GET.>` |
   | subscribe | `CHRON.>`, `_INBOX.>` |
 
-  Membership and roles live in the account's `META` bucket and the node
-  enforces them; the principal a client acts as is the creds file's JWT
-  name, or stated beside an nkey. Save it once and speak through it:
+  Members and service accounts, with their roles, live in the account
+  and the node enforces them (`chronicle member add`, `chronicle
+  service-account create`); the principal a client acts as is the
+  credential file's name, or stated beside an nkey. Save the connection
+  once and speak through it:
 
   ```sh
-  chronicle context save prod --url tls://nats.example.com:4222 --creds dana.creds
-  chronicle context save prod --url tls://nats.example.com:4222 --nkey dana.nk --principal dana
+  chronicle context add prod --url tls://nats.example.com:4222 --creds dana.creds
+  chronicle context add prod --url tls://nats.example.com:4222 --nkey dana.nk --principal dana
   chronicle context select prod
   ```
 
@@ -182,17 +195,18 @@ signs a human in with GitHub, invite anyone. Those are the managed service.
 ## Sign in to the hosted service
 
 The same CLI signs in to chronicle.impire.dev with your GitHub account —
-no credentials file, no operator:
+no credential file, no operator:
 
 ```sh
-chronicle login                     # GitHub's device flow; ends inside your account, created at the first login
-chronicle log create orders         # the account sentences run from the context login saved
-chronicle account create side-project   # a further account of your own, as the plan allows
+chronicle login                       # GitHub's device flow; ends inside your account, created at the first sign-in
+chronicle store create orders         # the account sentences run from the context login saved
+chronicle account create side-project # a further account of your own, as the plan allows
 ```
 
 `--site https://…` signs in to another install that runs a bridge. The
 install profile is fetched over HTTPS from the site and cached beside your
-contexts; the GitHub login is kept beside it, readable by you alone.
+contexts; the GitHub sign-in is kept beside it, readable by you alone, and
+`chronicle logout` forgets it.
 
 ## Layout
 
@@ -201,7 +215,7 @@ contexts; the GitHub login is kept beside it, readable by you alone.
 | `cmd/chronicle` | The CLI, and — through `chronicle up` — the quick start in one process (thin main; logic in `cli` and `up`). |
 | `cmd/chronicle-node` | One account's node, standalone: the fold, state, and API verbs (thin main; logic in `node`). |
 | `cmd/chronicle-workload` | The placement binary: a node or an index kind as one process, whoever starts it — your unit, the quick start, or the managed executor's guest (thin main). `--creds` or `--nkey` for the user, `--url` for the server; a guest that reaches a TLS server through an address its certificate cannot name adds `--tls-server-name` — the name is verified, never skipped. |
-| `contract` | The account wire contract: subjects, headers, stream/bucket names, META grammar, the placement kinds and the node's index report. |
+| `contract` | The account wire contract: subjects, headers, stream/bucket names, META grammar, the path grammar, the placement kinds and the node's index report. |
 | `client` | The public Go client package — the one way callers talk to an account, on any NATS in any auth mode. |
 | `bridge` | The client half of an install's identity bridge: the install profile, GitHub's device flow, the bridge and identity-plane connections. |
 | `node`, `index/*`, `foldcore`, `registry` | The node, the three index kinds and their shared projection, the fold judgment, the membership registry. Public so the managed service composes them; the dependency runs one way. |

@@ -17,20 +17,20 @@ import (
 	"github.com/impire-io/chronicle/contract"
 )
 
-// ErrThingExists is a birth refused because the thing already has history —
+// ErrInstanceExists is a birth refused because the thing already has history —
 // and not from a retry of this very op.
-var ErrThingExists = errors.New("thing already exists")
+var ErrInstanceExists = errors.New("the instance already exists")
 
 // ErrStaleVersion is a save refused because the log moved past the version:
 // something landed on the subject after upTo, so the saved state no longer
 // covers the history it would destroy. Re-read, re-fold, retry.
 var ErrStaleVersion = errors.New("the log moved past this version")
 
-// ErrThingMoved is a guarded append refused because the thing's history
+// ErrInstanceMoved is a guarded append refused because the thing's history
 // moved past the guard: something landed on the subject after the expected
 // seq, so whatever the writer validated no longer holds. Re-read,
 // re-validate, retry (0018).
-var ErrThingMoved = errors.New("the thing moved past the guard")
+var ErrInstanceMoved = errors.New("the instance moved past the expected sequence")
 
 // Ack is where an accepted op landed.
 type Ack struct {
@@ -38,8 +38,8 @@ type Ack struct {
 	Seq  uint64
 }
 
-// AppendOpt adjusts one append.
-type AppendOpt func(*appendOpts)
+// ApplyOpt adjusts one append.
+type ApplyOpt func(*appendOpts)
 
 type appendOpts struct {
 	parents     []string
@@ -48,41 +48,41 @@ type appendOpts struct {
 }
 
 // WithParents records the op IDs the writer had seen — the DAG edges.
-func WithParents(parents ...string) AppendOpt {
+func WithParents(parents ...string) ApplyOpt {
 	return func(o *appendOpts) { o.parents = parents }
 }
 
 // WithOpID pins the op ID — the retry key. Callers that may retry across
 // process restarts make it once and keep it.
-func WithOpID(id string) AppendOpt {
+func WithOpID(id string) ApplyOpt {
 	return func(o *appendOpts) { o.opID = id }
 }
 
 // WithExpectedSeq arms an append with the expected-sequence guard (0018):
 // the publish carries the last stream sequence the writer observed on the
 // thing's subject, and the server refuses it if anything landed since —
-// CAS per exact subject, server-enforced. A refusal is ErrThingMoved:
+// CAS per exact subject, server-enforced. A refusal is ErrInstanceMoved:
 // re-read, re-validate, retry. The exactness recipe yields the value
-// (State's seq, advanced by FoldTail). Append only: birth guards at 0 by
-// definition and SaveVersion guards at upTo.
-func WithExpectedSeq(seq uint64) AppendOpt {
+// (State's seq, advanced by FoldTail). Apply only: birth guards at 0 by
+// definition and SaveSnapshot guards at upTo.
+func WithExpectedSeq(seq uint64) ApplyOpt {
 	return func(o *appendOpts) { o.expectedSeq = &seq }
 }
 
-// CreateThing births a thing: publishing its first snapshot with the
+// CreateFromSnapshot births a thing: publishing its first snapshot with the
 // create-if-absent guard, server-enforced, no lock (pattern § 5.1). A
 // retried birth whose op already landed reports success; a birth of a
-// thing someone else created reports ErrThingExists.
-func (c *Client) CreateThing(ctx context.Context, log, thing string, state json.RawMessage, opts ...AppendOpt) (Ack, error) {
-	if err := contract.ValidateLogName(log); err != nil {
+// thing someone else created reports ErrInstanceExists.
+func (c *Client) createFromSnapshotTail(ctx context.Context, log, thing string, state json.RawMessage, opts ...ApplyOpt) (Ack, error) {
+	if err := contract.ValidateStoreName(log); err != nil {
 		return Ack{}, err
 	}
-	if err := contract.ValidateThing(thing); err != nil {
+	if err := contract.ValidateInstance(thing); err != nil {
 		return Ack{}, err
 	}
 	o := applyOpts(opts)
 	if o.expectedSeq != nil {
-		return Ack{}, errors.New("WithExpectedSeq: a birth guards at 0 by definition")
+		return Ack{}, errors.New("WithExpectedSeq: a create expects no history by definition")
 	}
 	if state == nil {
 		state = json.RawMessage(`{}`)
@@ -122,39 +122,39 @@ func (c *Client) CreateThing(ctx context.Context, log, thing string, state json.
 	if guardRefused(err) {
 		landed, ok, lerr := c.ownOpLanded(ctx, log, subject, o.opID)
 		if lerr != nil {
-			return Ack{}, fmt.Errorf("birth refused and %w", errors.Join(lerr, err))
+			return Ack{}, fmt.Errorf("create refused and %w", errors.Join(lerr, err))
 		}
 		if ok {
 			return landed, nil
 		}
-		return Ack{}, fmt.Errorf("%w: %s in %s", ErrThingExists, thing, log)
+		return Ack{}, fmt.Errorf("%w: %s in %s", ErrInstanceExists, thing, log)
 	}
-	return Ack{}, fmt.Errorf("birth %s: %w", subject, err)
+	return Ack{}, fmt.Errorf("create %s: %w", subject, err)
 }
 
-// CreateWith births a thing through a declared operation (0025): the
+// Create births a thing through a declared operation (0025): the
 // constructor is an ordinary operation of the thing's type — the payload
 // judged by that operation's schema — published with the same
 // create-if-absent guard a snapshot birth carries. Birth is an invocation
 // mode, not a marker on the operation. A retried birth whose op already
 // landed reports success; a birth of a thing someone else created reports
-// ErrThingExists.
-func (c *Client) CreateWith(ctx context.Context, log, thing, opType string, payload []byte, opts ...AppendOpt) (Ack, error) {
-	if err := contract.ValidateLogName(log); err != nil {
+// ErrInstanceExists.
+func (c *Client) createTail(ctx context.Context, log, thing, opType string, payload []byte, opts ...ApplyOpt) (Ack, error) {
+	if err := contract.ValidateStoreName(log); err != nil {
 		return Ack{}, err
 	}
-	if err := contract.ValidateThing(thing); err != nil {
+	if err := contract.ValidateInstance(thing); err != nil {
 		return Ack{}, err
 	}
 	if opType == "" {
 		return Ack{}, errors.New("op type: must not be empty")
 	}
 	if opType == contract.OpTypeSnapshot {
-		return Ack{}, errors.New("create with snapshot: CreateThing is the snapshot birth")
+		return Ack{}, errors.New("create with snapshot: CreateFromSnapshot is the snapshot create")
 	}
 	o := applyOpts(opts)
 	if o.expectedSeq != nil {
-		return Ack{}, errors.New("WithExpectedSeq: a birth guards at 0 by definition")
+		return Ack{}, errors.New("WithExpectedSeq: a create expects no history by definition")
 	}
 	if payload == nil {
 		payload = []byte(`{}`)
@@ -185,17 +185,17 @@ func (c *Client) CreateWith(ctx context.Context, log, thing, opType string, payl
 	if guardRefused(err) {
 		landed, ok, lerr := c.ownOpLanded(ctx, log, subject, o.opID)
 		if lerr != nil {
-			return Ack{}, fmt.Errorf("birth refused and %w", errors.Join(lerr, err))
+			return Ack{}, fmt.Errorf("create refused and %w", errors.Join(lerr, err))
 		}
 		if ok {
 			return landed, nil
 		}
-		return Ack{}, fmt.Errorf("%w: %s in %s", ErrThingExists, thing, log)
+		return Ack{}, fmt.Errorf("%w: %s in %s", ErrInstanceExists, thing, log)
 	}
-	return Ack{}, fmt.Errorf("birth %s: %w", subject, err)
+	return Ack{}, fmt.Errorf("create %s: %w", subject, err)
 }
 
-// SaveVersion publishes an app-materialised snapshot that replaces the
+// SaveSnapshot publishes an app-materialised snapshot that replaces the
 // thing's history in one write (pattern § 5.2) — the app-initiated rollup.
 // This is the application's call, so it may compact a history holding
 // effect-none ops the node's own triggers refuse to touch: the app folded
@@ -205,16 +205,16 @@ func (c *Client) CreateWith(ctx context.Context, log, thing, opType string, payl
 // expected-sequence guard makes it race-safe: if anything landed after
 // upTo the server refuses, nothing changes, and the caller re-reads and
 // retries (ErrStaleVersion). A retried save whose op already landed
-// reports success, like CreateThing.
-func (c *Client) SaveVersion(ctx context.Context, log, thing string, state json.RawMessage, frontier []string, upTo uint64, opts ...AppendOpt) (Ack, error) {
-	if err := contract.ValidateLogName(log); err != nil {
+// reports success, like CreateFromSnapshot.
+func (c *Client) saveSnapshotTail(ctx context.Context, log, thing string, state json.RawMessage, frontier []string, upTo uint64, opts ...ApplyOpt) (Ack, error) {
+	if err := contract.ValidateStoreName(log); err != nil {
 		return Ack{}, err
 	}
-	if err := contract.ValidateThing(thing); err != nil {
+	if err := contract.ValidateInstance(thing); err != nil {
 		return Ack{}, err
 	}
 	if upTo == 0 {
-		return Ack{}, errors.New("upTo: the seq of the last op the state covers; birth is CreateThing")
+		return Ack{}, errors.New("upTo: the sequence of the last operation the state covers; a first write is CreateFromSnapshot")
 	}
 	o := applyOpts(opts)
 	if o.expectedSeq != nil {
@@ -271,17 +271,17 @@ func (c *Client) SaveVersion(ctx context.Context, log, thing string, state json.
 	return Ack{}, fmt.Errorf("save version %s: %w", subject, err)
 }
 
-// Append publishes one operation — a direct JetStream publish, nothing in
+// Apply publishes one operation — a direct JetStream publish, nothing in
 // between. Pre-flight validates the payload against the log's declared
 // schema for the op type, when one exists; the log's vocabulary is
 // discoverable, not enforced at the wire (0008 point 1). WithExpectedSeq
 // arms the optional expected-sequence guard (0018) — read-validate-append
 // with the server as the only arbiter; unguarded stays the default.
-func (c *Client) Append(ctx context.Context, log, thing, opType string, payload []byte, opts ...AppendOpt) (Ack, error) {
-	if err := contract.ValidateLogName(log); err != nil {
+func (c *Client) applyTail(ctx context.Context, log, thing, opType string, payload []byte, opts ...ApplyOpt) (Ack, error) {
+	if err := contract.ValidateStoreName(log); err != nil {
 		return Ack{}, err
 	}
-	if err := contract.ValidateThing(thing); err != nil {
+	if err := contract.ValidateInstance(thing); err != nil {
 		return Ack{}, err
 	}
 	if opType == "" {
@@ -326,7 +326,7 @@ func (c *Client) Append(ctx context.Context, log, thing, opType string, payload 
 		if ok {
 			return landed, nil
 		}
-		return Ack{}, fmt.Errorf("%w: %s in %s", ErrThingMoved, thing, log)
+		return Ack{}, fmt.Errorf("%w: %s in %s", ErrInstanceMoved, thing, log)
 	}
 	return Ack{}, fmt.Errorf("append %s: %w", subject, err)
 }
@@ -357,7 +357,7 @@ func (c *Client) ownOpLanded(ctx context.Context, log, subject, opID string) (Ac
 	return Ack{}, false, nil
 }
 
-func applyOpts(opts []AppendOpt) appendOpts {
+func applyOpts(opts []ApplyOpt) appendOpts {
 	o := appendOpts{}
 	for _, apply := range opts {
 		apply(&o)
@@ -372,10 +372,10 @@ func applyOpts(opts []AppendOpt) appendOpts {
 // the declared schema.
 var ErrSchemaViolation = errors.New("payload fails the declared schema")
 
-// ErrUndeclaredAspect is a pre-flight refusal: the thing's prefix resolves
+// ErrUndeclaredChild is a pre-flight refusal: the thing's prefix resolves
 // to a parent type that does not declare the created type as an aspect
 // (0022 § 3). The fold would mark the subject; the SDK refuses first.
-var ErrUndeclaredAspect = errors.New("undeclared aspect")
+var ErrUndeclaredChild = errors.New("undeclared child")
 
 // ErrUndefinedOperation is a pre-flight refusal: the thing's type defines
 // no such operation (0021 § 2).
@@ -406,7 +406,7 @@ func (t *typeCache) bucket(ctx context.Context) (jetstream.KeyValue, error) {
 	}
 	meta, err := t.js.KeyValue(ctx, contract.MetaBucket)
 	if err != nil {
-		return nil, fmt.Errorf("open META: %w", err)
+		return nil, fmt.Errorf("cannot read the definitions: %w", err)
 	}
 	t.mu.Lock()
 	t.meta = meta
@@ -421,8 +421,8 @@ func (t *typeCache) resolve(ctx context.Context, log, thing string) (contract.Re
 	if err != nil {
 		return contract.Resolution{}, err
 	}
-	return contract.ResolveTail(thing, func(name string) (*contract.TypeRecord, bool, error) {
-		entry, err := meta.Get(ctx, contract.MetaLogType(log, name))
+	return contract.ResolveInstance(thing, func(name string) (*contract.TypeRecord, bool, error) {
+		entry, err := meta.Get(ctx, contract.MetaStoreType(log, name))
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return nil, false, nil
 		}
@@ -473,7 +473,7 @@ func (t *typeCache) preflightAppend(ctx context.Context, log, thing, opType stri
 	}
 	switch res.Kind {
 	case contract.ResolvedUndeclared:
-		return fmt.Errorf("%w: %s", ErrUndeclaredAspect, res.Detail)
+		return fmt.Errorf("%w: %s", ErrUndeclaredChild, res.Detail)
 	case contract.ResolvedTyped:
 		def, ok := res.Record.Operations[opType]
 		if !ok {
@@ -504,7 +504,7 @@ func (t *typeCache) preflightSnapshot(ctx context.Context, log, thing string, st
 	}
 	switch res.Kind {
 	case contract.ResolvedUndeclared:
-		return fmt.Errorf("%w: %s", ErrUndeclaredAspect, res.Detail)
+		return fmt.Errorf("%w: %s", ErrUndeclaredChild, res.Detail)
 	case contract.ResolvedTyped:
 		if len(res.Record.Schema) == 0 {
 			return nil
@@ -518,7 +518,7 @@ func (t *typeCache) preflightSnapshot(ctx context.Context, log, thing string, st
 			return fmt.Errorf("%w: state is not JSON: %v", ErrSchemaViolation, err)
 		}
 		if err := sch.Validate(v); err != nil {
-			return fmt.Errorf("%w: %s %s: state fails the thing schema: %v", ErrSchemaViolation, log, res.TypeName, err)
+			return fmt.Errorf("%w: %s %s: state fails the type's schema: %v", ErrSchemaViolation, log, res.TypeName, err)
 		}
 	}
 	return nil

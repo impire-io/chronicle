@@ -43,7 +43,10 @@ func newGraphRun(log string, rules []contract.GraphEdgeRule, logger *slog.Logger
 // Upsert recomputes a thing's out-edges from its freshly folded state —
 // a pure function of current state (0015): the old edges go wholesale,
 // the new ones land, and the reverse index follows.
-func (r *graphRun) Upsert(thing string, state json.RawMessage) {
+func (r *graphRun) Upsert(tail string, state json.RawMessage) {
+	// The graph is keyed by paths — the user's spelling, which is also
+	// what a target field in state is expected to hold (decision 0044).
+	thing := contract.TailPath(tail)
 	edges := r.extract(thing, state)
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -156,7 +159,7 @@ type neighborsResult struct {
 // DepthCapped says the requested depth exceeded the cap, Truncated that
 // the limit bit before the frontier emptied.
 type walkResult struct {
-	Things      []contract.GraphVisit
+	Instances   []contract.GraphVisit
 	Total       uint64
 	DepthCapped bool
 	Truncated   bool
@@ -168,10 +171,10 @@ func (r *graphRun) neighbors(req client.GraphQueryRequest) neighborsResult {
 	r.mu.RLock()
 	var edges []contract.GraphEdge
 	if req.Direction == contract.GraphDirectionOut || req.Direction == contract.GraphDirectionBoth || req.Direction == "" {
-		edges = append(edges, r.fwd[req.Thing]...)
+		edges = append(edges, r.fwd[req.Instance]...)
 	}
 	if req.Direction == contract.GraphDirectionIn || req.Direction == contract.GraphDirectionBoth {
-		edges = append(edges, r.rev[req.Thing]...)
+		edges = append(edges, r.rev[req.Instance]...)
 	}
 	r.mu.RUnlock()
 
@@ -227,8 +230,8 @@ func (r *graphRun) walk(req client.GraphQueryRequest) walkResult {
 		thing string
 		depth int
 	}
-	visited := map[string]struct{}{req.Thing: {}}
-	queue := []frontier{{req.Thing, 0}}
+	visited := map[string]struct{}{req.Instance: {}}
+	queue := []frontier{{req.Instance, 0}}
 	var visits []contract.GraphVisit
 	for len(queue) > 0 {
 		cur := queue[0]
@@ -263,12 +266,12 @@ func (r *graphRun) walk(req client.GraphQueryRequest) walkResult {
 				continue
 			}
 			visited[next] = struct{}{}
-			visits = append(visits, contract.GraphVisit{Thing: next, Depth: cur.depth + 1, Via: e.Label})
+			visits = append(visits, contract.GraphVisit{Instance: next, Depth: cur.depth + 1, Via: e.Label})
 			if req.Limit > 0 && len(visits) >= req.Limit {
-				return walkResult{Things: visits, Total: uint64(len(visits)), DepthCapped: capped, Truncated: true}
+				return walkResult{Instances: visits, Total: uint64(len(visits)), DepthCapped: capped, Truncated: true}
 			}
 			queue = append(queue, frontier{next, cur.depth + 1})
 		}
 	}
-	return walkResult{Things: visits, Total: uint64(len(visits)), DepthCapped: capped}
+	return walkResult{Instances: visits, Total: uint64(len(visits)), DepthCapped: capped}
 }

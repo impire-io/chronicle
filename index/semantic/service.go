@@ -21,7 +21,7 @@ import (
 // Config names the one index this service materializes and the provider
 // the install carries.
 type Config struct {
-	Log      string
+	Store    string
 	Index    string
 	Provider ProviderConfig
 	// ChunkBytes overrides the chunk budget; zero means the contract
@@ -60,16 +60,16 @@ func Start(ctx context.Context, nc *nats.Conn, cfg Config) (*Service, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open META: %w", err)
 	}
-	entry, err := meta.Get(ctx, contract.MetaIndex(cfg.Log, cfg.Index))
+	entry, err := meta.Get(ctx, contract.MetaIndex(cfg.Store, cfg.Index))
 	if err != nil {
-		return nil, fmt.Errorf("read declaration for %s/%s: %w", cfg.Log, cfg.Index, err)
+		return nil, fmt.Errorf("read declaration for %s/%s: %w", cfg.Store, cfg.Index, err)
 	}
 	var decl contract.IndexDeclaration
 	if err := json.Unmarshal(entry.Value(), &decl); err != nil {
 		return nil, fmt.Errorf("decode declaration: %w", err)
 	}
 	if decl.Kind != contract.IndexKindSemantic {
-		return nil, fmt.Errorf("declaration %s/%s is kind %q, not semantic", cfg.Log, cfg.Index, decl.Kind)
+		return nil, fmt.Errorf("declaration %s/%s is kind %q, not semantic", cfg.Store, cfg.Index, decl.Kind)
 	}
 	scfg, err := contract.ParseSemanticConfig(decl.Config)
 	if err != nil {
@@ -86,14 +86,14 @@ func Start(ctx context.Context, nc *nats.Conn, cfg Config) (*Service, error) {
 	}
 
 	proj, err := projection.Start(ctx, nc, projection.Config{
-		Log:    cfg.Log,
+		Store:  cfg.Store,
 		Index:  cfg.Index,
 		Kind:   "semantic index",
 		Source: scfg.Source,
 		Types:  scfg.Types,
 		Logger: logger,
 		NewRun: func() (projection.Run, error) {
-			return newSemanticRun(cfg.Log, prov, model, scfg.Fields, cfg.ChunkBytes, logger), nil
+			return newSemanticRun(cfg.Store, prov, model, scfg.Fields, cfg.ChunkBytes, logger), nil
 		},
 	})
 	if err != nil {
@@ -121,14 +121,14 @@ func Start(ctx context.Context, nc *nats.Conn, cfg Config) (*Service, error) {
 		Name:        "chronicle-index-semantic",
 		Version:     version.Version,
 		Description: "chronicle semantic index: meaning over thing state through the install's embedding provider",
-		Metadata:    map[string]string{"log": cfg.Log, "index": cfg.Index, "model": model},
+		Metadata:    map[string]string{"log": cfg.Store, "index": cfg.Index, "model": model},
 	})
 	if err != nil {
 		proj.Stop()
 		return nil, fmt.Errorf("register service: %w", err)
 	}
 	if err := m.AddEndpoint("query", micro.HandlerFunc(s.handleQuery),
-		micro.WithEndpointSubject(client.IndexQuerySubject(cfg.Log, cfg.Index))); err != nil {
+		micro.WithEndpointSubject(client.IndexQuerySubject(cfg.Store, cfg.Index))); err != nil {
 		_ = m.Stop()
 		proj.Stop()
 		return nil, fmt.Errorf("add query endpoint: %w", err)

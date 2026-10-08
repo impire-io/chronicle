@@ -31,7 +31,7 @@ func TestIndexVerbs(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	if _, err := alice.CreateLog(ctx, "orders", ""); err != nil {
+	if _, err := alice.CreateStore(ctx, "orders", ""); err != nil {
 		t.Fatalf("create log: %v", err)
 	}
 
@@ -61,19 +61,19 @@ func TestIndexVerbs(t *testing.T) {
 	// and its narrowing, graph requires edge rules and stays state-only.
 	_, err = alice.DeclareIndex(ctx, "orders", "text2", "search", json.RawMessage(`{"anything":true}`))
 	wantServiceError(t, err, "bad-config")
-	if _, err = alice.DeclareIndex(ctx, "orders", "trail", "search", json.RawMessage(`{"source":"ops"}`)); err != nil {
+	if _, err = alice.DeclareIndex(ctx, "orders", "trail", "search", json.RawMessage(`{"source":"history"}`)); err != nil {
 		t.Fatalf("declare ops-sourced search: %v", err)
 	}
 	_, err = alice.DeclareIndex(ctx, "orders", "refs", "graph", nil)
 	wantServiceError(t, err, "bad-config")
-	_, err = alice.DeclareIndex(ctx, "orders", "refs", "graph", json.RawMessage(`{"edges":[{"field":"customer"}],"source":"ops"}`))
+	_, err = alice.DeclareIndex(ctx, "orders", "refs", "graph", json.RawMessage(`{"edges":[{"field":"customer"}],"source":"history"}`))
 	wantServiceError(t, err, "bad-config")
 
 	// Names obey the grammar; logs must exist.
 	_, err = alice.DeclareIndex(ctx, "orders", "Bad_Name", "search", nil)
 	wantServiceError(t, err, "bad-index-name")
 	_, err = alice.DeclareIndex(ctx, "ghost", "text", "search", nil)
-	wantServiceError(t, err, "no-such-log")
+	wantServiceError(t, err, "no-such-store")
 
 	// Declaring is configuration: admin only.
 	rita, err := client.Wrap(alice.Conn(), "rita")

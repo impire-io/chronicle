@@ -55,25 +55,25 @@ func TestUpsertRewiresWholesale(t *testing.T) {
 	r.Upsert("invoice-1", json.RawMessage(`{"customer":"cust-1"}`))
 	r.Upsert("invoice-2", json.RawMessage(`{"customer":"cust-1"}`))
 
-	in := r.neighbors(client.GraphQueryRequest{Thing: "cust-1", Direction: contract.GraphDirectionIn})
+	in := r.neighbors(client.GraphQueryRequest{Instance: "cust-1", Direction: contract.GraphDirectionIn})
 	if in.Total != 2 {
 		t.Fatalf("cust-1 in-edges = %d, want 2", in.Total)
 	}
 
 	// invoice-1 moves to cust-2: the old edge must vanish from both maps.
 	r.Upsert("invoice-1", json.RawMessage(`{"customer":"cust-2"}`))
-	in = r.neighbors(client.GraphQueryRequest{Thing: "cust-1", Direction: contract.GraphDirectionIn})
+	in = r.neighbors(client.GraphQueryRequest{Instance: "cust-1", Direction: contract.GraphDirectionIn})
 	if in.Total != 1 || in.Edges[0].From != "invoice-2" {
 		t.Fatalf("after rewire cust-1 in-edges = %+v", in)
 	}
-	out := r.neighbors(client.GraphQueryRequest{Thing: "invoice-1", Direction: contract.GraphDirectionOut})
+	out := r.neighbors(client.GraphQueryRequest{Instance: "invoice-1", Direction: contract.GraphDirectionOut})
 	if out.Total != 1 || out.Edges[0].To != "cust-2" {
 		t.Fatalf("after rewire invoice-1 out-edges = %+v", out)
 	}
 
 	// A state without the field clears the thing's edges entirely.
 	r.Upsert("invoice-1", json.RawMessage(`{"paid":true}`))
-	out = r.neighbors(client.GraphQueryRequest{Thing: "invoice-1"})
+	out = r.neighbors(client.GraphQueryRequest{Instance: "invoice-1"})
 	if out.Total != 0 {
 		t.Fatalf("cleared thing still has edges: %+v", out)
 	}
@@ -88,20 +88,20 @@ func TestWalkIsBreadthFirstCycleSafeAndCapped(t *testing.T) {
 	r.Upsert("b", json.RawMessage(`{"next":"c"}`))
 	r.Upsert("c", json.RawMessage(`{"next":"a"}`))
 
-	walk := r.walk(client.GraphQueryRequest{Thing: "a", Depth: 10})
+	walk := r.walk(client.GraphQueryRequest{Instance: "a", Depth: 10})
 	if !walk.DepthCapped {
 		t.Fatal("depth 10 should report the cap")
 	}
-	if len(walk.Things) != 2 {
-		t.Fatalf("cycle walk visited %+v, want b and c once each", walk.Things)
+	if len(walk.Instances) != 2 {
+		t.Fatalf("cycle walk visited %+v, want b and c once each", walk.Instances)
 	}
-	if walk.Things[0].Thing != "b" || walk.Things[0].Depth != 1 || walk.Things[1].Thing != "c" || walk.Things[1].Depth != 2 {
-		t.Fatalf("walk order wrong: %+v", walk.Things)
+	if walk.Instances[0].Instance != "b" || walk.Instances[0].Depth != 1 || walk.Instances[1].Instance != "c" || walk.Instances[1].Depth != 2 {
+		t.Fatalf("walk order wrong: %+v", walk.Instances)
 	}
 
-	one := r.walk(client.GraphQueryRequest{Thing: "a", Depth: 1})
-	if len(one.Things) != 1 || one.Things[0].Thing != "b" {
-		t.Fatalf("depth-1 walk = %+v", one.Things)
+	one := r.walk(client.GraphQueryRequest{Instance: "a", Depth: 1})
+	if len(one.Instances) != 1 || one.Instances[0].Instance != "b" {
+		t.Fatalf("depth-1 walk = %+v", one.Instances)
 	}
 }
 
@@ -119,7 +119,7 @@ func TestParseGraphConfigIsWriteSideStrict(t *testing.T) {
 		"dotted hole":  json.RawMessage(`{"edges":[{"field":"a..b"}]}`),
 		"unknown keys": json.RawMessage(`{"edges":[{"field":"a"}],"mystery":true}`),
 		"duplicate":    json.RawMessage(`{"edges":[{"field":"a"},{"field":"a"}]}`),
-		"ops source":   json.RawMessage(`{"edges":[{"field":"a"}],"source":"ops"}`),
+		"ops source":   json.RawMessage(`{"edges":[{"field":"a"}],"source":"history"}`),
 	} {
 		if _, err := contract.ParseGraphConfig(raw); err == nil {
 			t.Fatalf("%s config accepted", name)

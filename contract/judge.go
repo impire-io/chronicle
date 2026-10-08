@@ -80,14 +80,14 @@ func JudgeSnapshot(rec *TypeRecord, state json.RawMessage) string {
 	}
 	sch, err := CompileSchema(rec.Schema)
 	if err != nil {
-		return fmt.Sprintf("thing schema does not compile: %v", err)
+		return fmt.Sprintf("the type's schema does not compile: %v", err)
 	}
 	var v any
 	if err := json.Unmarshal(state, &v); err != nil {
 		return fmt.Sprintf("state is not JSON: %v", err)
 	}
 	if err := sch.Validate(v); err != nil {
-		return fmt.Sprintf("state fails the thing schema: %v", err)
+		return fmt.Sprintf("state fails the type's schema: %v", err)
 	}
 	return ""
 }
@@ -158,7 +158,7 @@ func FoldStep(res Resolution, state json.RawMessage, op Op) FoldOutcome {
 		return FoldOutcome{Decision: Reset, State: snap.State, Moved: true}
 	}
 	if res.Kind != ResolvedTyped {
-		return FoldOutcome{Decision: UnknownType, Detail: "thing is untyped: " + res.Detail, State: state}
+		return FoldOutcome{Decision: UnknownType, Detail: "instance is untyped: " + res.Detail, State: state}
 	}
 	decision, detail := JudgeRecord(res.Record, op)
 	if decision != Merge {

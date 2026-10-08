@@ -6,60 +6,71 @@ import (
 	"strings"
 )
 
-// LogNamePattern is the wire contract's rule: a single lowercase token,
-// [a-z0-9-]+ — the grammar of log, index, type, principal and aspect
-// names. The artifact carries it; the SDKs restate it.
-const LogNamePattern = `^[a-z0-9-]+$`
+// NamePattern is the wire contract's rule for a name: a single lowercase
+// token, [a-z0-9-]+ — the grammar of store, index, type, principal and
+// child names. The artifact carries it; the SDKs restate it.
+const NamePattern = `^[a-z0-9-]+$`
 
-// ThingTokenPattern is one thing-tail token's grammar — deliberately
-// narrower than NATS allows: it keeps every thing tail a valid KV key,
-// the charset edge case 0008 flags for build-time verification.
-const ThingTokenPattern = `^[a-zA-Z0-9_-]+$`
+// InstanceTokenPattern is one token of an instance's path — deliberately
+// narrower than NATS allows: it keeps every stored tail a valid KV key,
+// the charset edge case 0008 flags for build-time verification. A token
+// holds no "." and no "/", so the two spellings of a path convert both
+// ways without ambiguity.
+const InstanceTokenPattern = `^[a-zA-Z0-9_-]+$`
 
-// ReservedLogNames is the short reserved list refused at log creation
+// PathSeparator is how a user writes a path: invoice/inv-1/comments/c-3.
+// Stored — as a subject tail and a state-bucket key — the same tokens are
+// joined with TailSeparator (decision 0044 § 2: the dotted form is how it
+// is stored; a user types slashes).
+const (
+	PathSeparator = "/"
+	TailSeparator = "."
+)
+
+// ReservedStoreNames is the short reserved list refused at store creation
 // (wire contract § subject grammar), sorted.
-var ReservedLogNames = []string{"api", "meta", "sys"}
+var ReservedStoreNames = []string{"api", "meta", "sys"}
 
-var logName = regexp.MustCompile(LogNamePattern)
+var nameToken = regexp.MustCompile(NamePattern)
 
-var reservedLogNames = func() map[string]bool {
+var reservedStoreNames = func() map[string]bool {
 	m := map[string]bool{}
-	for _, name := range ReservedLogNames {
+	for _, name := range ReservedStoreNames {
 		m[name] = true
 	}
 	return m
 }()
 
-// ValidateLogName refuses anything but a single lowercase [a-z0-9-]+ token
-// outside the reserved list.
-func ValidateLogName(log string) error {
-	if !logName.MatchString(log) {
-		return fmt.Errorf("log name %q: must match [a-z0-9-]+", log)
+// ValidateStoreName refuses anything but a single lowercase [a-z0-9-]+
+// token outside the reserved list.
+func ValidateStoreName(store string) error {
+	if !nameToken.MatchString(store) {
+		return fmt.Errorf("store name %q: must match [a-z0-9-]+", store)
 	}
-	if reservedLogNames[log] {
-		return fmt.Errorf("log name %q is reserved", log)
+	if reservedStoreNames[store] {
+		return fmt.Errorf("store name %q is reserved", store)
 	}
 	return nil
 }
 
 // ValidateIndexName refuses anything but a single lowercase [a-z0-9-]+
-// token — the log-name grammar without the reserved list (05-indexes.md).
+// token — the name grammar without the reserved list (05-indexes.md).
 // The name is a subject token on the query surface and a META key segment;
 // dots would fork both grammars.
 func ValidateIndexName(index string) error {
-	if !logName.MatchString(index) {
+	if !nameToken.MatchString(index) {
 		return fmt.Errorf("index name %q: must match [a-z0-9-]+", index)
 	}
 	return nil
 }
 
 // ValidateTypeName refuses anything but a single lowercase [a-z0-9-]+
-// token — the log-name grammar without the reserved list (decision 0021).
-// A type name is a subject token in the pair addressing and a META key
-// segment; dots would collide with the retired op-type keys. Aspect
-// segment names follow the same grammar.
+// token — the name grammar without the reserved list (decision 0021).
+// A type name is a token in the path grammar and a META key segment;
+// dots would collide with the retired op-type keys. Child names follow
+// the same grammar.
 func ValidateTypeName(name string) error {
-	if !logName.MatchString(name) {
+	if !nameToken.MatchString(name) {
 		return fmt.Errorf("type name %q: must match [a-z0-9-]+", name)
 	}
 	return nil
@@ -71,33 +82,81 @@ func ValidateTypeName(name string) error {
 // .creds filename. The service principal is reserved: it is never a
 // member.
 func ValidatePrincipalName(name string) error {
-	if !logName.MatchString(name) {
+	if !nameToken.MatchString(name) {
 		return fmt.Errorf("principal %q: must match [a-z0-9-]+", name)
 	}
 	if name == ServicePrincipal {
-		return fmt.Errorf("principal %q is reserved for the tenant's own service", name)
+		return fmt.Errorf("principal %q is reserved for the account's own service", name)
 	}
 	return nil
 }
 
-// ValidateThing refuses a thing that is not one or more subject-token-safe
-// segments joined with ".". Identifiers are the customer's domain: chronicle
-// validates subject-token safety and mints nothing (wire contract § subject
-// grammar). Tokens must also be KV-key-safe, since the thing tail is the
-// state bucket's key (03-meta-and-state.md § state buckets).
-func ValidateThing(thing string) error {
-	if thing == "" {
-		return fmt.Errorf("thing: must be one or more tokens")
+// ValidateInstance refuses a stored tail that is not one or more
+// token-safe segments joined with ".". Identifiers are the customer's
+// domain: chronicle validates token safety and mints nothing (wire
+// contract § subject grammar). Tokens must also be KV-key-safe, since the
+// tail is the state bucket's key (03-meta-and-state.md § state buckets).
+// The user-facing spelling is the path; ValidatePath and PathTail are
+// its checks.
+func ValidateInstance(tail string) error {
+	if tail == "" {
+		return fmt.Errorf("instance: must be one or more tokens")
 	}
-	for _, tok := range strings.Split(thing, ".") {
+	for _, tok := range strings.Split(tail, TailSeparator) {
 		if tok == "" {
-			return fmt.Errorf("thing %q: empty token", thing)
+			return fmt.Errorf("instance %q: empty token", tail)
 		}
-		if !thingToken.MatchString(tok) {
-			return fmt.Errorf("thing token %q: must match [a-zA-Z0-9_-]+", tok)
+		if !instanceToken.MatchString(tok) {
+			return fmt.Errorf("instance token %q: must match [a-zA-Z0-9_-]+", tok)
 		}
 	}
 	return nil
 }
 
-var thingToken = regexp.MustCompile(ThingTokenPattern)
+// ValidatePath refuses a path that is not one or more token-safe segments
+// joined with "/" — the user's spelling of an instance, type/id and a
+// name/id pair per level of nesting. A dotted spelling is refused with the
+// grammar named: one spelling, never two (decision 0044 § 6).
+func ValidatePath(path string) error {
+	if path == "" {
+		return fmt.Errorf("path: must be type/id, with /name/id for each child")
+	}
+	for _, tok := range strings.Split(path, PathSeparator) {
+		if tok == "" {
+			return fmt.Errorf("path %q: empty segment (a path is type/id, with /name/id for each child)", path)
+		}
+		if !instanceToken.MatchString(tok) {
+			if strings.Contains(tok, TailSeparator) {
+				return fmt.Errorf("path %q: segments are separated by \"/\", not \".\" (a path is type/id, with /name/id for each child)", path)
+			}
+			return fmt.Errorf("path segment %q: must match [a-zA-Z0-9_-]+", tok)
+		}
+	}
+	return nil
+}
+
+// PathTail converts a path to the tail it is stored under: the same
+// tokens, dotted. It validates the path first.
+func PathTail(path string) (string, error) {
+	if err := ValidatePath(path); err != nil {
+		return "", err
+	}
+	return strings.ReplaceAll(path, PathSeparator, TailSeparator), nil
+}
+
+// TailPath converts a stored tail back to the path a user reads.
+func TailPath(tail string) string {
+	return strings.ReplaceAll(tail, TailSeparator, PathSeparator)
+}
+
+// PathType is the type a path names: its first segment. The grammar's
+// first pair is type/id (decision 0021 § 4); whether the type is defined
+// is resolution's question, not the grammar's.
+func PathType(path string) string {
+	if i := strings.Index(path, PathSeparator); i >= 0 {
+		return path[:i]
+	}
+	return path
+}
+
+var instanceToken = regexp.MustCompile(InstanceTokenPattern)

@@ -49,10 +49,10 @@ func TestUpWebsocketServesTheBrowser(t *testing.T) {
 		t.Fatalf("connect as admin over websocket: %v", err)
 	}
 	defer admin.Close()
-	if _, err := admin.CreateLog(ctx, "orders", "the orders"); err != nil {
+	if _, err := admin.CreateStore(ctx, "orders", "the orders"); err != nil {
 		t.Fatalf("create log: %v", err)
 	}
-	if _, err := admin.CreateThing(ctx, "orders", "note-1", json.RawMessage(`{"title":"over the socket"}`)); err != nil {
+	if _, err := admin.CreateFromSnapshot(ctx, "orders", "note-1", json.RawMessage(`{"title":"over the socket"}`)); err != nil {
 		t.Fatalf("create thing: %v", err)
 	}
 	waitState(ctx, t, admin, "orders", "note-1", "over the socket")

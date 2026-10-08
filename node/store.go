@@ -15,9 +15,9 @@ import (
 	"github.com/impire-io/chronicle/registry"
 )
 
-// listLogs reads the authoritative log inventory: every log.<log>.config
+// listStores reads the authoritative log inventory: every log.<log>.config
 // key in META.
-func (n *node) listLogs(ctx context.Context) ([]string, error) {
+func (n *node) listStores(ctx context.Context) ([]string, error) {
 	keys, err := n.meta.Keys(ctx)
 	if errors.Is(err, jetstream.ErrNoKeysFound) {
 		return nil, nil
@@ -27,7 +27,7 @@ func (n *node) listLogs(ctx context.Context) ([]string, error) {
 	}
 	var logs []string
 	for _, k := range keys {
-		name, ok := strings.CutPrefix(k, contract.MetaLogConfigPrefix)
+		name, ok := strings.CutPrefix(k, contract.MetaStoreConfigPrefix)
 		if !ok {
 			continue
 		}
@@ -53,11 +53,11 @@ func (n *node) requireRole(ctx context.Context, principal string, roles ...strin
 // changed — history, aspects, or an operation's effect — making the log's
 // derived state suspect.
 func (n *node) recordType(ctx context.Context, r client.TypeDefineRequest) (uint64, bool, error) {
-	key := contract.MetaLogType(r.Log, r.Type)
+	key := contract.MetaStoreType(r.Store, r.Type)
 	next := contract.TypeRecord{
 		Schema:     r.Schema,
 		History:    r.History,
-		Aspects:    r.Aspects,
+		Children:   r.Children,
 		Operations: make(map[string]contract.OpDef, len(r.Operations)),
 	}
 	for op, def := range r.Operations {

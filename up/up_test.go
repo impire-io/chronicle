@@ -43,13 +43,13 @@ func TestUpServesOneTenant(t *testing.T) {
 		t.Fatalf("connect as admin: %v", err)
 	}
 	defer admin.Close()
-	if _, err := admin.CreateLog(ctx, "orders", "the orders"); err != nil {
+	if _, err := admin.CreateStore(ctx, "orders", "the orders"); err != nil {
 		t.Fatalf("create log: %v", err)
 	}
 	if _, err := admin.DeclareIndex(ctx, "orders", "text", contract.IndexKindSearch, nil); err != nil {
 		t.Fatalf("declare index: %v", err)
 	}
-	if _, err := admin.CreateThing(ctx, "orders", "note-1", json.RawMessage(`{"title":"quantum widgets"}`)); err != nil {
+	if _, err := admin.CreateFromSnapshot(ctx, "orders", "note-1", json.RawMessage(`{"title":"quantum widgets"}`)); err != nil {
 		t.Fatalf("create thing: %v", err)
 	}
 	waitState(ctx, t, admin, "orders", "note-1", "quantum")
@@ -62,7 +62,7 @@ func TestUpServesOneTenant(t *testing.T) {
 		t.Fatalf("connect as mallory: %v", err)
 	}
 	defer stranger.Close()
-	if _, err := stranger.CreateLog(ctx, "theirs", ""); err == nil || !strings.Contains(err.Error(), "not a member") {
+	if _, err := stranger.CreateStore(ctx, "theirs", ""); err == nil || !strings.Contains(err.Error(), "not a member") {
 		t.Fatalf("non-member create log: %v", err)
 	}
 
@@ -128,7 +128,7 @@ func waitHit(ctx context.Context, t *testing.T, c *client.Client, log, index, qu
 				err = herr
 				break
 			}
-			if h.Thing == wantThing {
+			if h.Instance == wantThing {
 				return
 			}
 		}

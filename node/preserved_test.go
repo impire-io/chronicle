@@ -21,11 +21,11 @@ func TestPreservedHistory(t *testing.T) {
 	defer cancel()
 
 	// Write-side strict: a value outside the vocabulary is refused.
-	if _, err := alice.CreateLog(ctx, "audit", "", client.WithHistory("forever")); err == nil {
+	if _, err := alice.CreateStore(ctx, "audit", "", client.WithHistory("forever")); err == nil {
 		t.Fatal("unknown history value accepted")
 	}
 
-	if _, err := alice.CreateLog(ctx, "audit", "the audit trail", client.WithHistory(contract.HistoryPreserved)); err != nil {
+	if _, err := alice.CreateStore(ctx, "audit", "the audit trail", client.WithHistory(contract.HistoryFull)); err != nil {
 		t.Fatalf("create preserved log: %v", err)
 	}
 	// A fully merge-covered, typed compactable thing — sweep-eligible on
@@ -33,31 +33,31 @@ func TestPreservedHistory(t *testing.T) {
 	defineType(ctx, t, alice, "audit", "case", client.TypeDefinition{
 		Operations: map[string]contract.OpDef{"status.set": {Schema: json.RawMessage(`{"type":"object"}`), Effect: contract.EffectMerge}},
 	})
-	if _, err := alice.CreateThing(ctx, "audit", "case.case-1", json.RawMessage(`{"n":0}`)); err != nil {
+	if _, err := alice.CreateFromSnapshot(ctx, "audit", "case/case-1", json.RawMessage(`{"n":0}`)); err != nil {
 		t.Fatalf("birth: %v", err)
 	}
-	last, err := alice.Append(ctx, "audit", "case.case-1", "status.set", []byte(`{"status":"open"}`))
+	last, err := alice.Apply(ctx, "audit", "case/case-1", "status.set", []byte(`{"status":"open"}`))
 	if err != nil {
 		t.Fatalf("append: %v", err)
 	}
 
 	// The node declines the whole log, with the declaration named.
-	res, err := alice.RollupThing(ctx, "audit", "case.case-1")
+	res, err := alice.Snapshot(ctx, "audit", "case/case-1")
 	if err != nil {
 		t.Fatalf("rollup verb: %v", err)
 	}
-	if res.Rolled || !strings.Contains(res.Reason, "preserved") {
+	if res.Taken || !strings.Contains(res.Reason, "full history") {
 		t.Fatalf("preserved log compacted, or reason unnamed: %+v", res)
 	}
 
 	// The guarantee is the server's, not just the node's manners: a
-	// rollup write — SaveVersion — is refused by the stream itself.
-	if _, err := alice.SaveVersion(ctx, "audit", "case.case-1", json.RawMessage(`{"n":1}`), nil, last.Seq); err == nil {
+	// rollup write — SaveSnapshot — is refused by the stream itself.
+	if _, err := alice.SaveSnapshot(ctx, "audit", "case/case-1", json.RawMessage(`{"n":1}`), nil, last.Seq); err == nil {
 		t.Fatal("save version landed on a preserved log")
 	}
 
 	// Nothing above touched the trail: birth plus the op, intact.
-	ops := replayOf(ctx, t, alice, "audit", "case.case-1")
+	ops := replayOf(ctx, t, alice, "audit", "case/case-1")
 	if len(ops) != 2 {
 		t.Fatalf("history disturbed: %d ops", len(ops))
 	}
@@ -71,28 +71,28 @@ func TestPreservedLogSurvivesTheSweep(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	seed := func(log string, opts ...client.LogOpt) {
+	seed := func(log string, opts ...client.StoreOpt) {
 		t.Helper()
-		if _, err := alice.CreateLog(ctx, log, "", opts...); err != nil {
+		if _, err := alice.CreateStore(ctx, log, "", opts...); err != nil {
 			t.Fatalf("create %s: %v", log, err)
 		}
 		defineType(ctx, t, alice, log, "case", client.TypeDefinition{
 			Operations: map[string]contract.OpDef{"status.set": {Schema: json.RawMessage(`{"type":"object"}`), Effect: contract.EffectMerge}},
 		})
-		if _, err := alice.CreateThing(ctx, log, "case.case-1", json.RawMessage(`{"n":0}`)); err != nil {
+		if _, err := alice.CreateFromSnapshot(ctx, log, "case/case-1", json.RawMessage(`{"n":0}`)); err != nil {
 			t.Fatalf("birth %s: %v", log, err)
 		}
-		if _, err := alice.Append(ctx, log, "case.case-1", "status.set", []byte(`{"status":"open"}`)); err != nil {
+		if _, err := alice.Apply(ctx, log, "case/case-1", "status.set", []byte(`{"status":"open"}`)); err != nil {
 			t.Fatalf("append %s: %v", log, err)
 		}
 	}
 	seed("control")
-	seed("audit", client.WithHistory(contract.HistoryPreserved))
+	seed("audit", client.WithHistory(contract.HistoryFull))
 
 	// The control log compacts to one snapshot — the sweep is live.
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		if ops := replayOf(ctx, t, alice, "control", "case.case-1"); len(ops) == 1 {
+		if ops := replayOf(ctx, t, alice, "control", "case/case-1"); len(ops) == 1 {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -105,7 +105,7 @@ func TestPreservedLogSurvivesTheSweep(t *testing.T) {
 	// it several more ticks past the control's compaction to be sure the
 	// sweep has been through it too.
 	time.Sleep(250 * time.Millisecond)
-	if ops := replayOf(ctx, t, alice, "audit", "case.case-1"); len(ops) != 2 {
+	if ops := replayOf(ctx, t, alice, "audit", "case/case-1"); len(ops) != 2 {
 		t.Fatalf("the sweep touched a preserved log: %d ops", len(ops))
 	}
 }

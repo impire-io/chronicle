@@ -62,7 +62,7 @@ func ParseGraphConfig(raw json.RawMessage) (GraphConfig, error) {
 	if err := validateSource(cfg.Source); err != nil {
 		return zero, fmt.Errorf("graph config: %w", err)
 	}
-	if NormalizeSource(cfg.Source) == SourceOps {
+	if NormalizeSource(cfg.Source) == SourceHistory {
 		return zero, fmt.Errorf("graph config: the graph kind is state-only — out-edges are a pure function of current state (0020 § 4)")
 	}
 	seen := map[string]struct{}{}
@@ -124,7 +124,7 @@ type GraphEdge struct {
 // GraphVisit is one thing reached by a walk: at which depth, via which
 // label it was first discovered.
 type GraphVisit struct {
-	Thing string `json:"thing"`
-	Depth int    `json:"depth"`
-	Via   string `json:"via"`
+	Instance string `json:"instance"`
+	Depth    int    `json:"depth"`
+	Via      string `json:"via"`
 }

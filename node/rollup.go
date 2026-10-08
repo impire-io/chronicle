@@ -20,8 +20,8 @@ import (
 // testimony, like every author claim.
 const rollupAuthor = "chronicle-node"
 
-// errNoThing is a rollup asked of a subject with no history at all.
-var errNoThing = errors.New("no history on the subject")
+// errNoInstance is a rollup asked of a subject with no history at all.
+var errNoInstance = errors.New("no history on the subject")
 
 // rollupResult is one rollup attempt's outcome: rolled at seq, or the
 // reason the node declined — a gate veto, an empty tail, a lost race.
@@ -31,7 +31,7 @@ type rollupResult struct {
 	reason string
 }
 
-// rollupThing compacts one exact subject, if the effect gate allows it:
+// snapshotInstance compacts one exact subject, if the effect gate allows it:
 // replay the subject, fold it under the current declarations (0011), and
 // publish the result as a rollup snapshot guarded by the last replayed
 // seq — race-safe against anyone else's rollup, including an SDK save
@@ -43,8 +43,8 @@ type rollupResult struct {
 // unknown type, an unknown effect value, a marked (schema-invalid) op,
 // an op before the first snapshot — vetoes, and compaction stays the
 // application's call (decision 0011 § 4).
-func (n *node) rollupThing(ctx context.Context, log, thing string) (rollupResult, error) {
-	mu := n.logMutex(log)
+func (n *node) snapshotInstance(ctx context.Context, log, thing string) (rollupResult, error) {
+	mu := n.storeMutex(log)
 	mu.Lock()
 	defer mu.Unlock()
 
@@ -52,11 +52,11 @@ func (n *node) rollupThing(ctx context.Context, log, thing string) (rollupResult
 	// log's trail is the product, and the node never compacts any of it.
 	// Read-side tolerant — an unreadable config reads as compactable; the
 	// stream's own AllowRollup refusal stays the guarantee regardless.
-	if entry, err := n.meta.Get(ctx, contract.MetaLogConfig(log)); err == nil {
-		var cfg contract.LogConfig
+	if entry, err := n.meta.Get(ctx, contract.MetaStoreConfig(log)); err == nil {
+		var cfg contract.StoreConfig
 		if jerr := json.Unmarshal(entry.Value(), &cfg); jerr == nil &&
-			contract.NormalizeHistory(cfg.History) == contract.HistoryPreserved {
-			return rollupResult{reason: "the log declares history preserved (0019)"}, nil
+			contract.NormalizeHistory(cfg.History) == contract.HistoryFull {
+			return rollupResult{reason: "the store keeps full history: nothing is compacted"}, nil
 		}
 	}
 
@@ -65,16 +65,16 @@ func (n *node) rollupThing(ctx context.Context, log, thing string) (rollupResult
 	// node-honored, the soft tier; there is no per-subject AllowRollup.
 	// The per-op effect veto (0011 § 4) survives only where no type
 	// resolves; a marked undeclared aspect is declined outright.
-	res, err := foldcore.ResolveThing(ctx, n.meta, log, thing)
+	res, err := foldcore.ResolveInstance(ctx, n.meta, log, thing)
 	if err != nil {
-		return rollupResult{}, fmt.Errorf("resolve thing: %w", err)
+		return rollupResult{}, fmt.Errorf("resolve instance: %w", err)
 	}
 	switch res.Kind {
 	case contract.ResolvedUndeclared:
-		return rollupResult{reason: fmt.Sprintf("the subject is a marked undeclared aspect: %s", res.Detail)}, nil
+		return rollupResult{reason: fmt.Sprintf("the instance is invalid — %s", res.Detail)}, nil
 	case contract.ResolvedTyped:
-		if contract.NormalizeHistory(res.Record.History) == contract.HistoryPreserved {
-			return rollupResult{reason: fmt.Sprintf("the thing's type %q declares history preserved (0022)", res.TypeName)}, nil
+		if contract.NormalizeHistory(res.Record.History) == contract.HistoryFull {
+			return rollupResult{reason: fmt.Sprintf("type %q keeps full history: nothing is compacted", res.TypeName)}, nil
 		}
 	}
 
@@ -95,7 +95,7 @@ func (n *node) rollupThing(ctx context.Context, log, thing string) (rollupResult
 	}
 	pending := info.NumPending
 	if pending == 0 {
-		return rollupResult{}, errNoThing
+		return rollupResult{}, errNoInstance
 	}
 
 	var (
@@ -118,7 +118,7 @@ func (n *node) rollupThing(ctx context.Context, log, thing string) (rollupResult
 			lost = true
 		}
 		if lost {
-			return rollupResult{reason: "lost the race: a peer's rollup replaced the history mid-replay"}, nil
+			return rollupResult{reason: "lost the race: another snapshot replaced the history meanwhile"}, nil
 		}
 		md, err := msg.Metadata()
 		if err != nil {
@@ -144,7 +144,7 @@ func (n *node) rollupThing(ctx context.Context, log, thing string) (rollupResult
 		// Even absorption needs a floor: a valid snapshot, or (typed) a
 		// declared merge — without one the fold derived nothing, and a
 		// rollup would replace history with a state that never existed.
-		return rollupResult{reason: "no valid snapshot on the subject to fold from"}, nil
+		return rollupResult{reason: "no valid snapshot to start from"}, nil
 	}
 
 	payload, err := json.Marshal(contract.Snapshot{State: state, Frontier: frontier})
@@ -168,7 +168,7 @@ func (n *node) rollupThing(ctx context.Context, log, thing string) (rollupResult
 		if errors.As(err, &apiErr) && apiErr.ErrorCode == jetstream.JSErrCodeStreamWrongLastSequence {
 			// Someone else's message landed after the replay — first
 			// writer wins, this attempt discards, nothing to clean up.
-			return rollupResult{reason: "lost the race: the log moved past the replayed history"}, nil
+			return rollupResult{reason: "lost the race: the history moved while the snapshot was being taken"}, nil
 		}
 		return rollupResult{}, fmt.Errorf("publish rollup: %w", err)
 	}
@@ -262,7 +262,7 @@ func captureUntyped(op contract.Op, state *json.RawMessage, sawSnapshot *bool) s
 		*sawSnapshot = true
 		return ""
 	}
-	return fmt.Sprintf("op %s (type %s) has no declaration — the thing is untyped, its meaning lives in history", op.ID, op.Type)
+	return fmt.Sprintf("op %s (type %s) is not defined on a type — the instance is untyped, so its meaning lives in history", op.ID, op.Type)
 }
 
 // rollupTimer is the timer trigger: every rollupEvery it sweeps the
@@ -293,7 +293,7 @@ func (n *node) rollupActive() {
 	for log, run := range runs {
 		for _, thing := range run.f.swapActive() {
 			ctx, cancel := context.WithTimeout(n.foldCtx, 30*time.Second)
-			res, err := n.rollupThing(ctx, log, thing)
+			res, err := n.snapshotInstance(ctx, log, thing)
 			cancel()
 			switch {
 			case err != nil:

@@ -20,7 +20,7 @@ import (
 
 // Config names the one index this service materializes.
 type Config struct {
-	Log   string
+	Store string
 	Index string
 	// Logger receives the fold's warnings; nil means slog.Default.
 	Logger *slog.Logger
@@ -49,31 +49,31 @@ func Start(ctx context.Context, nc *nats.Conn, cfg Config) (*Service, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open META: %w", err)
 	}
-	entry, err := meta.Get(ctx, contract.MetaIndex(cfg.Log, cfg.Index))
+	entry, err := meta.Get(ctx, contract.MetaIndex(cfg.Store, cfg.Index))
 	if err != nil {
-		return nil, fmt.Errorf("read declaration for %s/%s: %w", cfg.Log, cfg.Index, err)
+		return nil, fmt.Errorf("read declaration for %s/%s: %w", cfg.Store, cfg.Index, err)
 	}
 	var decl contract.IndexDeclaration
 	if err := json.Unmarshal(entry.Value(), &decl); err != nil {
 		return nil, fmt.Errorf("decode declaration: %w", err)
 	}
 	if decl.Kind != contract.IndexKindSearch {
-		return nil, fmt.Errorf("declaration %s/%s is kind %q, not search", cfg.Log, cfg.Index, decl.Kind)
+		return nil, fmt.Errorf("declaration %s/%s is kind %q, not search", cfg.Store, cfg.Index, decl.Kind)
 	}
 	scfg, err := contract.ParseSearchConfig(decl.Config)
 	if err != nil {
 		return nil, err
 	}
-	ops := contract.NormalizeSource(scfg.Source) == contract.SourceOps
+	ops := contract.NormalizeSource(scfg.Source) == contract.SourceHistory
 
 	proj, err := projection.Start(ctx, nc, projection.Config{
-		Log:    cfg.Log,
+		Store:  cfg.Store,
 		Index:  cfg.Index,
 		Kind:   "search index",
 		Source: scfg.Source,
 		Types:  scfg.Types,
 		Logger: logger,
-		NewRun: func() (projection.Run, error) { return newSearchRun(cfg.Log, ops, logger) },
+		NewRun: func() (projection.Run, error) { return newSearchRun(cfg.Store, ops, logger) },
 	})
 	if err != nil {
 		return nil, err
@@ -83,15 +83,15 @@ func Start(ctx context.Context, nc *nats.Conn, cfg Config) (*Service, error) {
 	m, err := micro.AddService(nc, micro.Config{
 		Name:        "chronicle-index-search",
 		Version:     version.Version,
-		Description: "chronicle search index: a full-text projection of thing state",
-		Metadata:    map[string]string{"log": cfg.Log, "index": cfg.Index},
+		Description: "chronicle search index: a full-text projection of instance state",
+		Metadata:    map[string]string{"log": cfg.Store, "index": cfg.Index},
 	})
 	if err != nil {
 		proj.Stop()
 		return nil, fmt.Errorf("register service: %w", err)
 	}
 	if err := m.AddEndpoint("query", micro.HandlerFunc(s.handleQuery),
-		micro.WithEndpointSubject(client.IndexQuerySubject(cfg.Log, cfg.Index))); err != nil {
+		micro.WithEndpointSubject(client.IndexQuerySubject(cfg.Store, cfg.Index))); err != nil {
 		_ = m.Stop()
 		proj.Stop()
 		return nil, fmt.Errorf("add query endpoint: %w", err)

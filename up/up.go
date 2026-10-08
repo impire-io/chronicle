@@ -278,8 +278,29 @@ func startServer(sc serverConfig) (*server.Server, error) {
 // Run is the `chronicle up` verb: parse flags, boot, print, block until
 // ctx ends.
 func Run(ctx context.Context, args []string, out io.Writer) error {
+	return RunWith(ctx, args, out, nil)
+}
+
+// RunWith is Run with a hook the binary wires: once the quick start is
+// up, ready is called with the running local and its data dir — the CLI
+// saves and selects its `local` context there (decision 0045 § 5). This
+// package never imports the adapters; the binary composes the two.
+func RunWith(ctx context.Context, args []string, out io.Writer, ready func(l *Local, dir string) error) error {
 	fs := flag.NewFlagSet("chronicle up", flag.ContinueOnError)
 	fs.SetOutput(out)
+	fs.Usage = func() {
+		fmt.Fprintln(out, "Usage: chronicle up [--dir DIR] [--port N] [--websocket-port N] [--websocket-origin URL]... [--embedding-url URL --embedding-model NAME]")
+		fmt.Fprintln(out, "  run chronicle locally: an embedded NATS server, one account, one user, the node and its indexes, in one process")
+		fmt.Fprintln(out, "  a development convenience, not production — production is your own NATS, with chronicle-node and chronicle-workload as your own processes")
+		fmt.Fprintln(out, "\nFlags:")
+		fs.PrintDefaults()
+	}
+	for _, a := range args {
+		if a == "-h" || a == "--help" || a == "-help" {
+			fs.Usage()
+			return nil
+		}
+	}
 	dir := fs.String("dir", devdir.Default(), "data dir: the user's seed, the recorded url, the store")
 	port := fs.Int("port", 4222, "port for the embedded NATS server (-1 picks a free one)")
 	wsPort := fs.Int("websocket-port", 0, "open a websocket listener for a browser on loopback, in the clear (-1 picks a free port; 0 means none)")
@@ -304,13 +325,20 @@ func Run(ctx context.Context, args []string, out io.Writer) error {
 	}
 	defer l.Stop()
 
-	fmt.Fprintf(out, "chronicle %s up — one account, one user (%s), the node, its indexers\n", version.Version, devdir.LocalPrincipal)
+	fmt.Fprintf(out, "chronicle %s is up: one account, one user (%s), the node and its indexes\n", version.Version, devdir.LocalPrincipal)
 	fmt.Fprintf(out, "  url:  %s\n", l.URL)
 	if l.WebsocketURL != "" {
 		fmt.Fprintf(out, "  ws:   %s\n", l.WebsocketURL)
 	}
 	fmt.Fprintf(out, "  dir:  %s\n", *dir)
-	fmt.Fprintf(out, "create a log:  chronicle log create <log>")
+	if ready != nil {
+		if err := ready(l, *dir); err != nil {
+			fmt.Fprintf(out, "  (the local context was not saved: %v)\n", err)
+		} else {
+			fmt.Fprintf(out, "  context: local (saved; selected unless another context already was)\n")
+		}
+	}
+	fmt.Fprintf(out, "next: chronicle store create NAME")
 	if *dir != devdir.Default() {
 		fmt.Fprintf(out, " --dir %s", *dir)
 	}

@@ -40,7 +40,7 @@ func TestMemberVerbs(t *testing.T) {
 	_, alice := startNode(t, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if _, err := alice.CreateLog(ctx, "orders", ""); err != nil {
+	if _, err := alice.CreateStore(ctx, "orders", ""); err != nil {
 		t.Fatalf("create log: %v", err)
 	}
 
@@ -56,12 +56,12 @@ func TestMemberVerbs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := alice.CreateThing(ctx, "orders", "ticket-1", json.RawMessage(`{}`)); err != nil {
+	if _, err := alice.CreateFromSnapshot(ctx, "orders", "ticket-1", json.RawMessage(`{}`)); err != nil {
 		t.Fatalf("create thing: %v", err)
 	}
-	_, err = erin.RollupThing(ctx, "orders", "ticket-1")
+	_, err = erin.Snapshot(ctx, "orders", "ticket-1")
 	allowed(t, err)
-	_, err = erin.CreateLog(ctx, "rogue", "")
+	_, err = erin.CreateStore(ctx, "rogue", "")
 	refused(t, err, "forbidden")
 	_, err = erin.AddMember(ctx, "mallory", contract.RoleAdmin)
 	refused(t, err, "forbidden")
@@ -96,7 +96,7 @@ func TestMemberVerbs(t *testing.T) {
 	if revoked.PublicKey != "UERIN" {
 		t.Fatalf("revoked = %+v", revoked)
 	}
-	_, err = erin.RollupThing(ctx, "orders", "ticket-1")
+	_, err = erin.Snapshot(ctx, "orders", "ticket-1")
 	refused(t, err, "forbidden")
 	_, err = alice.RevokeMember(ctx, "erin")
 	refused(t, err, "not-a-member")
@@ -105,7 +105,7 @@ func TestMemberVerbs(t *testing.T) {
 	if _, err := alice.AddMember(ctx, "erin", contract.RoleReader); err != nil {
 		t.Fatalf("re-add member: %v", err)
 	}
-	_, err = erin.RollupThing(ctx, "orders", "ticket-1")
+	_, err = erin.Snapshot(ctx, "orders", "ticket-1")
 	refused(t, err, "forbidden")
 
 	// The tenant's own service acts as the operator: every role, no

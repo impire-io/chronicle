@@ -63,7 +63,7 @@ func TestMergeEffect(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	if _, err := alice.CreateLog(ctx, "orders", ""); err != nil {
+	if _, err := alice.CreateStore(ctx, "orders", ""); err != nil {
 		t.Fatalf("create log: %v", err)
 	}
 	obj := json.RawMessage(`{"type":"object"}`)
@@ -87,18 +87,18 @@ func TestMergeEffect(t *testing.T) {
 		}
 	}
 
-	birth, err := alice.CreateThing(ctx, "orders", "invoice.invoice-1", json.RawMessage(`{"status":"open","assignee":"dana","total":3}`))
+	birth, err := alice.CreateFromSnapshot(ctx, "orders", "invoice/invoice-1", json.RawMessage(`{"status":"open","assignee":"dana","total":3}`))
 	if err != nil {
 		t.Fatalf("birth: %v", err)
 	}
-	waitStateAt(ctx, t, alice, "orders", "invoice.invoice-1", birth.Seq)
+	waitStateAt(ctx, t, alice, "orders", "invoice/invoice-1", birth.Seq)
 
 	// A merge-effect op moves state: named fields overwrite.
-	ack, err := alice.Append(ctx, "orders", "invoice.invoice-1", "status.set", []byte(`{"status":"closed"}`))
+	ack, err := alice.Apply(ctx, "orders", "invoice/invoice-1", "status.set", []byte(`{"status":"closed"}`))
 	if err != nil {
 		t.Fatalf("append status.set: %v", err)
 	}
-	sv := waitStateAt(ctx, t, alice, "orders", "invoice.invoice-1", ack.Seq)
+	sv := waitStateAt(ctx, t, alice, "orders", "invoice/invoice-1", ack.Seq)
 	var state map[string]any
 	if err := json.Unmarshal(sv.State, &state); err != nil {
 		t.Fatal(err)
@@ -108,11 +108,11 @@ func TestMergeEffect(t *testing.T) {
 	}
 
 	// Null deletes, per RFC 7386.
-	ack, err = alice.Append(ctx, "orders", "invoice.invoice-1", "status.set", []byte(`{"assignee":null}`))
+	ack, err = alice.Apply(ctx, "orders", "invoice/invoice-1", "status.set", []byte(`{"assignee":null}`))
 	if err != nil {
 		t.Fatalf("append unassign: %v", err)
 	}
-	sv = waitStateAt(ctx, t, alice, "orders", "invoice.invoice-1", ack.Seq)
+	sv = waitStateAt(ctx, t, alice, "orders", "invoice/invoice-1", ack.Seq)
 	state = nil
 	if err := json.Unmarshal(sv.State, &state); err != nil {
 		t.Fatal(err)
@@ -123,17 +123,17 @@ func TestMergeEffect(t *testing.T) {
 	lastSeq := ack.Seq
 
 	// An effect-none op lives in history and moves nothing.
-	if _, err := alice.Append(ctx, "orders", "invoice.invoice-1", "comment.add", []byte(`{"body":"hi"}`)); err != nil {
+	if _, err := alice.Apply(ctx, "orders", "invoice/invoice-1", "comment.add", []byte(`{"body":"hi"}`)); err != nil {
 		t.Fatalf("append comment: %v", err)
 	}
-	stateStaysAt(ctx, t, alice, "orders", "invoice.invoice-1", lastSeq)
+	stateStaysAt(ctx, t, alice, "orders", "invoice/invoice-1", lastSeq)
 
 	// An operation the type does not define is refused at pre-flight
 	// (0021 § 2) — and an untyped thing keeps publishing freely.
-	if _, err := alice.Append(ctx, "orders", "invoice.invoice-1", "no.such", []byte(`{}`)); !errors.Is(err, client.ErrUndefinedOperation) {
+	if _, err := alice.Apply(ctx, "orders", "invoice/invoice-1", "no.such", []byte(`{}`)); !errors.Is(err, client.ErrUndefinedOperation) {
 		t.Fatalf("undefined operation must refuse at pre-flight: %v", err)
 	}
-	if _, err := alice.Append(ctx, "orders", "freeform-thing", "no.such", []byte(`{}`)); err != nil {
+	if _, err := alice.Apply(ctx, "orders", "freeform-thing", "no.such", []byte(`{}`)); err != nil {
 		t.Fatalf("untyped append must pass pre-flight: %v", err)
 	}
 
@@ -146,15 +146,15 @@ func TestMergeEffect(t *testing.T) {
 		t.Fatalf("raw publish: %v", err)
 	}
 	catcher.wait(t, "marked invalid payload")
-	stateStaysAt(ctx, t, alice, "orders", "invoice.invoice-1", lastSeq)
+	stateStaysAt(ctx, t, alice, "orders", "invoice/invoice-1", lastSeq)
 
 	// A declared merge on a subject with no snapshot is a birth: create
 	// is an operation, and merge onto nothing births the thing (0025 § 3).
-	born, err := alice.Append(ctx, "orders", "invoice.unborn-1", "status.set", []byte(`{"status":"x"}`))
+	born, err := alice.Apply(ctx, "orders", "invoice/unborn-1", "status.set", []byte(`{"status":"x"}`))
 	if err != nil {
 		t.Fatalf("append to unborn: %v", err)
 	}
-	sv = waitStateAt(ctx, t, alice, "orders", "invoice.unborn-1", born.Seq)
+	sv = waitStateAt(ctx, t, alice, "orders", "invoice/unborn-1", born.Seq)
 	if err := json.Unmarshal(sv.State, &state); err != nil || state["status"] != "x" {
 		t.Fatalf("constructor birth state: %s", sv.State)
 	}
@@ -165,7 +165,7 @@ func TestEffectChangeRebuildsState(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	if _, err := alice.CreateLog(ctx, "orders", ""); err != nil {
+	if _, err := alice.CreateStore(ctx, "orders", ""); err != nil {
 		t.Fatalf("create log: %v", err)
 	}
 	obj := json.RawMessage(`{"type":"object"}`)
@@ -173,16 +173,16 @@ func TestEffectChangeRebuildsState(t *testing.T) {
 		Operations: map[string]contract.OpDef{"tag.set": {Schema: obj}},
 	})
 
-	birth, err := alice.CreateThing(ctx, "orders", "invoice.invoice-1", json.RawMessage(`{"n":1}`))
+	birth, err := alice.CreateFromSnapshot(ctx, "orders", "invoice/invoice-1", json.RawMessage(`{"n":1}`))
 	if err != nil {
 		t.Fatalf("birth: %v", err)
 	}
-	tagged, err := alice.Append(ctx, "orders", "invoice.invoice-1", "tag.set", []byte(`{"tag":"a"}`))
+	tagged, err := alice.Apply(ctx, "orders", "invoice/invoice-1", "tag.set", []byte(`{"tag":"a"}`))
 	if err != nil {
 		t.Fatalf("append tag: %v", err)
 	}
 	// Under effect none, the tag moved nothing.
-	sv := waitStateAt(ctx, t, alice, "orders", "invoice.invoice-1", birth.Seq)
+	sv := waitStateAt(ctx, t, alice, "orders", "invoice/invoice-1", birth.Seq)
 	if string(sv.State) != `{"n":1}` {
 		t.Fatalf("state before change: %s", sv.State)
 	}
@@ -200,7 +200,7 @@ func TestEffectChangeRebuildsState(t *testing.T) {
 	if resp.Revision != 2 {
 		t.Fatalf("revision = %d", resp.Revision)
 	}
-	sv = waitStateAt(ctx, t, alice, "orders", "invoice.invoice-1", tagged.Seq)
+	sv = waitStateAt(ctx, t, alice, "orders", "invoice/invoice-1", tagged.Seq)
 	var state map[string]any
 	if err := json.Unmarshal(sv.State, &state); err != nil {
 		t.Fatal(err)
@@ -210,7 +210,7 @@ func TestEffectChangeRebuildsState(t *testing.T) {
 	}
 
 	// And the log itself is untouched — the rebuild was derived-only.
-	ops := collect(t, alice.Replay(ctx, "orders", "invoice.invoice-1"))
+	ops := collect(t, alice.History(ctx, "orders", "invoice/invoice-1"))
 	if len(ops) != 2 {
 		t.Fatalf("replay after rebuild: %d ops", len(ops))
 	}

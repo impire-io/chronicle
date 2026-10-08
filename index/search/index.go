@@ -17,6 +17,7 @@ import (
 	"github.com/blevesearch/bleve/v2/search/query"
 
 	"github.com/impire-io/chronicle/client"
+	"github.com/impire-io/chronicle/contract"
 	"github.com/impire-io/chronicle/index/projection"
 )
 
@@ -96,7 +97,7 @@ func (r *searchRun) query(req client.IndexQueryRequest) ([]client.IndexHit, uint
 		return nil, 0, fmt.Errorf("search: %w", err)
 	}
 	for _, hit := range res.Hits {
-		hits = append(hits, client.IndexHit{Thing: hit.ID, Score: hit.Score})
+		hits = append(hits, client.IndexHit{Instance: contract.TailPath(hit.ID), Score: hit.Score})
 	}
 	return hits, count.Total, nil
 }
@@ -122,12 +123,12 @@ func (r *searchRun) queryOps(q query.Query, limit int) ([]client.IndexHit, uint6
 	// its best op.
 	seen := map[string]struct{}{}
 	for _, hit := range res.Hits {
-		thing := projection.DocThing(hit.ID)
+		thing := projection.DocInstance(hit.ID)
 		if _, dup := seen[thing]; dup {
 			continue
 		}
 		seen[thing] = struct{}{}
-		things = append(things, client.IndexHit{Thing: thing, Score: hit.Score})
+		things = append(things, client.IndexHit{Instance: contract.TailPath(thing), Score: hit.Score})
 	}
 	total := uint64(len(things))
 	if limit > 0 && limit < len(things) {

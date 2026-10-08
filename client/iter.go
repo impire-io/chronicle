@@ -60,20 +60,20 @@ func fail[T any](err error) iter.Seq2[T, error] {
 	}
 }
 
-// ListLogs streams the account's logs — a META scan: the log config
+// ListStores streams the account's logs — a META scan: the log config
 // records are the authoritative inventory (0019).
-func (c *Client) ListLogs(ctx context.Context) iter.Seq2[string, error] {
+func (c *Client) ListStores(ctx context.Context) iter.Seq2[string, error] {
 	kv, err := c.js.KeyValue(ctx, contract.MetaBucket)
 	if err != nil {
-		return fail[string](fmt.Errorf("open META: %w", err))
+		return fail[string](fmt.Errorf("cannot read the definitions: %w", err))
 	}
 	return func(yield func(string, error) bool) {
-		for entry, err := range scan(ctx, kv, []string{contract.MetaLogConfigPrefix + "*.config"}, true) {
+		for entry, err := range scan(ctx, kv, []string{contract.MetaStoreConfigPrefix + "*.config"}, true) {
 			if err != nil {
 				yield("", err)
 				return
 			}
-			name := strings.TrimSuffix(strings.TrimPrefix(entry.Key(), contract.MetaLogConfigPrefix), ".config")
+			name := strings.TrimSuffix(strings.TrimPrefix(entry.Key(), contract.MetaStoreConfigPrefix), ".config")
 			if !yield(name, nil) {
 				return
 			}
@@ -83,14 +83,14 @@ func (c *Client) ListLogs(ctx context.Context) iter.Seq2[string, error] {
 
 // ListTypes streams the log's defined types — a META scan.
 func (c *Client) ListTypes(ctx context.Context, log string) iter.Seq2[string, error] {
-	if err := contract.ValidateLogName(log); err != nil {
+	if err := contract.ValidateStoreName(log); err != nil {
 		return fail[string](err)
 	}
 	kv, err := c.js.KeyValue(ctx, contract.MetaBucket)
 	if err != nil {
-		return fail[string](fmt.Errorf("open META: %w", err))
+		return fail[string](fmt.Errorf("cannot read the definitions: %w", err))
 	}
-	prefix := contract.MetaLogType(log, "")
+	prefix := contract.MetaStoreType(log, "")
 	return func(yield func(string, error) bool) {
 		for entry, err := range scan(ctx, kv, []string{prefix + "*"}, true) {
 			if err != nil {
@@ -114,12 +114,12 @@ type IndexInfo struct {
 // ListIndexes streams the log's declared indexes — a META scan, the state
 // index included (0023).
 func (c *Client) ListIndexes(ctx context.Context, log string) iter.Seq2[IndexInfo, error] {
-	if err := contract.ValidateLogName(log); err != nil {
+	if err := contract.ValidateStoreName(log); err != nil {
 		return fail[IndexInfo](err)
 	}
 	kv, err := c.js.KeyValue(ctx, contract.MetaBucket)
 	if err != nil {
-		return fail[IndexInfo](fmt.Errorf("open META: %w", err))
+		return fail[IndexInfo](fmt.Errorf("cannot read the definitions: %w", err))
 	}
 	prefix := contract.MetaIndex(log, "")
 	return func(yield func(IndexInfo, error) bool) {
@@ -143,8 +143,10 @@ func (c *Client) ListIndexes(ctx context.Context, log string) iter.Seq2[IndexInf
 
 // MemberInfo is one membership: who, in which role, under which key.
 type MemberInfo struct {
-	Name      string `json:"name"`
-	Role      string `json:"role"`
+	Name string `json:"name"`
+	Role string `json:"role"`
+	// Kind is "member" (a person) or "service" (a service account).
+	Kind      string `json:"kind"`
 	PublicKey string `json:"public_key,omitempty"`
 	GithubID  int64  `json:"github_id,omitempty"`
 }
@@ -154,7 +156,7 @@ type MemberInfo struct {
 func (c *Client) ListMembers(ctx context.Context) iter.Seq2[MemberInfo, error] {
 	kv, err := c.js.KeyValue(ctx, contract.MetaBucket)
 	if err != nil {
-		return fail[MemberInfo](fmt.Errorf("open META: %w", err))
+		return fail[MemberInfo](fmt.Errorf("cannot read the definitions: %w", err))
 	}
 	prefix := contract.MetaMember("")
 	return func(yield func(MemberInfo, error) bool) {
@@ -172,38 +174,7 @@ func (c *Client) ListMembers(ctx context.Context) iter.Seq2[MemberInfo, error] {
 				yield(MemberInfo{}, fmt.Errorf("decode membership %s: %w", name, err))
 				return
 			}
-			if !yield(MemberInfo{Name: name, Role: m.Role, PublicKey: m.PublicKey, GithubID: m.GithubID}, nil) {
-				return
-			}
-		}
-	}
-}
-
-// ListThings streams the log's things from the state index's keys —
-// derived, so possibly trailing the log; the fold watermark is excluded.
-// A non-empty prefix narrows to the subtree under it.
-func (c *Client) ListThings(ctx context.Context, log, prefix string) iter.Seq2[string, error] {
-	if err := contract.ValidateLogName(log); err != nil {
-		return fail[string](err)
-	}
-	kv, err := c.js.KeyValue(ctx, contract.StateBucket(log))
-	if err != nil {
-		return fail[string](fmt.Errorf("open state bucket: %w", err))
-	}
-	return func(yield func(string, error) bool) {
-		for entry, err := range scan(ctx, kv, []string{">"}, true) {
-			if err != nil {
-				yield("", err)
-				return
-			}
-			k := entry.Key()
-			if k == contract.StateFoldKey {
-				continue
-			}
-			if prefix != "" && k != prefix && !strings.HasPrefix(k, prefix+".") {
-				continue
-			}
-			if !yield(k, nil) {
+			if !yield(MemberInfo{Name: name, Role: m.Role, Kind: contract.NormalizePrincipalKind(m.Kind), PublicKey: m.PublicKey, GithubID: m.GithubID}, nil) {
 				return
 			}
 		}
@@ -211,7 +182,7 @@ func (c *Client) ListThings(ctx context.Context, log, prefix string) iter.Seq2[s
 }
 
 // The history reads: ordered consumers on the log's stream, resumable by
-// sequence — bounded at the head observed when they started (Replay,
+// sequence — bounded at the head observed when they started (History,
 // FoldTail) or unbounded (Tail).
 
 // The fetch cadence: one short wait per fetch, retried within a budget
@@ -245,7 +216,7 @@ func Live() TailOpt {
 // After, from now with Live. It never ends on its own: cancel the context
 // to release the consumer. Each op carries its stream sequence, the
 // cursor to resume from.
-func (c *Client) Tail(ctx context.Context, log, thing string, opts ...TailOpt) iter.Seq2[contract.Op, error] {
+func (c *Client) tailOps(ctx context.Context, log, thing string, opts ...TailOpt) iter.Seq2[contract.Op, error] {
 	var o tailOpts
 	for _, opt := range opts {
 		opt(&o)
@@ -257,9 +228,9 @@ func (c *Client) Tail(ctx context.Context, log, thing string, opts ...TailOpt) i
 	return c.ops(ctx, log, subject, o.after, o.live, false)
 }
 
-// Replay streams a thing's full history in stream order, as of the call.
-func (c *Client) Replay(ctx context.Context, log, thing string) iter.Seq2[contract.Op, error] {
-	if err := contract.ValidateThing(thing); err != nil {
+// History streams a thing's full history in stream order, as of the call.
+func (c *Client) historyTail(ctx context.Context, log, thing string) iter.Seq2[contract.Op, error] {
+	if err := contract.ValidateInstance(thing); err != nil {
 		return fail[contract.Op](err)
 	}
 	return c.ops(ctx, log, contract.OpsSubject(log, thing), 0, false, true)
@@ -268,21 +239,21 @@ func (c *Client) Replay(ctx context.Context, log, thing string) iter.Seq2[contra
 // FoldTail streams a thing's ops after the given stream sequence, as of
 // the call — the exactness recipe: read the state value, then fold the
 // log from Seq+1 with contract.FoldStep.
-func (c *Client) FoldTail(ctx context.Context, log, thing string, after uint64) iter.Seq2[contract.Op, error] {
-	if err := contract.ValidateThing(thing); err != nil {
+func (c *Client) foldTailOf(ctx context.Context, log, thing string, after uint64) iter.Seq2[contract.Op, error] {
+	if err := contract.ValidateInstance(thing); err != nil {
 		return fail[contract.Op](err)
 	}
 	return c.ops(ctx, log, contract.OpsSubject(log, thing), after, false, true)
 }
 
 func opsSubject(log, thing string) (string, error) {
-	if err := contract.ValidateLogName(log); err != nil {
+	if err := contract.ValidateStoreName(log); err != nil {
 		return "", err
 	}
 	if thing == "" {
 		return contract.OpsFilter(log), nil
 	}
-	if err := contract.ValidateThing(thing); err != nil {
+	if err := contract.ValidateInstance(thing); err != nil {
 		return "", err
 	}
 	return contract.OpsSubject(log, thing), nil
@@ -293,13 +264,13 @@ func opsSubject(log, thing string) (string, error) {
 // or unbounded.
 func (c *Client) ops(ctx context.Context, log, subject string, after uint64, live, bounded bool) iter.Seq2[contract.Op, error] {
 	return func(yield func(contract.Op, error) bool) {
-		if err := contract.ValidateLogName(log); err != nil {
+		if err := contract.ValidateStoreName(log); err != nil {
 			yield(contract.Op{}, err)
 			return
 		}
 		stream, err := c.js.Stream(ctx, contract.StreamName(log))
 		if err != nil {
-			yield(contract.Op{}, fmt.Errorf("open stream: %w", err))
+			yield(contract.Op{}, fmt.Errorf("cannot read history: %w", err))
 			return
 		}
 		cfg := jetstream.OrderedConsumerConfig{FilterSubjects: []string{subject}}
@@ -312,7 +283,7 @@ func (c *Client) ops(ctx context.Context, log, subject string, after uint64, liv
 		}
 		cons, err := stream.OrderedConsumer(ctx, cfg)
 		if err != nil {
-			yield(contract.Op{}, fmt.Errorf("ordered consumer: %w", err))
+			yield(contract.Op{}, fmt.Errorf("cannot read history: %w", err))
 			return
 		}
 		if bounded {
@@ -422,16 +393,16 @@ func parse(msg jetstream.Msg) (contract.Op, error) {
 // Watch streams a thing's state as it stands and as it changes: the
 // current value first, then every fold that moves it — a KV watch on the
 // state bucket's key. It never ends on its own.
-func (c *Client) Watch(ctx context.Context, log, thing string) iter.Seq2[contract.StateValue, error] {
-	if err := contract.ValidateLogName(log); err != nil {
+func (c *Client) watchTail(ctx context.Context, log, thing string) iter.Seq2[contract.StateValue, error] {
+	if err := contract.ValidateStoreName(log); err != nil {
 		return fail[contract.StateValue](err)
 	}
-	if err := contract.ValidateThing(thing); err != nil {
+	if err := contract.ValidateInstance(thing); err != nil {
 		return fail[contract.StateValue](err)
 	}
 	kv, err := c.js.KeyValue(ctx, contract.StateBucket(log))
 	if err != nil {
-		return fail[contract.StateValue](fmt.Errorf("open state bucket: %w", err))
+		return fail[contract.StateValue](fmt.Errorf("cannot read state: %w", err))
 	}
 	return func(yield func(contract.StateValue, error) bool) {
 		w, err := kv.Watch(ctx, thing, jetstream.IgnoreDeletes())
@@ -482,14 +453,14 @@ type Declaration struct {
 // themselves, offered to a caller that keeps its own projection. It never
 // ends on its own.
 func (c *Client) WatchDeclarations(ctx context.Context, log string) iter.Seq2[Declaration, error] {
-	if err := contract.ValidateLogName(log); err != nil {
+	if err := contract.ValidateStoreName(log); err != nil {
 		return fail[Declaration](err)
 	}
 	kv, err := c.js.KeyValue(ctx, contract.MetaBucket)
 	if err != nil {
-		return fail[Declaration](fmt.Errorf("open META: %w", err))
+		return fail[Declaration](fmt.Errorf("cannot read the definitions: %w", err))
 	}
-	typePrefix := contract.MetaLogType(log, "")
+	typePrefix := contract.MetaStoreType(log, "")
 	indexPrefix := contract.MetaIndex(log, "")
 	return func(yield func(Declaration, error) bool) {
 		w, err := kv.WatchFiltered(ctx, []string{typePrefix + "*", indexPrefix + "*"})

@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -58,16 +57,16 @@ var stdinChooser = func() io.Reader {
 }
 
 func login(ctx context.Context, args []string, out io.Writer) error {
-	fs := flag.NewFlagSet("chronicle login", flag.ContinueOnError)
-	fs.SetOutput(out)
+	fs := flags("login", "login [--site URL | --bridge FILE] [--account NAME]", "sign in with GitHub; ends inside your account, created at the first sign-in", out)
 	siteFlag := fs.String("site", "", "the install's site, whose install profile login fetches (default $CHRONICLE_SITE, else "+bridge.DefaultSite+")")
 	profilePath := fs.String("bridge", "", "an install profile handed out as a file, instead of the site's")
 	account := fs.String("account", "", "the account to land in (default: the one you hold; a choice when several; a new one named after your login when none)")
-	if err := fs.Parse(args); err != nil {
-		return err
+	pos, err := parse(fs, args)
+	if err != nil {
+		return done(err)
 	}
-	if fs.NArg() != 0 {
-		return fmt.Errorf("login takes no positionals")
+	if err := positionals(fs, pos, 0, "no arguments"); err != nil {
+		return err
 	}
 	path, p, err := loginProfile(ctx, *profilePath, *siteFlag, out)
 	if err != nil {
@@ -306,11 +305,10 @@ func accountVerb(ctx context.Context, args []string, out io.Writer) error {
 // the identity plane — the plan says how many — and lands in it. The bridge
 // is --bridge, else the selected context's.
 func accountCreate(ctx context.Context, args []string, out io.Writer) error {
-	fs := flag.NewFlagSet("chronicle account create", flag.ContinueOnError)
-	fs.SetOutput(out)
+	fs := flags("account create", "create NAME [--bridge FILE]", "create an account of your own and land in it", out)
 	bridgeFlag := fs.String("bridge", "", "install profile — create the account as the identity logged in there (default: the selected context's)")
-	ctxName := fs.String("context", "", "context name (default: CHRONICLE_CONTEXT, else the selection)")
-	pos, err := parseArgs(fs, args)
+	ctxName := fs.String("context", "", "the context whose sign-in to use (default: the selection)")
+	pos, err := parse(fs, args)
 	if err != nil {
 		return err
 	}
@@ -369,5 +367,33 @@ func AccountCreateThroughBridge(ctx context.Context, out io.Writer, profilePath,
 		return nil
 	}
 	fmt.Fprintf(out, "context %s saved and selected\n", ctxName)
+	return nil
+}
+
+// logout forgets the GitHub sign-in the selected context (or --context)
+// uses: the login state kept beside its install profile. The context
+// itself stays; the next account sentence through it teaches login.
+func logout(_ context.Context, args []string, out io.Writer) error {
+	fs := flags("logout", "logout [--context NAME]", "forget the sign-in the selected context uses", out)
+	ctxName := fs.String("context", "", "the context whose sign-in to forget (default: the selection)")
+	pos, err := parse(fs, args)
+	if err != nil {
+		return done(err)
+	}
+	if err := positionals(fs, pos, 0, "no arguments"); err != nil {
+		return err
+	}
+	sc, ok, err := LoadContext(*ctxName)
+	if err != nil {
+		return err
+	}
+	if !ok || sc.Bridge == "" {
+		return fmt.Errorf("the selected context does not use a sign-in; nothing to forget")
+	}
+	path := loginStatePath(sc.Bridge)
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("forget the sign-in: %w", err)
+	}
+	fmt.Fprintf(out, "signed out of %s (account %s); chronicle login signs in again\n", sc.Bridge, sc.Account)
 	return nil
 }

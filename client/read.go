@@ -12,22 +12,22 @@ import (
 )
 
 // ErrNoState is a state read for a thing the bucket has no entry for.
-var ErrNoState = errors.New("no state for thing")
+var ErrNoState = errors.New("no state for the instance")
 
 // State reads a thing's current state from the log's state bucket: a cheap
 // KV read, never a fold over history at request time. The value is derived
 // and may trail the log; Seq says by how much. A reader that must be exact
 // folds FoldTail from Seq+1 with contract.FoldStep — the exactness recipe.
-func (c *Client) State(ctx context.Context, log, thing string) (contract.StateValue, error) {
-	if err := contract.ValidateLogName(log); err != nil {
+func (c *Client) stateTail(ctx context.Context, log, thing string) (contract.StateValue, error) {
+	if err := contract.ValidateStoreName(log); err != nil {
 		return contract.StateValue{}, err
 	}
-	if err := contract.ValidateThing(thing); err != nil {
+	if err := contract.ValidateInstance(thing); err != nil {
 		return contract.StateValue{}, err
 	}
 	kv, err := c.js.KeyValue(ctx, contract.StateBucket(log))
 	if err != nil {
-		return contract.StateValue{}, fmt.Errorf("open state bucket: %w", err)
+		return contract.StateValue{}, fmt.Errorf("cannot read state: %w", err)
 	}
 	entry, err := kv.Get(ctx, thing)
 	if errors.Is(err, jetstream.ErrKeyNotFound) {
@@ -50,7 +50,7 @@ var ErrNoType = errors.New("type is not defined")
 // definitions are discoverable data at rest (0003, 0021), never served
 // through a verb.
 func (c *Client) GetType(ctx context.Context, log, name string) (contract.TypeRecord, error) {
-	if err := contract.ValidateLogName(log); err != nil {
+	if err := contract.ValidateStoreName(log); err != nil {
 		return contract.TypeRecord{}, err
 	}
 	if err := contract.ValidateTypeName(name); err != nil {
@@ -58,9 +58,9 @@ func (c *Client) GetType(ctx context.Context, log, name string) (contract.TypeRe
 	}
 	kv, err := c.js.KeyValue(ctx, contract.MetaBucket)
 	if err != nil {
-		return contract.TypeRecord{}, fmt.Errorf("open META: %w", err)
+		return contract.TypeRecord{}, fmt.Errorf("cannot read the definitions: %w", err)
 	}
-	entry, err := kv.Get(ctx, contract.MetaLogType(log, name))
+	entry, err := kv.Get(ctx, contract.MetaStoreType(log, name))
 	if errors.Is(err, jetstream.ErrKeyNotFound) {
 		return contract.TypeRecord{}, fmt.Errorf("%w: %s in %s", ErrNoType, name, log)
 	}
@@ -80,12 +80,12 @@ var ErrNoIndex = errors.New("index is not declared")
 // GetIndexDeclaration reads one index's declaration — the kind is what
 // shapes a query (0025).
 func (c *Client) GetIndexDeclaration(ctx context.Context, log, index string) (contract.IndexDeclaration, error) {
-	if err := contract.ValidateLogName(log); err != nil {
+	if err := contract.ValidateStoreName(log); err != nil {
 		return contract.IndexDeclaration{}, err
 	}
 	kv, err := c.js.KeyValue(ctx, contract.MetaBucket)
 	if err != nil {
-		return contract.IndexDeclaration{}, fmt.Errorf("open META: %w", err)
+		return contract.IndexDeclaration{}, fmt.Errorf("cannot read the definitions: %w", err)
 	}
 	entry, err := kv.Get(ctx, contract.MetaIndex(log, index))
 	if errors.Is(err, jetstream.ErrKeyNotFound) {
@@ -104,12 +104,39 @@ func (c *Client) GetIndexDeclaration(ctx context.Context, log, index string) (co
 // Resolve walks a thing's tail against the log's declared types (0021 § 4,
 // 0022 § 2) — the same pair walk pre-flight runs, exposed so a caller can
 // speak about the type before it writes.
-func (c *Client) Resolve(ctx context.Context, log, thing string) (contract.Resolution, error) {
-	if err := contract.ValidateLogName(log); err != nil {
+func (c *Client) resolveTail(ctx context.Context, log, thing string) (contract.Resolution, error) {
+	if err := contract.ValidateStoreName(log); err != nil {
 		return contract.Resolution{}, err
 	}
-	if err := contract.ValidateThing(thing); err != nil {
+	if err := contract.ValidateInstance(thing); err != nil {
 		return contract.Resolution{}, err
 	}
 	return c.types.resolve(ctx, log, thing)
+}
+
+// ErrNoStore is a store read for a name the account does not hold.
+var ErrNoStore = errors.New("store does not exist")
+
+// GetStore reads one store's settings — its history policy, description
+// and size limit — a KV read of data at rest.
+func (c *Client) GetStore(ctx context.Context, store string) (contract.StoreConfig, error) {
+	if err := contract.ValidateStoreName(store); err != nil {
+		return contract.StoreConfig{}, err
+	}
+	kv, err := c.js.KeyValue(ctx, contract.MetaBucket)
+	if err != nil {
+		return contract.StoreConfig{}, fmt.Errorf("cannot read the definitions: %w", err)
+	}
+	entry, err := kv.Get(ctx, contract.MetaStoreConfig(store))
+	if errors.Is(err, jetstream.ErrKeyNotFound) {
+		return contract.StoreConfig{}, fmt.Errorf("%w: %s", ErrNoStore, store)
+	}
+	if err != nil {
+		return contract.StoreConfig{}, fmt.Errorf("read store %s: %w", store, err)
+	}
+	var cfg contract.StoreConfig
+	if err := json.Unmarshal(entry.Value(), &cfg); err != nil {
+		return contract.StoreConfig{}, fmt.Errorf("decode store %s: %w", store, err)
+	}
+	return cfg, nil
 }

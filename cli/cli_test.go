@@ -4,17 +4,14 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/impire-io/chronicle/cli"
-	"github.com/impire-io/chronicle/client"
 	"github.com/impire-io/chronicle/devdir"
 	"github.com/impire-io/chronicle/internal/version"
 	"github.com/impire-io/chronicle/up"
@@ -29,13 +26,14 @@ func run(ctx context.Context, t *testing.T, args ...string) string {
 	return out.String()
 }
 
-func runErr(ctx context.Context, args ...string) error {
+func runErr(ctx context.Context, args ...string) (string, error) {
 	var out bytes.Buffer
-	return cli.Run(ctx, args, &out)
+	err := cli.Run(ctx, args, &out)
+	return out.String(), err
 }
 
-// startLocal boots the quick start in a temp dir and returns it with the
-// dir; the config store is isolated per test.
+// startLocal boots the quick start in a temp dir with an isolated config
+// store, and saves the local context the way `chronicle up` does.
 func startLocal(ctx context.Context, t *testing.T) (*up.Local, string) {
 	t.Helper()
 	t.Setenv("CHRONICLE_CONFIG_HOME", t.TempDir())
@@ -45,486 +43,380 @@ func startLocal(ctx context.Context, t *testing.T) (*up.Local, string) {
 		t.Fatalf("up: %v", err)
 	}
 	t.Cleanup(l.Stop)
+	if err := cli.SaveLocalContext(l.URL, dir); err != nil {
+		t.Fatalf("save local context: %v", err)
+	}
 	return l, dir
 }
 
-// TestCLISpine runs the design's day-in-the-life (07-the-cli.md) over the
-// open quick start: the local user speaks with nothing saved, a context
-// saved from the same seed speaks too, log create selects, the sentences
-// speak through the context, and the refusals teach.
+func writeFile(t *testing.T, name, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+const invoiceType = `schema:
+  type: object
+  properties:
+    total: {type: number}
+    status: {type: string}
+history: compactable
+children:
+  comments: comment
+operations:
+  create:
+    schema: {type: object}
+    effect: merge
+  send:
+    schema:
+      type: object
+      required: [to]
+    effect: merge
+  note:
+    schema: {type: object}
+    effect: none
+`
+
+const commentType = `schema: {type: object}
+operations:
+  create:
+    schema: {type: object}
+    effect: merge
+`
+
+// TestCLISpine walks the design's quick start (07-the-cli.md) over the
+// local quick start: one grammar, noun then verb; the local context `up`
+// saved speaks without a flag; store create selects; the lists are
+// tables; the refusals teach.
 func TestCLISpine(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
-	l, dir := startLocal(ctx, t)
+	startLocal(ctx, t)
 
-	// Nothing saved and no quick start under the default dir: a sentence
-	// teaches the fixes.
-	if err := runErr(ctx, "get", "invoice.invoice-1", "--dir", filepath.Join(t.TempDir(), "nowhere")); err == nil || !strings.Contains(err.Error(), "no credentials") {
-		t.Fatalf("creds teaching error missing: %v", err)
+	// The local context is selected: context list marks it.
+	out := run(ctx, t, "context", "list")
+	if !strings.Contains(out, "*  local") {
+		t.Fatalf("context list: %s", out)
 	}
-
-	// The quick start's fallback: --dir alone finds the url and the user,
-	// and the user is the registry's admin.
-	out := run(ctx, t, "log", "list", "--dir", dir)
-	if strings.TrimSpace(out) != "" {
-		t.Fatalf("fresh log list output: %q", out)
+	// Nothing selected yet: the store teaching error.
+	if _, err := runErr(ctx, "instance", "get", "invoice/inv-1"); err == nil || !strings.Contains(err.Error(), "no store selected") {
+		t.Fatalf("store teaching error missing: %v", err)
 	}
-
-	// A context saved on the same seed: the open form's way of being
-	// someone on any NATS.
-	out = run(ctx, t, "context", "save", "local", "--nkey", devdir.UserNkeyPath(dir), "--principal", "dana", "--url", l.URL)
-	if !strings.Contains(out, "context local saved") {
-		t.Fatalf("context save output: %s", out)
+	out = run(ctx, t, "store", "create", "orders")
+	if !strings.Contains(out, "store orders created") || !strings.Contains(out, "store orders selected") {
+		t.Fatalf("store create: %s", out)
 	}
-	// dana is not a member: the node refuses, the assertion is checked.
-	run(ctx, t, "context", "select", "local")
-	if err := runErr(ctx, "log", "create", "orders"); err == nil || !strings.Contains(err.Error(), "not a member") {
-		t.Fatalf("non-member not refused: %v", err)
-	}
-	run(ctx, t, "context", "save", "local", "--nkey", devdir.UserNkeyPath(dir), "--principal", devdir.LocalPrincipal)
-
-	// Connected but nothing selected: the log teaching error.
-	if err := runErr(ctx, "get", "invoice.invoice-1"); err == nil || !strings.Contains(err.Error(), "no log selected") {
-		t.Fatalf("log teaching error missing: %v", err)
-	}
-
-	// log create selects the log it made.
-	out = run(ctx, t, "log", "create", "orders")
-	if !strings.Contains(out, "log orders created") || !strings.Contains(out, "selected as the working log") {
-		t.Fatalf("log create output: %s", out)
+	out = run(ctx, t, "store", "list")
+	if !strings.Contains(out, "NAME") || !strings.Contains(out, "*  orders") || !strings.Contains(out, "compactable") {
+		t.Fatalf("store list: %s", out)
 	}
 	out = run(ctx, t, "context", "show")
-	if !strings.Contains(out, "context: local") || !strings.Contains(out, "as:      admin") || !strings.Contains(out, "log:     orders") {
-		t.Fatalf("context show output: %s", out)
+	if !strings.Contains(out, "context:   local") || !strings.Contains(out, "store:     orders") {
+		t.Fatalf("context show: %s", out)
 	}
 
-	// One act defines the type; the define echoes its facets back.
-	out = run(ctx, t, "type", "define", "invoice",
-		"--def", `{"schema":{"type":"object"},"operations":{"create":{"schema":{"type":"object"},"effect":"merge"},"comment.add":{"schema":{"type":"object","required":["body"]}}}}`)
-	if !strings.Contains(out, "type invoice in orders: revision 1") ||
-		!strings.Contains(out, "operations: comment.add (none), create (merge)") {
-		t.Fatalf("type define output: %s", out)
+	// Types from files; the effect is always stated.
+	out = run(ctx, t, "type", "init", "invoice")
+	if !strings.Contains(out, "operations:") || !strings.Contains(out, "effect: merge") {
+		t.Fatalf("type init: %s", out)
+	}
+	out = run(ctx, t, "type", "create", "invoice", "-f", writeFile(t, "invoice.yaml", invoiceType))
+	if !strings.Contains(out, "type invoice defined in store orders") || !strings.Contains(out, "operations: create (merge), note (none), send (merge)") || !strings.Contains(out, "children:   comments→comment") {
+		t.Fatalf("type create: %s", out)
+	}
+	run(ctx, t, "type", "create", "comment", "-f", writeFile(t, "comment.yaml", commentType))
+	if _, err := runErr(ctx, "type", "create", "bad", "-f", writeFile(t, "bad.yaml", "schema: {}\noperations:\n  go:\n    schema: {}\n")); err == nil || !strings.Contains(err.Error(), "operations.go.effect: state it") {
+		t.Fatalf("an unstated effect must be refused: %v", err)
 	}
 	out = run(ctx, t, "type", "list")
-	if strings.TrimSpace(out) != "invoice" {
-		t.Fatalf("type list output: %s", out)
+	if !strings.Contains(out, "NAME") || !strings.Contains(out, "invoice") || !strings.Contains(out, "comments→comment") {
+		t.Fatalf("type list: %s", out)
 	}
-	out = run(ctx, t, "type", "inspect", "invoice")
-	if !strings.Contains(out, "type invoice — revision 1 · history compactable") ||
-		!strings.Contains(out, "comment.add") {
-		t.Fatalf("type inspect output: %s", out)
+	out = run(ctx, t, "type", "get", "invoice")
+	if !strings.Contains(out, "type invoice  revision 1  history compactable") || !strings.Contains(out, "comments → comment") {
+		t.Fatalf("type get: %s", out)
 	}
-	out = run(ctx, t, "type", "inspect", "invoice", "--json")
-	if !strings.Contains(out, `"revision": 1`) {
-		t.Fatalf("type inspect --json output: %s", out)
+	out = run(ctx, t, "op", "list", "invoice")
+	if !strings.Contains(out, "NAME") || !strings.Contains(out, "send") {
+		t.Fatalf("op list: %s", out)
 	}
-
-	// Create is an operation: birth through the type's constructor.
-	out = run(ctx, t, "create", "invoice.invoice-1", "--payload", `{"total":3}`)
-	if !strings.Contains(out, "born: invoice.invoice-1") || !strings.Contains(out, "via create") {
-		t.Fatalf("create output: %s", out)
+	if _, err := runErr(ctx, "op", "create", "invoice", "ship", "--schema", `{"type":"object"}`); err == nil || !strings.Contains(err.Error(), "--effect") {
+		t.Fatalf("op create without --effect must be refused: %v", err)
 	}
-
-	// The sentence verb invokes an operation; the payload pre-flights.
-	out = run(ctx, t, "do", "invoice.invoice-1", "comment.add", "--payload", `{"body":"hi"}`)
-	var head uint64
-	if _, err := fmt.Sscanf(out, "done: seq %d", &head); err != nil {
-		t.Fatalf("do output: %s", out)
+	out = run(ctx, t, "op", "create", "invoice", "ship", "--schema", `{"type":"object"}`, "--effect", "merge")
+	if !strings.Contains(out, "operation ship created on invoice") {
+		t.Fatalf("op create: %s", out)
 	}
-	if err := runErr(ctx, "do", "invoice.invoice-1", "comment.add", "--payload", `{"nobody":1}`); err == nil {
-		t.Fatal("invalid payload appended")
+	out = run(ctx, t, "op", "delete", "invoice", "ship")
+	if !strings.Contains(out, "operation ship deleted from invoice") {
+		t.Fatalf("op delete: %s", out)
 	}
 
-	// A refused operation teaches what the type defines.
-	if err := runErr(ctx, "do", "invoice.invoice-1", "close"); err == nil ||
-		!strings.Contains(err.Error(), "operations on invoice: comment.add, create") {
-		t.Fatalf("do teaching error missing: %v", err)
+	// Instances: create, apply, get, list, history, snapshot.
+	out = run(ctx, t, "instance", "create", "invoice/inv-1", "--data", `{"total":120,"status":"draft"}`)
+	if !strings.Contains(out, "created invoice/inv-1") {
+		t.Fatalf("instance create: %s", out)
+	}
+	run(ctx, t, "instance", "create", "invoice/inv-2", "--data", `{"total":5,"status":"draft"}`)
+	if _, err := runErr(ctx, "instance", "create", "invoice/inv-1", "--data", `{}`); err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("a second create must say it exists: %v", err)
+	}
+	if _, err := runErr(ctx, "instance", "create", "invoice.inv-3"); err == nil || !strings.Contains(err.Error(), `separated by "/"`) {
+		t.Fatalf("a dotted path must teach the grammar: %v", err)
+	}
+	if _, err := runErr(ctx, "instance", "create", "widget/w-1"); err == nil || !strings.Contains(err.Error(), `no type "widget" is defined`) {
+		t.Fatalf("an undefined type must be named: %v", err)
+	}
+	out = run(ctx, t, "instance", "apply", "invoice/inv-1", "send", "--data", `{"to":"x","status":"sent"}`)
+	if !strings.Contains(out, "applied send to invoice/inv-1") {
+		t.Fatalf("instance apply: %s", out)
+	}
+	if _, err := runErr(ctx, "instance", "apply", "invoice/inv-1", "ship"); err == nil || !strings.Contains(err.Error(), `invoice defines no operation "ship". It defines: create, note, send`) {
+		t.Fatalf("an undefined operation must list the defined ones: %v", err)
+	}
+	if _, err := runErr(ctx, "instance", "apply", "invoice/inv-1", "send", "--data", `{}`); err == nil || !strings.Contains(err.Error(), "does not fit the operation's schema") {
+		t.Fatalf("a schema miss must be said: %v", err)
+	}
+	run(ctx, t, "instance", "create", "invoice/inv-1/comments/c-1", "--data", `{"body":"first"}`)
+	if _, err := runErr(ctx, "instance", "create", "invoice/inv-1/notes/n-1"); err == nil || !strings.Contains(err.Error(), `declares no child "notes"`) {
+		t.Fatalf("an undeclared child must be named: %v", err)
 	}
 
-	// The expected-sequence guard reaches the wire (0018).
-	run(ctx, t, "do", "invoice.invoice-1", "comment.add",
-		"--payload", `{"body":"guarded"}`, "--expect-seq", strconv.FormatUint(head, 10))
-	if err := runErr(ctx, "do", "invoice.invoice-1", "comment.add",
-		"--payload", `{"body":"late"}`, "--expect-seq", strconv.FormatUint(head, 10)); err == nil ||
-		!strings.Contains(err.Error(), "moved past the guard") {
-		t.Fatalf("stale guard not refused: %v", err)
+	waitFor(t, func() bool {
+		out, err := runErr(ctx, "instance", "get", "invoice/inv-1")
+		return err == nil && strings.Contains(out, `"status": "sent"`)
+	})
+	out = run(ctx, t, "instance", "get", "invoice/inv-1")
+	if !strings.HasPrefix(out, "invoice/inv-1  (sequence ") {
+		t.Fatalf("instance get: %s", out)
 	}
 
-	// The constructor's merge fed the fold: get reads it back.
-	waitFor(ctx, t, []string{"get", "invoice.invoice-1"}, `"total":3`)
-
-	// Operations are managed where they live.
-	out = run(ctx, t, "op", "define", "invoice", "status.set", "--schema", `{"type":"object"}`, "--effect", "merge")
-	if !strings.Contains(out, "operation status.set on invoice: effect merge, revision 2") {
-		t.Fatalf("op define output: %s", out)
+	// The list that was missing: by type, under a parent, with a filter.
+	out = run(ctx, t, "instance", "list", "--type", "invoice")
+	if !strings.Contains(out, "PATH") || !strings.Contains(out, "STATUS") || !strings.Contains(out, "invoice/inv-1") || !strings.Contains(out, "invoice/inv-2") || strings.Contains(out, "comments") {
+		t.Fatalf("instance list --type: %s", out)
 	}
-	out = run(ctx, t, "operation", "list", "invoice")
-	if !strings.Contains(out, "status.set") || !strings.Contains(out, "merge") {
-		t.Fatalf("operation list output: %s", out)
+	out = run(ctx, t, "instance", "list", "--type", "invoice", "--where", "status=sent")
+	if !strings.Contains(out, "invoice/inv-1") || strings.Contains(out, "invoice/inv-2") {
+		t.Fatalf("instance list --where: %s", out)
 	}
-	run(ctx, t, "do", "invoice.invoice-1", "status.set", "--payload", `{"status":"closed"}`)
-	waitFor(ctx, t, []string{"get", "invoice.invoice-1"}, `"status":"closed"`)
-
-	out = run(ctx, t, "op", "define", "invoice", "status.set", "--schema", `{"type":"object"}`)
-	if !strings.Contains(out, "effect changes merge → none: derived state is suspect") {
-		t.Fatalf("effect change narration missing: %s", out)
+	out = run(ctx, t, "instance", "list", "--in", "invoice/inv-1")
+	if !strings.Contains(out, "invoice/inv-1/comments/c-1") || strings.Contains(out, "invoice/inv-2") {
+		t.Fatalf("instance list --in: %s", out)
 	}
-	out = run(ctx, t, "op", "rm", "invoice", "status.set")
-	if !strings.Contains(out, "re-fold as effect none with a warning") ||
-		!strings.Contains(out, "operation status.set removed from invoice") {
-		t.Fatalf("op rm output: %s", out)
+	out = run(ctx, t, "instance", "list", "--output", "jsonl")
+	if !strings.Contains(out, `"path":"invoice/inv-1"`) || !strings.Contains(out, `"type":"invoice"`) {
+		t.Fatalf("instance list --output jsonl: %s", out)
 	}
-
-	// History speaks the operations, create included, by the principal
-	// the context states.
-	out = run(ctx, t, "history", "invoice.invoice-1")
-	if !strings.Contains(out, "create") || !strings.Contains(out, "comment.add") || !strings.Contains(out, "by admin") {
-		t.Fatalf("history output: %s", out)
+	out = run(ctx, t, "instance", "list", "--type", "invoice", "--sort", "total", "--limit", "1")
+	if !strings.Contains(out, "invoice/inv-2") || strings.Contains(out, "invoice/inv-1") {
+		t.Fatalf("instance list --sort --limit: %s", out)
 	}
-
-	// Rollup: typed compactable compacts; untyped keeps its veto.
-	out = run(ctx, t, "rollup", "invoice.invoice-1")
-	if !strings.Contains(out, "compacted: invoice.invoice-1") {
-		t.Fatalf("typed rollup output: %s", out)
+	out = run(ctx, t, "instance", "history", "invoice/inv-1")
+	if !strings.Contains(out, "SEQ") || !strings.Contains(out, "create") || !strings.Contains(out, "send") {
+		t.Fatalf("instance history: %s", out)
 	}
-	out = run(ctx, t, "create", "freeform-1", "--payload", `{}`)
-	if !strings.Contains(out, "born: freeform-1") || strings.Contains(out, "via") {
-		t.Fatalf("untyped create output: %s", out)
+	out = run(ctx, t, "instance", "snapshot", "invoice/inv-1")
+	if !strings.Contains(out, "snapshot taken of invoice/inv-1") {
+		t.Fatalf("instance snapshot: %s", out)
 	}
-	run(ctx, t, "do", "freeform-1", "note.add", "--payload", `{"body":"kept"}`)
-	out = run(ctx, t, "rollup", "freeform-1")
-	if !strings.Contains(out, "not compacted") || !strings.Contains(out, "untyped") {
-		t.Fatalf("untyped rollup veto output: %s", out)
+	out = run(ctx, t, "instance", "history", "invoice/inv-1")
+	if !strings.Contains(out, "snapshot") || strings.Contains(out, "send") {
+		t.Fatalf("history after a snapshot: %s", out)
 	}
 
-	run(ctx, t, "type", "define", "receipt", "--def", `{"schema":{"type":"object"},"operations":{"scan":{"schema":{"type":"object"}}}}`)
-	if err := runErr(ctx, "create", "receipt.r-1"); err == nil ||
-		!strings.Contains(err.Error(), "operations on receipt: scan") {
-		t.Fatalf("constructor teaching error missing: %v", err)
-	}
-
-	// A preserved log (0019): created and selected, its rollup declines.
-	run(ctx, t, "log", "create", "audit", "--history", "preserved")
-	run(ctx, t, "create", "case-1", "--payload", `{}`)
-	run(ctx, t, "do", "case-1", "status.set", "--payload", `{"status":"open"}`)
-	out = run(ctx, t, "rollup", "case-1")
-	if !strings.Contains(out, "not compacted") || !strings.Contains(out, "preserved") {
-		t.Fatalf("preserved rollup output: %s", out)
-	}
-
-	// --log overrides the selection without moving it.
-	out = run(ctx, t, "get", "invoice.invoice-1", "--log", "orders")
-	if !strings.Contains(out, "seq ") {
-		t.Fatalf("--log override output: %s", out)
-	}
-	out = run(ctx, t, "context", "show")
-	if !strings.Contains(out, "log:     audit") {
-		t.Fatalf("selection moved by --log: %s", out)
-	}
-	if err := runErr(ctx, "log", "select", "nowhere"); err == nil ||
-		!strings.Contains(err.Error(), "logs: audit, orders") {
-		t.Fatalf("log select teaching error missing: %v", err)
-	}
-	out = run(ctx, t, "log", "select", "orders")
-	if !strings.Contains(out, "working log: orders") {
-		t.Fatalf("log select output: %s", out)
-	}
-	out = run(ctx, t, "log", "list")
-	if !strings.Contains(out, "audit") || !strings.Contains(out, "orders (selected)") {
-		t.Fatalf("log list output: %s", out)
-	}
-
-	// Who may act: the admin registers a member, who speaks through a
-	// context on the same seed under their own name; revoked, they are
-	// refused; the list shows the registry.
-	out = run(ctx, t, "member", "add", "erin", "--role", "writer")
-	if !strings.Contains(out, "member erin added: role writer") {
-		t.Fatalf("member add output: %s", out)
-	}
-	run(ctx, t, "context", "save", "erin", "--nkey", devdir.UserNkeyPath(dir), "--principal", "erin", "--url", l.URL)
-	run(ctx, t, "rollup", "invoice.invoice-1", "--log", "orders", "--context", "erin")
-	if err := runErr(ctx, "log", "create", "theirs", "--context", "erin"); err == nil || !strings.Contains(err.Error(), "forbidden") {
-		t.Fatalf("writer governed: %v", err)
-	}
+	// Members and service accounts are two nouns over one registry.
+	run(ctx, t, "member", "add", "jordan", "--role", "reader")
+	run(ctx, t, "service-account", "create", "billing-svc", "--role", "writer")
 	out = run(ctx, t, "member", "list")
-	if !strings.Contains(out, "admin\tadmin") || !strings.Contains(out, "erin\twriter") {
-		t.Fatalf("member list output: %s", out)
+	if !strings.Contains(out, "jordan") || strings.Contains(out, "billing-svc") {
+		t.Fatalf("member list: %s", out)
 	}
-	out = run(ctx, t, "member", "revoke", "erin")
-	if !strings.Contains(out, "member erin revoked: gone from the registry") {
-		t.Fatalf("member revoke output: %s", out)
+	out = run(ctx, t, "service-account", "list")
+	if !strings.Contains(out, "billing-svc") || strings.Contains(out, "jordan") {
+		t.Fatalf("service-account list: %s", out)
 	}
-	if err := runErr(ctx, "rollup", "invoice.invoice-1", "--log", "orders", "--context", "erin"); err == nil || !strings.Contains(err.Error(), "forbidden") {
-		t.Fatalf("revoked member still speaks: %v", err)
+	if _, err := runErr(ctx, "member", "set-role", "jordan", "admin"); err == nil || !strings.Contains(err.Error(), "not available yet") {
+		t.Fatalf("set-role must say it waits on its verb: %v", err)
 	}
-
-	// Discovery: the things and their pair grammar, from the state keys.
-	out = run(ctx, t, "things")
-	if !strings.Contains(out, "invoice.invoice-1") || !strings.Contains(out, "freeform-1") {
-		t.Fatalf("things output: %s", out)
-	}
-	out = run(ctx, t, "things", "invoice")
-	if !strings.Contains(out, "invoice.invoice-1") || strings.Contains(out, "freeform-1") {
-		t.Fatalf("things prefix output: %s", out)
-	}
+	run(ctx, t, "member", "remove", "jordan")
+	run(ctx, t, "service-account", "revoke", "billing-svc")
 }
 
-func waitFor(ctx context.Context, t *testing.T, args []string, want string) {
-	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		var out bytes.Buffer
-		err := cli.Run(ctx, args, &out)
-		if err == nil && strings.Contains(out.String(), want) {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%v never showed %q: %v %s", args, want, err, out.String())
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-}
-
-// TestCLIContextStore drives the context verbs alone — the store needs
-// no server — in both ways of being someone.
-func TestCLIContextStore(t *testing.T) {
-	t.Setenv("CHRONICLE_CONFIG_HOME", t.TempDir())
-	ctx := context.Background()
-
-	credsA := filepath.Join(t.TempDir(), "a.creds")
-	seedB := filepath.Join(t.TempDir(), "b.nk")
-
-	out := run(ctx, t, "context", "save", "alpha", "--creds", credsA, "--url", "nats://localhost:4222")
-	if !strings.Contains(out, "context alpha saved") || !strings.Contains(out, "select it") {
-		t.Fatalf("context save output: %s", out)
-	}
-	out = run(ctx, t, "context", "select", "alpha")
-	if !strings.Contains(out, "context alpha selected") {
-		t.Fatalf("context select output: %s", out)
-	}
-	// An nkey context needs its principal, and only one way at a time.
-	if err := runErr(ctx, "context", "save", "beta", "--nkey", seedB); err == nil || !strings.Contains(err.Error(), "--principal") {
-		t.Fatalf("nkey without principal not refused: %v", err)
-	}
-	if err := runErr(ctx, "context", "save", "beta", "--nkey", seedB, "--creds", credsA, "--principal", "bo"); err == nil || !strings.Contains(err.Error(), "pick one") {
-		t.Fatalf("two ways not refused: %v", err)
-	}
-	run(ctx, t, "context", "save", "beta", "--nkey", seedB, "--principal", "bo")
-	out = run(ctx, t, "context", "show", "beta")
-	if !strings.Contains(out, "nkey:    "+seedB) || !strings.Contains(out, "as:      bo") {
-		t.Fatalf("nkey context show output: %s", out)
-	}
-	out = run(ctx, t, "context", "list")
-	if !strings.Contains(out, "* alpha") || !strings.Contains(out, "  beta") {
-		t.Fatalf("context list output: %s", out)
-	}
-	out = run(ctx, t, "context", "show")
-	if !strings.Contains(out, "context: alpha") || !strings.Contains(out, "nats://localhost:4222") ||
-		!strings.Contains(out, "creds:   "+credsA) ||
-		!strings.Contains(out, "none selected — chronicle log select") {
-		t.Fatalf("context show output: %s", out)
-	}
-	if err := runErr(ctx, "context", "select", "gamma"); err == nil ||
-		!strings.Contains(err.Error(), "not saved") {
-		t.Fatalf("selecting a missing context: %v", err)
-	}
-	out = run(ctx, t, "context", "rm", "alpha")
-	if !strings.Contains(out, "context alpha removed") {
-		t.Fatalf("context rm output: %s", out)
-	}
-	if err := runErr(ctx, "context", "show"); err == nil ||
-		!strings.Contains(err.Error(), "no context selected") {
-		t.Fatalf("dangling selection survived rm: %v", err)
-	}
-}
-
-// TestCLIQuery drives the one query verb over the quick start: the
-// declared kind shapes the query, bare invocations explain, the state
-// kind declines to get, an unknown index teaches what is declared — and
-// the quick start's own supervisor serves the index it declared.
-func TestCLIQuery(t *testing.T) {
+// TestCLIIndexes declares, lists and queries an index in the new words,
+// and keeps state out of the index list.
+func TestCLIIndexes(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
-	_, dir := startLocal(ctx, t)
-	t.Setenv("CHRONICLE_CONTEXT", "")
-	run(ctx, t, "context", "save", "local", "--nkey", devdir.UserNkeyPath(dir), "--principal", devdir.LocalPrincipal, "--url", mustURL(t, dir))
-	run(ctx, t, "context", "select", "local")
-	run(ctx, t, "log", "create", "orders")
-	run(ctx, t, "create", "invoice.invoice-1", "--payload", `{"title":"quantum widgets"}`)
+	startLocal(ctx, t)
+	run(ctx, t, "store", "create", "orders")
+	run(ctx, t, "type", "create", "invoice", "-f", writeFile(t, "invoice.yaml", invoiceType))
+	run(ctx, t, "instance", "create", "invoice/inv-1", "--data", `{"total":1,"status":"quantum widgets"}`)
+	run(ctx, t, "instance", "create", "invoice/inv-2", "--data", `{"total":2,"status":"plain paperclips"}`)
 
-	out := run(ctx, t, "index", "declare", "text")
-	if !strings.Contains(out, "CHRON.API.INDEX.QUERY.orders.text") {
-		t.Fatalf("index declare output: %s", out)
+	out := run(ctx, t, "index", "list")
+	if !strings.Contains(out, "no indexes") || strings.Contains(out, "state") {
+		t.Fatalf("index list before: %s", out)
+	}
+	if _, err := runErr(ctx, "index", "create", "text"); err == nil || !strings.Contains(err.Error(), "--kind is required") {
+		t.Fatalf("index create without a kind must teach: %v", err)
+	}
+	out = run(ctx, t, "index", "create", "text", "--kind", "search")
+	if !strings.Contains(out, "index text created in store orders (search, from state)") {
+		t.Fatalf("index create: %s", out)
 	}
 	out = run(ctx, t, "index", "list")
-	if !strings.Contains(out, "text\tsearch") || !strings.Contains(out, "state\tstate\t(born with the log, undeletable)") {
-		t.Fatalf("index list output: %s", out)
+	if !strings.Contains(out, "NAME") || !strings.Contains(out, "text") || strings.Contains(out, "\nstate ") {
+		t.Fatalf("index list: %s", out)
 	}
-
-	out = run(ctx, t, "query", "text")
-	if !strings.Contains(out, "search index: chronicle query text <text...>") {
-		t.Fatalf("bare query output: %s", out)
+	out = run(ctx, t, "index", "get", "text")
+	if !strings.Contains(out, "index text  kind search  source state") {
+		t.Fatalf("index get: %s", out)
 	}
-	if err := runErr(ctx, "query", "state"); err == nil ||
-		!strings.Contains(err.Error(), "chronicle get <thing>") {
-		t.Fatalf("state query not declined: %v", err)
+	waitFor(t, func() bool {
+		out, err := runErr(ctx, "index", "query", "text", "widgets")
+		return err == nil && strings.Contains(out, "invoice/inv-1") && strings.Contains(out, "1 of 1")
+	})
+	out = run(ctx, t, "index", "query", "text")
+	if !strings.Contains(out, "index text is a search index: chronicle index query text TEXT...") {
+		t.Fatalf("a bare query must say what the index accepts: %s", out)
 	}
-	if err := runErr(ctx, "query", "nowhere", "words"); err == nil ||
-		!strings.Contains(err.Error(), "declared indexes: state, text") {
-		t.Fatalf("unknown index teaching error missing: %v", err)
+	if _, err := runErr(ctx, "index", "query", "nowhere", "x"); err == nil || !strings.Contains(err.Error(), "indexes: text") {
+		t.Fatalf("an unknown index must list the declared ones: %v", err)
 	}
-
-	deadline := time.Now().Add(15 * time.Second)
-	for {
-		var qout bytes.Buffer
-		err := cli.Run(ctx, []string{"query", "text", "widgets"}, &qout)
-		if err == nil && strings.Contains(qout.String(), "invoice-1") {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("query never hit: %v %s", err, qout.String())
-		}
-		time.Sleep(50 * time.Millisecond)
+	out = run(ctx, t, "index", "query", "text", "widgets", "--output", "jsonl")
+	if !strings.Contains(out, `"instance":"invoice/inv-1"`) || !strings.Contains(out, `"trailer"`) {
+		t.Fatalf("index query --output jsonl: %s", out)
 	}
-
 	out = run(ctx, t, "index", "delete", "text")
-	if !strings.Contains(out, "retired") {
-		t.Fatalf("index delete output: %s", out)
+	if !strings.Contains(out, "index text deleted from store orders") {
+		t.Fatalf("index delete: %s", out)
 	}
 }
 
-func mustURL(t *testing.T, dir string) string {
-	t.Helper()
-	url, err := devdir.ReadClientURL(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return url
-}
-
-// TestCLIVersion: the version verb prints the stamped version — release
-// consumers and the brew formula's install test assert on it.
-func TestCLIVersion(t *testing.T) {
-	var out bytes.Buffer
-	if err := cli.Run(context.Background(), []string{"version"}, &out); err != nil {
-		t.Fatalf("version: %v", err)
-	}
-	if want := version.Version + "\n"; out.String() != want {
-		t.Errorf("version output = %q, want %q", out.String(), want)
-	}
-}
-
-// TestCLIExtension: a build's extension is dispatched by name, prints
-// its sections first, may not shadow the open grammar, and --bridge is
-// refused with the reason where no build offers it.
-func TestCLIExtension(t *testing.T) {
-	t.Setenv("CHRONICLE_CONFIG_HOME", t.TempDir())
+// TestCLIHelp: help is everywhere and exits clean; an unknown sentence
+// prints the help and fails; connection flags are documented once.
+func TestCLIHelp(t *testing.T) {
 	ctx := context.Background()
-	called := ""
-	ext := &cli.Extension{
-		Verbs: map[string]cli.Verb{"fly": func(_ context.Context, args []string, out io.Writer) error {
-			called = strings.Join(args, " ")
-			fmt.Fprintln(out, "flew")
-			return nil
-		}},
-		Usage: "run a fleet\n  chronicle fly [--far]\n",
+	t.Setenv("CHRONICLE_CONFIG_HOME", t.TempDir())
+	out := run(ctx, t)
+	if !strings.Contains(out, "Your account:") || !strings.Contains(out, "instance") || !strings.Contains(out, "service-account") {
+		t.Fatalf("root help: %s", out)
 	}
-	var out bytes.Buffer
-	if err := cli.RunWith(ctx, []string{"fly", "--far", "north"}, &out, ext); err != nil || called != "--far north" || !strings.Contains(out.String(), "flew") {
-		t.Fatalf("extension verb: err=%v called=%q out=%q", err, called, out.String())
+	for _, args := range [][]string{{"--help"}, {"help"}, {"help", "instance"}, {"instance", "--help"}, {"instance", "list", "--help"}, {"version", "-h"}, {"context", "add", "-h"}} {
+		if _, err := runErr(ctx, args...); err != nil {
+			t.Fatalf("chronicle %s: help must exit clean: %v", strings.Join(args, " "), err)
+		}
 	}
-	out.Reset()
-	if err := cli.RunWith(ctx, nil, &out, ext); err == nil || !strings.HasPrefix(out.String(), "chronicle — ops-logs as a product\n\nrun a fleet\n  chronicle fly") || !strings.Contains(out.String(), "define vocabulary") {
-		t.Fatalf("extension usage: %v\n%s", err, out.String())
+	out, _ = runErr(ctx, "instance", "list", "--help")
+	if !strings.Contains(out, "Usage: chronicle instance list") || !strings.Contains(out, "--where") || strings.Contains(out, "--creds") {
+		t.Fatalf("verb help must show its own flags and not the connection flags: %s", out)
 	}
-	shadow := &cli.Extension{Verbs: map[string]cli.Verb{"get": ext.Verbs["fly"]}}
-	if err := cli.RunWith(ctx, []string{"get", "x"}, &out, shadow); err == nil || !strings.Contains(err.Error(), "shadows") {
-		t.Fatalf("shadowing verb not refused: %v", err)
+	out, err := runErr(ctx, "instance", "frobnicate")
+	if !errors.Is(err, cli.ErrUsage) || !strings.Contains(out, "chronicle instance list") {
+		t.Fatalf("an unknown verb must print the noun's help and fail: %v\n%s", err, out)
 	}
-	// An override wraps an open verb and may delegate to it.
-	wrapped := &cli.Extension{Override: map[string]func(cli.Verb) cli.Verb{
-		"member": func(open cli.Verb) cli.Verb {
-			return func(ctx context.Context, args []string, out io.Writer) error {
-				if len(args) >= 1 && args[0] == "mint" {
-					fmt.Fprintln(out, "minted")
-					return nil
-				}
-				return open(ctx, args, out)
-			}
-		},
-	}}
-	out.Reset()
-	if err := cli.RunWith(ctx, []string{"member", "mint"}, &out, wrapped); err != nil || !strings.Contains(out.String(), "minted") {
-		t.Fatalf("override: %v %s", err, out.String())
+	if _, err := runErr(ctx, "frobnicate"); !errors.Is(err, cli.ErrUsage) {
+		t.Fatalf("an unknown noun must fail with usage: %v", err)
 	}
-	if err := cli.RunWith(ctx, []string{"member", "list"}, &out, wrapped); err == nil || !strings.Contains(err.Error(), "no credentials") {
-		t.Fatalf("override did not delegate to the open verb: %v", err)
+	if _, err := runErr(ctx, "instance"); !errors.Is(err, cli.ErrUsage) {
+		t.Fatalf("a noun without a verb must fail with usage: %v", err)
 	}
-	stray := &cli.Extension{Override: map[string]func(cli.Verb) cli.Verb{"fly": nil}}
-	if err := cli.RunWith(ctx, []string{"version"}, &out, stray); err == nil || !strings.Contains(err.Error(), "does not have") {
-		t.Fatalf("stray override not refused: %v", err)
-	}
-	// Every build dials the bridge itself (0043): a profile that is not
-	// there is the error, not a missing dialer.
-	if err := runErr(ctx, "log", "list", "--bridge", "p.json", "--account", "acme"); err == nil || !strings.Contains(err.Error(), "read install profile") {
-		t.Fatalf("--bridge with no profile on disk: %v", err)
-	}
-	// A bridge context carries the profile and the account: the sentences
-	// need neither flag (0035).
-	dialed := ""
-	t.Cleanup(cli.SetBridgeDial(func(profile, account string) (*client.Client, error) {
-		dialed = profile + " " + account
-		return nil, errors.New("dialed")
-	}))
-	var bridged *cli.Extension
-	out.Reset()
-	if err := cli.RunWith(ctx, []string{"context", "save", "hosted", "--bridge", "p.json", "--account", "acme"}, &out, bridged); err != nil {
-		t.Fatalf("context save --bridge: %v", err)
-	}
-	if err := cli.RunWith(ctx, []string{"log", "list", "--context", "hosted"}, &out, bridged); err == nil || err.Error() != "dialed" || !strings.HasSuffix(dialed, "/p.json acme") {
-		t.Fatalf("bridge context dial: err=%v dialed=%q", err, dialed)
-	}
-	if err := cli.RunWith(ctx, []string{"log", "list", "--context", "hosted", "--account", "other"}, &out, bridged); err == nil || !strings.HasSuffix(dialed, "/p.json other") {
-		t.Fatalf("--account did not beat the context's: %q", dialed)
-	}
-	out.Reset()
-	if err := cli.RunWith(ctx, []string{"context", "show", "hosted"}, &out, bridged); err != nil || !strings.Contains(out.String(), "bridge:  ") || !strings.Contains(out.String(), "account: acme") {
-		t.Fatalf("context show for a bridge context: %v\n%s", err, out.String())
-	}
-	if err := cli.RunWith(ctx, []string{"log", "list", "--bridge", "p.json"}, &out, bridged); err == nil || !strings.Contains(err.Error(), "--account") {
-		t.Fatalf("--bridge without an account not taught: %v", err)
-	}
-	// A build reads the selection back — the managed account create finds
-	// the bridge login there.
-	if err := cli.RunWith(ctx, []string{"context", "select", "hosted"}, &out, bridged); err != nil {
-		t.Fatalf("context select: %v", err)
-	}
-	if c, ok, err := cli.LoadContext(""); err != nil || !ok || !strings.HasSuffix(c.Bridge, "/p.json") || c.Account != "acme" {
-		t.Fatalf("LoadContext of the selection: %+v ok=%v err=%v", c, ok, err)
-	}
-	if _, ok, err := cli.LoadContext("nowhere"); err == nil || ok {
-		t.Fatalf("LoadContext of a missing context: ok=%v err=%v", ok, err)
-	}
-	if err := cli.RunWith(ctx, []string{"context", "save", "half", "--bridge", "p.json"}, &out, bridged); err == nil || !strings.Contains(err.Error(), "--account") {
-		t.Fatalf("context save --bridge without --account not refused: %v", err)
+	if out := run(ctx, t, "version"); strings.TrimSpace(out) != version.Version {
+		t.Fatalf("version: %q", out)
 	}
 }
 
-// TestConfigRootIsWhereContextsLive: the exported root is the directory a
-// saved context lands in — what a build adding verbs keeps its files
-// beside — and CHRONICLE_CONFIG_HOME moves it.
-func TestConfigRootIsWhereContextsLive(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("CHRONICLE_CONFIG_HOME", home)
-	root, err := cli.ConfigRoot()
-	if err != nil || root != home {
-		t.Fatalf("ConfigRoot = %q, %v; want %q", root, err, home)
+// TestCLIContexts: contexts are added, selected, shown and removed; a
+// store selection lives on its context.
+func TestCLIContexts(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	l, dir := startLocal(ctx, t)
+
+	out := run(ctx, t, "context", "add", "dev", "--nkey", devdir.UserNkeyPath(dir), "--principal", devdir.LocalPrincipal, "--url", l.URL)
+	if !strings.Contains(out, "context dev added") || !strings.Contains(out, "select it: chronicle context select dev") {
+		t.Fatalf("context add: %s", out)
 	}
+	if _, err := runErr(ctx, "context", "add", "nobody"); !errors.Is(err, cli.ErrUsage) {
+		t.Fatalf("context add without a credential must teach: %v", err)
+	}
+	run(ctx, t, "context", "select", "dev")
+	run(ctx, t, "store", "create", "orders")
+	out = run(ctx, t, "context", "show", "dev")
+	if !strings.Contains(out, "store:     orders") || !strings.Contains(out, "as:        admin") {
+		t.Fatalf("context show dev: %s", out)
+	}
+	out = run(ctx, t, "context", "show", "local")
+	if strings.Contains(out, "store:     orders") {
+		t.Fatalf("the selection must live on its own context: %s", out)
+	}
+	out = run(ctx, t, "store", "list", "--context", "local")
+	if !strings.Contains(out, "orders") || strings.Contains(out, "*  orders") {
+		t.Fatalf("store list through another context: %s", out)
+	}
+	out = run(ctx, t, "context", "remove", "dev")
+	if !strings.Contains(out, "context dev removed") {
+		t.Fatalf("context remove: %s", out)
+	}
+	if _, err := runErr(ctx, "store", "list"); err == nil || !strings.Contains(err.Error(), "no credential") {
+		t.Fatalf("after removing the selection, the teaching error: %v", err)
+	}
+}
+
+// TestCLIExtension: a build adds verbs and overrides nouns through the
+// seam; a shadowing name is refused.
+func TestCLIExtension(t *testing.T) {
+	ctx := context.Background()
+	t.Setenv("CHRONICLE_CONFIG_HOME", t.TempDir())
 	var out bytes.Buffer
-	if err := cli.Run(context.Background(), []string{"context", "save", "probe", "--creds", "x.creds", "--url", "nats://127.0.0.1:4222"}, &out); err != nil {
-		t.Fatalf("context save: %v (%s)", err, out.String())
+	ext := &cli.Extension{
+		Verbs: map[string]cli.Verb{"operator": func(_ context.Context, args []string, w io.Writer) error {
+			_, err := w.Write([]byte("operator " + strings.Join(args, " ") + "\n"))
+			return err
+		}},
+		Override: map[string]func(cli.Verb) cli.Verb{"member": func(open cli.Verb) cli.Verb {
+			return func(ctx context.Context, args []string, w io.Writer) error {
+				if len(args) >= 1 && args[0] == "rekey" {
+					_, err := w.Write([]byte("rekeyed\n"))
+					return err
+				}
+				return open(ctx, args, w)
+			}
+		}},
+		Usage: "As the operator:\n  operator         the environment's own verbs",
 	}
-	if _, err := os.Stat(filepath.Join(root, "contexts", "probe.json")); err != nil {
-		t.Fatalf("the saved context is not under ConfigRoot: %v", err)
+	if err := cli.RunWith(ctx, []string{"operator", "seal"}, &out, ext); err != nil || out.String() != "operator seal\n" {
+		t.Fatalf("extension verb: %v %q", err, out.String())
+	}
+	out.Reset()
+	if err := cli.RunWith(ctx, []string{"member", "rekey"}, &out, ext); err != nil || out.String() != "rekeyed\n" {
+		t.Fatalf("override: %v %q", err, out.String())
+	}
+	out.Reset()
+	if err := cli.RunWith(ctx, nil, &out, ext); err != nil || !strings.Contains(out.String(), "As the operator:") {
+		t.Fatalf("root help must carry the extension's section: %v %s", err, out.String())
+	}
+	out.Reset()
+	if err := cli.RunWith(ctx, []string{"member", "list", "--help"}, &out, ext); err != nil || !strings.Contains(out.String(), "chronicle member") {
+		t.Fatalf("an overridden noun delegates help: %v %s", err, out.String())
+	}
+	bad := &cli.Extension{Verbs: map[string]cli.Verb{"store": ext.Verbs["operator"]}}
+	if err := cli.RunWith(ctx, []string{"store", "list"}, &out, bad); err == nil || !strings.Contains(err.Error(), "shadows") {
+		t.Fatalf("a shadowing extension verb must be refused: %v", err)
+	}
+}
+
+func waitFor(t *testing.T, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatal("condition did not hold in time")
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 }

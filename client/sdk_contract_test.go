@@ -31,20 +31,25 @@ type artifact struct {
 		Stream          map[string]string `json:"stream"`
 	} `json:"headers"`
 	Grammars struct {
-		Name             struct{ Pattern string } `json:"name"`
-		ThingToken       struct{ Pattern string } `json:"thingToken"`
-		ReservedLogNames []string                 `json:"reservedLogNames"`
-		ServicePrincipal string                   `json:"servicePrincipal"`
-		Root             string                   `json:"root"`
-		MetaBucket       string                   `json:"metaBucket"`
-		SnapshotOpType   string                   `json:"snapshotOpType"`
-		StateFoldKey     string                   `json:"stateFoldKey"`
-		Derivations      map[string]string        `json:"derivations"`
-		MetaKeys         map[string]string        `json:"metaKeys"`
-		Roles            []string                 `json:"roles"`
-		Effects          []string                 `json:"effects"`
-		History          []string                 `json:"history"`
-		IndexKinds       []string                 `json:"indexKinds"`
+		Name          struct{ Pattern string } `json:"name"`
+		InstanceToken struct{ Pattern string } `json:"instanceToken"`
+		Path          struct {
+			Separator       string `json:"separator"`
+			StoredSeparator string `json:"storedSeparator"`
+		} `json:"path"`
+		ReservedStoreNames []string          `json:"reservedStoreNames"`
+		ServicePrincipal   string            `json:"servicePrincipal"`
+		Root               string            `json:"root"`
+		MetaBucket         string            `json:"metaBucket"`
+		SnapshotOpType     string            `json:"snapshotOpType"`
+		StateFoldKey       string            `json:"stateFoldKey"`
+		Derivations        map[string]string `json:"derivations"`
+		MetaKeys           map[string]string `json:"metaKeys"`
+		Roles              []string          `json:"roles"`
+		Effects            []string          `json:"effects"`
+		History            []string          `json:"history"`
+		IndexKinds         []string          `json:"indexKinds"`
+		PrincipalKinds     []string          `json:"principalKinds"`
 	} `json:"grammars"`
 	StreamSettings struct {
 		DuplicateWindowSeconds int   `json:"duplicateWindowSeconds"`
@@ -135,23 +140,26 @@ func TestArtifactMatchesTheContractPackage(t *testing.T) {
 
 	// The grammars.
 	g := a.Grammars
-	if g.Name.Pattern != contract.LogNamePattern || g.ThingToken.Pattern != contract.ThingTokenPattern {
-		t.Errorf("patterns: artifact %q %q, package %q %q", g.Name.Pattern, g.ThingToken.Pattern, contract.LogNamePattern, contract.ThingTokenPattern)
+	if g.Name.Pattern != contract.NamePattern || g.InstanceToken.Pattern != contract.InstanceTokenPattern {
+		t.Errorf("patterns: artifact %q %q, package %q %q", g.Name.Pattern, g.InstanceToken.Pattern, contract.NamePattern, contract.InstanceTokenPattern)
 	}
-	if !reflect.DeepEqual(g.ReservedLogNames, contract.ReservedLogNames) {
-		t.Errorf("reserved log names: artifact %v, package %v", g.ReservedLogNames, contract.ReservedLogNames)
+	if g.Path.Separator != contract.PathSeparator || g.Path.StoredSeparator != contract.TailSeparator {
+		t.Errorf("path separators: artifact %q %q, package %q %q", g.Path.Separator, g.Path.StoredSeparator, contract.PathSeparator, contract.TailSeparator)
+	}
+	if !reflect.DeepEqual(g.ReservedStoreNames, contract.ReservedStoreNames) {
+		t.Errorf("reserved store names: artifact %v, package %v", g.ReservedStoreNames, contract.ReservedStoreNames)
 	}
 	if g.ServicePrincipal != contract.ServicePrincipal || g.Root != contract.Root || g.MetaBucket != contract.MetaBucket ||
 		g.SnapshotOpType != contract.OpTypeSnapshot || g.StateFoldKey != contract.StateFoldKey {
 		t.Errorf("names: artifact %+v", g)
 	}
-	subs := map[string]string{"<LOG>": contract.UpperLog("my-log"), "<log>": "my-log", "<thing>": "invoice.inv-1", "<type>": "invoice", "<index>": "text", "<id>": "alice", "<digest>": "abc"}
+	subs := map[string]string{"<STORE>": contract.UpperStore("my-store"), "<store>": "my-store", "<tail>": "invoice.inv-1", "<type>": "invoice", "<index>": "text", "<id>": "alice", "<digest>": "abc"}
 	derived := map[string]string{
-		"stream":      contract.StreamName("my-log"),
-		"stateBucket": contract.StateBucket("my-log"),
-		"logSubjects": contract.LogSubjects("my-log"),
-		"opsFilter":   contract.OpsFilter("my-log"),
-		"opsSubject":  contract.OpsSubject("my-log", "invoice.inv-1"),
+		"stream":        contract.StreamName("my-store"),
+		"stateBucket":   contract.StateBucket("my-store"),
+		"storeSubjects": contract.StoreSubjects("my-store"),
+		"opsFilter":     contract.OpsFilter("my-store"),
+		"opsSubject":    contract.OpsSubject("my-store", "invoice.inv-1"),
 	}
 	for name, want := range derived {
 		if got := fill(g.Derivations[name], subs); got != want {
@@ -159,12 +167,12 @@ func TestArtifactMatchesTheContractPackage(t *testing.T) {
 		}
 	}
 	keys := map[string]string{
-		"logConfig": contract.MetaLogConfig("my-log"),
-		"type":      contract.MetaLogType("my-log", "invoice"),
-		"index":     contract.MetaIndex("my-log", "text"),
-		"principal": contract.MetaPrincipal("alice"),
-		"member":    contract.MetaMember("alice"),
-		"invite":    contract.MetaInvite("abc"),
+		"storeConfig": contract.MetaStoreConfig("my-store"),
+		"type":        contract.MetaStoreType("my-store", "invoice"),
+		"index":       contract.MetaIndex("my-store", "text"),
+		"principal":   contract.MetaPrincipal("alice"),
+		"member":      contract.MetaMember("alice"),
+		"invite":      contract.MetaInvite("abc"),
 	}
 	for name, want := range keys {
 		if got := fill(g.MetaKeys[name], subs); got != want {
@@ -179,12 +187,18 @@ func TestArtifactMatchesTheContractPackage(t *testing.T) {
 			t.Errorf("effect %q is not the package's", e)
 		}
 	}
+	if !reflect.DeepEqual(g.History, []string{contract.HistoryCompactable, contract.HistoryFull}) {
+		t.Errorf("history: artifact %v", g.History)
+	}
 	for _, k := range g.IndexKinds {
 		// The state kind is the node's own (0023): a kind that exists but
 		// is not declarable, so it is outside KnownIndexKind by design.
 		if k != contract.IndexKindState && !contract.KnownIndexKind(k) {
 			t.Errorf("index kind %q is not the package's", k)
 		}
+	}
+	if !reflect.DeepEqual(g.PrincipalKinds, []string{contract.PrincipalKindMember, contract.PrincipalKindService}) {
+		t.Errorf("principal kinds: artifact %v", g.PrincipalKinds)
 	}
 
 	// Stream settings and client defaults.
@@ -219,67 +233,67 @@ func TestArtifactInteractionsMatchTheClient(t *testing.T) {
 	a := loadArtifact(t)
 	subjects := map[string]string{
 		"ping":                        client.PingSubject,
-		"log.create":                  client.LogCreateSubject,
+		"store.create":                client.StoreCreateSubject,
 		"type.define":                 client.TypeDefineSubject,
-		"thing.rollup":                client.ThingRollupSubject,
+		"instance.snapshot":           client.InstanceSnapshotSubject,
 		"index.declare":               client.IndexDeclareSubject,
 		"index.delete":                client.IndexDeleteSubject,
 		"member.add":                  client.MemberAddSubject,
 		"member.revoke":               client.MemberRevokeSubject,
-		"index.query.search":          client.IndexQuerySubject("<log>", "<index>"),
-		"index.query.graph.neighbors": client.IndexQuerySubject("<log>", "<index>"),
-		"index.query.graph.walk":      client.IndexQuerySubject("<log>", "<index>"),
-		"index.query.semantic":        client.IndexQuerySubject("<log>", "<index>"),
-		"append":                      contract.OpsSubject("<log>", "<thing>"),
+		"index.query.search":          client.IndexQuerySubject("<store>", "<index>"),
+		"index.query.graph.neighbors": client.IndexQuerySubject("<store>", "<index>"),
+		"index.query.graph.walk":      client.IndexQuerySubject("<store>", "<index>"),
+		"index.query.semantic":        client.IndexQuerySubject("<store>", "<index>"),
+		"append":                      contract.OpsSubject("<store>", "<tail>"),
 	}
 	shapes := map[string]string{
-		"ping": contract.ShapeRequestReply, "log.create": contract.ShapeRequestReply, "type.define": contract.ShapeRequestReply,
-		"thing.rollup": contract.ShapeRequestReply, "index.declare": contract.ShapeRequestReply, "index.delete": contract.ShapeRequestReply,
+		"ping": contract.ShapeRequestReply, "store.create": contract.ShapeRequestReply, "type.define": contract.ShapeRequestReply,
+		"instance.snapshot": contract.ShapeRequestReply, "index.declare": contract.ShapeRequestReply, "index.delete": contract.ShapeRequestReply,
 		"member.add": contract.ShapeRequestReply, "member.revoke": contract.ShapeRequestReply,
 		"index.query.search": contract.ShapeStreamedReply, "index.query.graph.neighbors": contract.ShapeStreamedReply,
 		"index.query.graph.walk": contract.ShapeStreamedReply, "index.query.semantic": contract.ShapeStreamedReply,
 		"append":  contract.ShapePublish,
 		"history": contract.ShapeSubscribe, "tail": contract.ShapeSubscribe, "watch.state": contract.ShapeSubscribe, "watch.declarations": contract.ShapeSubscribe,
-		"list.logs": contract.ShapeSubscribe, "list.types": contract.ShapeSubscribe, "list.indexes": contract.ShapeSubscribe, "list.members": contract.ShapeSubscribe, "list.things": contract.ShapeSubscribe,
+		"list.stores": contract.ShapeSubscribe, "list.types": contract.ShapeSubscribe, "list.indexes": contract.ShapeSubscribe, "list.members": contract.ShapeSubscribe, "list.instances": contract.ShapeSubscribe,
 	}
 	schema := json.RawMessage(`{"type":"object"}`)
 	requests := map[string]any{
-		"log.create":                  client.LogCreateRequest{Principal: "alice", Log: "orders", Description: "the orders", MaxBytes: 1 << 20, History: contract.HistoryPreserved},
-		"type.define":                 client.TypeDefineRequest{Principal: "alice", Log: "orders", Type: "invoice", Schema: schema, History: contract.HistoryCompactable, Aspects: map[string]string{"comments": "comment"}, Operations: map[string]contract.OpDef{"send": {Schema: schema, Effect: contract.EffectMerge}}},
-		"thing.rollup":                client.ThingRollupRequest{Principal: "alice", Log: "orders", Thing: "invoice.inv-1"},
-		"index.declare":               client.IndexDeclareRequest{Principal: "alice", Log: "orders", Index: "text", Kind: contract.IndexKindSearch, Config: json.RawMessage(`{"source":"ops"}`)},
-		"index.delete":                client.IndexDeleteRequest{Principal: "alice", Log: "orders", Index: "text"},
-		"member.add":                  client.MemberAddRequest{Principal: "alice", Member: "bob", Role: contract.RoleWriter, PublicKey: "UBOB", GithubID: 42},
+		"store.create":                client.StoreCreateRequest{Principal: "alice", Store: "orders", Description: "the orders", MaxBytes: 1 << 20, History: contract.HistoryFull},
+		"type.define":                 client.TypeDefineRequest{Principal: "alice", Store: "orders", Type: "invoice", Schema: schema, History: contract.HistoryCompactable, Children: map[string]string{"comments": "comment"}, Operations: map[string]contract.OpDef{"send": {Schema: schema, Effect: contract.EffectMerge}}},
+		"instance.snapshot":           client.InstanceSnapshotRequest{Principal: "alice", Store: "orders", Instance: "invoice/inv-1"},
+		"index.declare":               client.IndexDeclareRequest{Principal: "alice", Store: "orders", Index: "text", Kind: contract.IndexKindSearch, Config: json.RawMessage(`{"source":"history"}`)},
+		"index.delete":                client.IndexDeleteRequest{Principal: "alice", Store: "orders", Index: "text"},
+		"member.add":                  client.MemberAddRequest{Principal: "alice", Member: "bob", Role: contract.RoleWriter, Kind: contract.PrincipalKindService, PublicKey: "UBOB", GithubID: 42},
 		"member.revoke":               client.MemberRevokeRequest{Principal: "alice", Member: "bob"},
 		"index.query.search":          client.IndexQueryRequest{Principal: "alice", Query: "widgets", Limit: 10},
-		"index.query.graph.neighbors": client.GraphQueryRequest{Principal: "alice", Op: contract.GraphOpNeighbors, Thing: "invoice.inv-1", Direction: contract.GraphDirectionBoth, Label: "customer", Limit: 10},
-		"index.query.graph.walk":      client.GraphQueryRequest{Principal: "alice", Op: contract.GraphOpWalk, Thing: "invoice.inv-1", Direction: contract.GraphDirectionOut, Labels: []string{"customer"}, Depth: 2, Limit: 10},
+		"index.query.graph.neighbors": client.GraphQueryRequest{Principal: "alice", Op: contract.GraphOpNeighbors, Instance: "invoice/inv-1", Direction: contract.GraphDirectionBoth, Label: "customer", Limit: 10},
+		"index.query.graph.walk":      client.GraphQueryRequest{Principal: "alice", Op: contract.GraphOpWalk, Instance: "invoice/inv-1", Direction: contract.GraphDirectionOut, Labels: []string{"customer"}, Depth: 2, Limit: 10},
 		"index.query.semantic":        client.SemanticQueryRequest{Principal: "alice", Text: "widgets", Limit: 10},
 	}
 	replies := map[string]any{
-		"ping":          client.About{Name: "chronicle-node", Version: "v0.0.0"},
-		"log.create":    client.LogCreateResponse{Stream: "LOG_ORDERS"},
-		"type.define":   client.TypeDefineResponse{Revision: 1},
-		"thing.rollup":  client.ThingRollupResponse{Rolled: false, Reason: "nothing to compact"},
-		"index.declare": client.IndexDeclareResponse{Query: client.IndexQuerySubject("orders", "text")},
-		"index.delete":  client.IndexDeleteResponse{Deleted: true},
-		"member.add":    client.MemberAddResponse{Member: "bob", Role: contract.RoleWriter},
-		"member.revoke": client.MemberRevokeResponse{Member: "bob", PublicKey: "UBOB"},
+		"ping":              client.About{Name: "chronicle-node", Version: "v0/0/0"},
+		"store.create":      client.StoreCreateResponse{Stream: "LOG_ORDERS"},
+		"type.define":       client.TypeDefineResponse{Revision: 1},
+		"instance.snapshot": client.InstanceSnapshotResponse{Taken: false, Reason: "nothing to compact"},
+		"index.declare":     client.IndexDeclareResponse{Query: client.IndexQuerySubject("orders", "text")},
+		"index.delete":      client.IndexDeleteResponse{Deleted: true},
+		"member.add":        client.MemberAddResponse{Member: "bob", Role: contract.RoleWriter},
+		"member.revoke":     client.MemberRevokeResponse{Member: "bob", PublicKey: "UBOB"},
 	}
 	items := map[string]any{
-		"index.query.search":          client.IndexHit{Thing: "invoice.inv-1", Score: 0.5},
-		"index.query.graph.neighbors": contract.GraphEdge{From: "invoice.inv-1", To: "customer.c-1", Label: "customer"},
-		"index.query.graph.walk":      contract.GraphVisit{Thing: "customer.c-1", Depth: 1, Via: "customer"},
-		"index.query.semantic":        client.SemanticHit{Thing: "invoice.inv-1", Score: 0.9, Field: "title"},
+		"index.query.search":          client.IndexHit{Instance: "invoice/inv-1", Score: 0.5},
+		"index.query.graph.neighbors": contract.GraphEdge{From: "invoice/inv-1", To: "customer/c-1", Label: "customer"},
+		"index.query.graph.walk":      contract.GraphVisit{Instance: "customer/c-1", Depth: 1, Via: "customer"},
+		"index.query.semantic":        client.SemanticHit{Instance: "invoice/inv-1", Score: 0.9, Field: "title"},
 		"history":                     map[string]any{"seq": 1, "id": "op-1", "type": "snapshot", "author": "alice", "parents": []string{}, "ts": "2026-09-21T00:00:00Z", "payload": map[string]any{"state": map[string]any{}}},
 		"tail":                        map[string]any{"seq": 2, "id": "op-2", "type": "send", "author": "alice", "parents": []string{"op-1"}, "payload": map[string]any{"to": "x"}},
 		"watch.state":                 contract.StateValue{Seq: 2, State: json.RawMessage(`{"to":"x"}`)},
 		"watch.declarations":          client.Declaration{Kind: "type", Name: "invoice", Revision: 3, Value: json.RawMessage(`{"revision":3,"schema":{}}`)},
-		"list.logs":                   "orders",
+		"list.stores":                 "orders",
 		"list.types":                  "invoice",
-		"list.indexes":                client.IndexInfo{Name: "text", Kind: contract.IndexKindSearch, Config: json.RawMessage(`{"source":"ops"}`)},
-		"list.members":                client.MemberInfo{Name: "bob", Role: contract.RoleWriter, PublicKey: "UBOB", GithubID: 42},
-		"list.things":                 "invoice.inv-1",
+		"list.indexes":                client.IndexInfo{Name: "text", Kind: contract.IndexKindSearch, Config: json.RawMessage(`{"source":"history"}`)},
+		"list.members":                client.MemberInfo{Name: "bob", Role: contract.RoleWriter, Kind: contract.PrincipalKindMember, PublicKey: "UBOB", GithubID: 42},
+		"list.instances":              client.InstanceInfo{Path: "invoice/inv-1", Type: "invoice", Seq: 3, State: json.RawMessage(`{"total":120}`)},
 	}
 	trailers := map[string]any{
 		"index.query.search":          client.QueryTrailer{Total: 1},
@@ -339,6 +353,21 @@ func TestArtifactInteractionsMatchTheClient(t *testing.T) {
 	for name := range shapes {
 		if !seen[name] {
 			t.Errorf("interaction %s is not in the artifact", name)
+		}
+	}
+}
+
+// No retired word survives in the artifact's own text: an SDK generated
+// from it would restate it (decision 0044 § 4).
+func TestArtifactSpeaksTheUsersLanguage(t *testing.T) {
+	raw, err := os.ReadFile("../contract/sdk-contract.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := strings.ToLower(string(raw))
+	for _, word := range []string{"\"thing", "things", "aspect", "preserved", "\"ops\"", "birth", "bad-log-name", "no-such-log", "log-exists"} {
+		if strings.Contains(text, word) {
+			t.Errorf("the artifact still says %q", word)
 		}
 	}
 }

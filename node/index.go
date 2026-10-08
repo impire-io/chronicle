@@ -34,8 +34,8 @@ func (n *node) handleIndexDeclare(req micro.Request) {
 		_ = req.Error(contract.CodeForbidden, err.Error(), nil)
 		return
 	}
-	if err := contract.ValidateLogName(r.Log); err != nil {
-		_ = req.Error(contract.CodeBadLogName, err.Error(), nil)
+	if err := contract.ValidateStoreName(r.Store); err != nil {
+		_ = req.Error(contract.CodeBadStoreName, err.Error(), nil)
 		return
 	}
 	if err := contract.ValidateIndexName(r.Index); err != nil {
@@ -45,7 +45,7 @@ func (n *node) handleIndexDeclare(req micro.Request) {
 	// The state kind is the one exception (0023): its declaration is
 	// written by the node at log creation and only there.
 	if r.Kind == contract.IndexKindState || r.Index == contract.StateIndexName {
-		_ = req.Error(contract.CodeReservedStateIndex, "the state index is declared at log creation and only there (0023)", nil)
+		_ = req.Error(contract.CodeReservedStateIndex, "state is not an index you declare: every store has it", nil)
 		return
 	}
 	if !contract.KnownIndexKind(r.Kind) {
@@ -77,8 +77,8 @@ func (n *node) handleIndexDeclare(req micro.Request) {
 			return
 		}
 	}
-	if _, err := n.meta.Get(ctx, contract.MetaLogConfig(r.Log)); err != nil {
-		_ = req.Error(contract.CodeNoSuchLog, fmt.Sprintf("log %q is not created", r.Log), nil)
+	if _, err := n.meta.Get(ctx, contract.MetaStoreConfig(r.Store)); err != nil {
+		_ = req.Error(contract.CodeNoSuchStore, fmt.Sprintf("store %q does not exist", r.Store), nil)
 		return
 	}
 
@@ -87,9 +87,9 @@ func (n *node) handleIndexDeclare(req micro.Request) {
 		_ = req.Error(contract.CodeInternal, err.Error(), nil)
 		return
 	}
-	if _, err := n.meta.Create(ctx, contract.MetaIndex(r.Log, r.Index), value); err != nil {
+	if _, err := n.meta.Create(ctx, contract.MetaIndex(r.Store, r.Index), value); err != nil {
 		if errors.Is(err, jetstream.ErrKeyExists) {
-			_ = req.Error(contract.CodeIndexExists, fmt.Sprintf("index %q on log %q already exists", r.Index, r.Log), nil)
+			_ = req.Error(contract.CodeIndexExists, fmt.Sprintf("index %q in store %q already exists", r.Index, r.Store), nil)
 			return
 		}
 		_ = req.Error(contract.CodeInternal, err.Error(), nil)
@@ -99,12 +99,12 @@ func (n *node) handleIndexDeclare(req micro.Request) {
 	// heals a report that failed, and no skew can grow while the node is
 	// down because declarations only happen through the node.
 	if n.indexes != nil {
-		if err := n.indexes.IndexDeclared(ctx, r.Log, r.Index, r.Kind); err != nil {
-			n.logger.Warn("index declared but the report failed; boot re-derivation heals it", "log", r.Log, "index", r.Index, "err", err)
+		if err := n.indexes.IndexDeclared(ctx, r.Store, r.Index, r.Kind); err != nil {
+			n.logger.Warn("index declared but the report failed; boot re-derivation heals it", "log", r.Store, "index", r.Index, "err", err)
 		}
 	}
 
-	reply, err := json.Marshal(client.IndexDeclareResponse{Query: client.IndexQuerySubject(r.Log, r.Index)})
+	reply, err := json.Marshal(client.IndexDeclareResponse{Query: client.IndexQuerySubject(r.Store, r.Index)})
 	if err != nil {
 		_ = req.Error(contract.CodeInternal, err.Error(), nil)
 		return
@@ -128,8 +128,8 @@ func (n *node) handleIndexDelete(req micro.Request) {
 		_ = req.Error(contract.CodeForbidden, err.Error(), nil)
 		return
 	}
-	if err := contract.ValidateLogName(r.Log); err != nil {
-		_ = req.Error(contract.CodeBadLogName, err.Error(), nil)
+	if err := contract.ValidateStoreName(r.Store); err != nil {
+		_ = req.Error(contract.CodeBadStoreName, err.Error(), nil)
 		return
 	}
 	if err := contract.ValidateIndexName(r.Index); err != nil {
@@ -139,22 +139,22 @@ func (n *node) handleIndexDelete(req micro.Request) {
 	// The exactness recipe and roll-up consume the state index: it is
 	// the one derived view whose loss would break a contract (0023).
 	if r.Index == contract.StateIndexName {
-		_ = req.Error(contract.CodeReservedStateIndex, "the state index cannot be deleted while the log exists (0023)", nil)
+		_ = req.Error(contract.CodeReservedStateIndex, "state is not an index you can delete: it is read as each instance's state", nil)
 		return
 	}
 	// Get first: deleting an absent key succeeds silently in KV, and the
 	// caller deserves the honest answer.
-	if _, err := n.meta.Get(ctx, contract.MetaIndex(r.Log, r.Index)); err != nil {
-		_ = req.Error(contract.CodeNoSuchIndex, fmt.Sprintf("index %q on log %q is not declared", r.Index, r.Log), nil)
+	if _, err := n.meta.Get(ctx, contract.MetaIndex(r.Store, r.Index)); err != nil {
+		_ = req.Error(contract.CodeNoSuchIndex, fmt.Sprintf("index %q in store %q does not exist", r.Index, r.Store), nil)
 		return
 	}
-	if err := n.meta.Delete(ctx, contract.MetaIndex(r.Log, r.Index)); err != nil {
+	if err := n.meta.Delete(ctx, contract.MetaIndex(r.Store, r.Index)); err != nil {
 		_ = req.Error(contract.CodeInternal, err.Error(), nil)
 		return
 	}
 	if n.indexes != nil {
-		if err := n.indexes.IndexDeleted(ctx, r.Log, r.Index); err != nil {
-			n.logger.Warn("index deleted but the report failed; the scan retires the workload when the record catches up", "log", r.Log, "index", r.Index, "err", err)
+		if err := n.indexes.IndexDeleted(ctx, r.Store, r.Index); err != nil {
+			n.logger.Warn("index deleted but the report failed; the scan retires the workload when the record catches up", "log", r.Store, "index", r.Index, "err", err)
 		}
 	}
 
@@ -231,9 +231,9 @@ func (r *bridgeReporter) report(ctx context.Context, report contract.FleetIndexR
 }
 
 func (r *bridgeReporter) IndexDeclared(ctx context.Context, log, index, kind string) error {
-	return r.report(ctx, contract.FleetIndexReport{Action: contract.IndexReportDeclared, Log: log, Index: index, Kind: kind})
+	return r.report(ctx, contract.FleetIndexReport{Action: contract.IndexReportDeclared, Store: log, Index: index, Kind: kind})
 }
 
 func (r *bridgeReporter) IndexDeleted(ctx context.Context, log, index string) error {
-	return r.report(ctx, contract.FleetIndexReport{Action: contract.IndexReportDeleted, Log: log, Index: index})
+	return r.report(ctx, contract.FleetIndexReport{Action: contract.IndexReportDeleted, Store: log, Index: index})
 }
