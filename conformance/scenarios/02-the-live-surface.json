@@ -3,12 +3,12 @@
   "$comment": "The subscribe shape: a watch yields the current value then every change; a tail yields what lands after it started; declarations arrive as they are made. Each subscribe step opens the iterator, performs the write in `then`, and expects the item within the timeout.",
   "steps": [
     {
-      "do": "log.create",
-      "log": "orders"
+      "do": "store.create",
+      "store": "orders"
     },
     {
       "do": "type.define",
-      "log": "orders",
+      "store": "orders",
       "type": "invoice",
       "def": {
         "schema": {
@@ -31,17 +31,17 @@
       }
     },
     {
-      "do": "create.op",
-      "log": "orders",
-      "thing": "invoice.inv-1",
+      "do": "instance.create",
+      "store": "orders",
+      "instance": "invoice/inv-1",
       "payload": {
         "total": 1
       }
     },
     {
       "do": "get",
-      "log": "orders",
-      "thing": "invoice.inv-1",
+      "store": "orders",
+      "instance": "invoice/inv-1",
       "expect": {
         "state": {
           "total": 1
@@ -50,12 +50,12 @@
     },
     {
       "do": "watch",
-      "log": "orders",
-      "thing": "invoice.inv-1",
+      "store": "orders",
+      "instance": "invoice/inv-1",
       "then": {
-        "do": "do",
-        "log": "orders",
-        "thing": "invoice.inv-1",
+        "do": "apply",
+        "store": "orders",
+        "instance": "invoice/inv-1",
         "op": "send",
         "payload": {
           "to": "y"
@@ -72,13 +72,13 @@
     },
     {
       "do": "tail",
-      "log": "orders",
-      "thing": "",
+      "store": "orders",
+      "instance": "",
       "live": true,
       "then": {
-        "do": "do",
-        "log": "orders",
-        "thing": "invoice.inv-1",
+        "do": "apply",
+        "store": "orders",
+        "instance": "invoice/inv-1",
         "op": "send",
         "payload": {
           "to": "z"
@@ -90,8 +90,8 @@
     },
     {
       "do": "tail",
-      "log": "orders",
-      "thing": "invoice.inv-1",
+      "store": "orders",
+      "instance": "invoice/inv-1",
       "after": 1,
       "expect": {
         "types": [
@@ -102,10 +102,10 @@
     },
     {
       "do": "watch.declarations",
-      "log": "orders",
+      "store": "orders",
       "then": {
         "do": "index.declare",
-        "log": "orders",
+        "store": "orders",
         "index": "text",
         "kind": "search"
       },

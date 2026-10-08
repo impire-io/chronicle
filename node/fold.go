@@ -44,7 +44,7 @@ func (n *node) startFold(ctx context.Context, log string) error {
 	f := &fold{node: n, log: log, states: states, active: map[string]struct{}{}}
 	f.pass = &foldcore.Pass{
 		Resolve: func(ctx context.Context, thing string) (contract.Resolution, error) {
-			return foldcore.ResolveThing(ctx, n.meta, log, thing)
+			return foldcore.ResolveInstance(ctx, n.meta, log, thing)
 		},
 		Sink:  f.writeState,
 		Track: f.track,
@@ -87,14 +87,14 @@ func (n *node) startFold(ctx context.Context, log string) error {
 	return nil
 }
 
-// rebuildLog is the §6.2 rebuild, mechanized: the log's derived state is
+// rebuildStore is the §6.2 rebuild, mechanized: the log's derived state is
 // suspect (a declaration changed), so stop the fold, purge the bucket —
 // watermark included — and re-fold the whole stream under the current
 // declarations with a fresh pass: latest declaration wins (0011 § 3). It
 // holds the log's derived-state mutex so no rollup publishes a snapshot
 // computed mid-change.
-func (n *node) rebuildLog(ctx context.Context, log string) error {
-	mu := n.logMutex(log)
+func (n *node) rebuildStore(ctx context.Context, log string) error {
+	mu := n.storeMutex(log)
 	mu.Lock()
 	defer mu.Unlock()
 
@@ -162,7 +162,7 @@ func (f *fold) apply(msg jetstream.Msg) {
 		return
 	}
 	op := contract.ParseOp(msg.Subject(), md.Sequence.Stream, msg.Headers(), msg.Data())
-	thing := contract.ThingFromSubject(f.log, op.Subject)
+	thing := contract.InstanceFromSubject(f.log, op.Subject)
 	if thing == op.Subject {
 		// Not the ops family; other in-stream families ride the same
 		// stream and the same replay, untouched by the fold.
@@ -175,7 +175,7 @@ func (f *fold) apply(msg jetstream.Msg) {
 
 // writeWatermark records the declarations the bucket derives under.
 func (f *fold) writeWatermark(ctx context.Context) error {
-	fp, err := foldcore.LogFingerprint(ctx, f.node.meta, f.log)
+	fp, err := foldcore.StoreFingerprint(ctx, f.node.meta, f.log)
 	if err != nil {
 		return err
 	}

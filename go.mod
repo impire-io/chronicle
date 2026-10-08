@@ -10,6 +10,7 @@ require (
 	github.com/nats-io/nkeys v0.4.16
 	github.com/nats-io/nuid v1.0.1
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
+	sigs.k8s.io/yaml v1.4.0
 )
 
 require (

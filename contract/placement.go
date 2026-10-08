@@ -44,7 +44,7 @@ const (
 // quick start — is the listener's.
 type FleetIndexReport struct {
 	Action string `json:"action"`
-	Log    string `json:"log"`
+	Store  string `json:"log"`
 	Index  string `json:"index"`
 	Kind   string `json:"kind,omitempty"`
 }

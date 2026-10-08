@@ -1,5 +1,5 @@
 {
-  "$comment": "The fold step (design 03 § the state buckets; design 12): under the types, each case applies its ops in order to an initially absent state and expects the decisions and the final state. A null state means the thing has none.",
+  "$comment": "The fold step (design 03 § the state buckets; design 12): under the types, each case applies its ops in order to an initially absent state and expects the decisions and the final state. A null state means the instance has none.",
   "types": {
     "invoice": {
       "revision": 1,
@@ -9,7 +9,7 @@
           "total"
         ]
       },
-      "aspects": {
+      "children": {
         "comments": "comment"
       },
       "operations": {
@@ -45,7 +45,7 @@
     "comment": {
       "revision": 1,
       "schema": {},
-      "aspects": {
+      "children": {
         "reactions": "reaction"
       },
       "operations": {
@@ -64,7 +64,7 @@
     "orphan-parent": {
       "revision": 1,
       "schema": {},
-      "aspects": {
+      "children": {
         "kids": "ghost"
       }
     }
@@ -72,7 +72,6 @@
   "cases": [
     {
       "name": "a typed birth by declared merge, then a merge",
-      "thing": "invoice.inv-1",
       "ops": [
         {
           "type": "create",
@@ -94,11 +93,11 @@
       "state": {
         "total": 120,
         "to": "x"
-      }
+      },
+      "tail": "invoice.inv-1"
     },
     {
       "name": "a snapshot resets",
-      "thing": "invoice.inv-1",
       "ops": [
         {
           "type": "snapshot",
@@ -131,11 +130,11 @@
       ],
       "state": {
         "total": 2
-      }
+      },
+      "tail": "invoice.inv-1"
     },
     {
       "name": "none moves nothing",
-      "thing": "invoice.inv-1",
       "ops": [
         {
           "type": "create",
@@ -156,11 +155,11 @@
       ],
       "state": {
         "total": 1
-      }
+      },
+      "tail": "invoice.inv-1"
     },
     {
       "name": "an invalid payload is marked",
-      "thing": "invoice.inv-1",
       "ops": [
         {
           "type": "create",
@@ -179,11 +178,11 @@
       ],
       "state": {
         "total": 1
-      }
+      },
+      "tail": "invoice.inv-1"
     },
     {
       "name": "a payload that is not JSON is marked",
-      "thing": "invoice.inv-1",
       "ops": [
         {
           "type": "create",
@@ -202,11 +201,11 @@
       ],
       "state": {
         "total": 1
-      }
+      },
+      "tail": "invoice.inv-1"
     },
     {
       "name": "an unknown op type is ignored",
-      "thing": "invoice.inv-1",
       "ops": [
         {
           "type": "create",
@@ -225,11 +224,11 @@
       ],
       "state": {
         "total": 1
-      }
+      },
+      "tail": "invoice.inv-1"
     },
     {
       "name": "an unknown effect is treated as none",
-      "thing": "invoice.inv-1",
       "ops": [
         {
           "type": "create",
@@ -248,11 +247,11 @@
       ],
       "state": {
         "total": 1
-      }
+      },
+      "tail": "invoice.inv-1"
     },
     {
       "name": "an untyped thing moves only by snapshot",
-      "thing": "widget.w-1",
       "ops": [
         {
           "type": "send",
@@ -275,11 +274,11 @@
       ],
       "state": {
         "a": 1
-      }
+      },
+      "tail": "widget.w-1"
     },
     {
       "name": "an undeclared aspect is marked",
-      "thing": "invoice.inv-1.notes.n-1",
       "ops": [
         {
           "type": "snapshot",
@@ -298,11 +297,11 @@
         "undeclared",
         "undeclared"
       ],
-      "state": null
+      "state": null,
+      "tail": "invoice.inv-1.notes.n-1"
     },
     {
       "name": "a snapshot failing the thing schema is marked",
-      "thing": "invoice.inv-2",
       "ops": [
         {
           "type": "snapshot",
@@ -316,11 +315,11 @@
       "decisions": [
         "malformed-snapshot"
       ],
-      "state": null
+      "state": null,
+      "tail": "invoice.inv-2"
     },
     {
       "name": "a snapshot that is not a snapshot is marked",
-      "thing": "invoice.inv-2",
       "ops": [
         {
           "type": "snapshot",
@@ -330,11 +329,11 @@
       "decisions": [
         "malformed-snapshot"
       ],
-      "state": null
+      "state": null,
+      "tail": "invoice.inv-2"
     },
     {
       "name": "an aspect is typed by its parent",
-      "thing": "invoice.inv-1.comments.c-1",
       "ops": [
         {
           "type": "create",
@@ -348,11 +347,11 @@
       ],
       "state": {
         "text": "hi"
-      }
+      },
+      "tail": "invoice.inv-1.comments.c-1"
     },
     {
       "name": "a merge deletes with null",
-      "thing": "invoice.inv-1",
       "ops": [
         {
           "type": "create",
@@ -374,7 +373,8 @@
       ],
       "state": {
         "total": 1
-      }
+      },
+      "tail": "invoice.inv-1"
     }
   ]
 }

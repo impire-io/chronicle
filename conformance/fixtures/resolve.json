@@ -1,5 +1,5 @@
 {
-  "$comment": "Tail resolution (decisions 0021 § 4, 0022 § 2): alternating <segment>.<id> pairs, the first against the log's types, each further pair through the current type's aspects map. kind is typed, untyped, or undeclared; type is the final type when typed.",
+  "$comment": "Tail resolution (decisions 0021 § 4, 0022 § 2): alternating <segment>.<id> pairs, the first against the store's types, each further pair through the current type's children map. kind is typed, untyped, or undeclared; type is the final type when typed.",
   "types": {
     "invoice": {
       "revision": 1,
@@ -9,7 +9,7 @@
           "total"
         ]
       },
-      "aspects": {
+      "children": {
         "comments": "comment"
       },
       "operations": {
@@ -45,7 +45,7 @@
     "comment": {
       "revision": 1,
       "schema": {},
-      "aspects": {
+      "children": {
         "reactions": "reaction"
       },
       "operations": {
@@ -64,46 +64,46 @@
     "orphan-parent": {
       "revision": 1,
       "schema": {},
-      "aspects": {
+      "children": {
         "kids": "ghost"
       }
     }
   },
   "cases": [
     {
-      "thing": "invoice.inv-1",
       "kind": "typed",
-      "type": "invoice"
+      "type": "invoice",
+      "tail": "invoice.inv-1"
     },
     {
-      "thing": "invoice.inv-1.comments.c-1",
       "kind": "typed",
-      "type": "comment"
+      "type": "comment",
+      "tail": "invoice.inv-1.comments.c-1"
     },
     {
-      "thing": "invoice.inv-1.comments.c-1.reactions.r-1",
       "kind": "typed",
-      "type": "reaction"
+      "type": "reaction",
+      "tail": "invoice.inv-1.comments.c-1.reactions.r-1"
     },
     {
-      "thing": "invoice.inv-1.notes.n-1",
-      "kind": "undeclared"
+      "kind": "undeclared",
+      "tail": "invoice.inv-1.notes.n-1"
     },
     {
-      "thing": "orphan-parent.p-1.kids.k-1",
-      "kind": "undeclared"
+      "kind": "undeclared",
+      "tail": "orphan-parent.p-1.kids.k-1"
     },
     {
-      "thing": "widget.w-1",
-      "kind": "untyped"
+      "kind": "untyped",
+      "tail": "widget.w-1"
     },
     {
-      "thing": "invoice",
-      "kind": "untyped"
+      "kind": "untyped",
+      "tail": "invoice"
     },
     {
-      "thing": "invoice.inv-1.comments",
-      "kind": "untyped"
+      "kind": "untyped",
+      "tail": "invoice.inv-1.comments"
     }
   ]
 }

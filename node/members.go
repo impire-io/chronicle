@@ -51,6 +51,11 @@ func (n *node) handleMemberAdd(req micro.Request) {
 		_ = req.Error(contract.CodeBadRole, fmt.Sprintf("role %q: one of %v", role, contract.Roles), nil)
 		return
 	}
+	kind := contract.NormalizePrincipalKind(r.Kind)
+	if !contract.KnownPrincipalKind(kind) {
+		_ = req.Error(contract.CodeBadRequest, fmt.Sprintf("kind %q: %q (a person) or %q (a service account)", r.Kind, contract.PrincipalKindMember, contract.PrincipalKindService), nil)
+		return
+	}
 
 	principal, err := json.Marshal(contract.Principal{ID: r.Member})
 	if err != nil {
@@ -61,7 +66,7 @@ func (n *node) handleMemberAdd(req micro.Request) {
 		_ = req.Error(contract.CodeInternal, fmt.Sprintf("record principal: %v", err), nil)
 		return
 	}
-	membership, err := json.Marshal(contract.Membership{PublicKey: r.PublicKey, Role: role, GithubID: r.GithubID})
+	membership, err := json.Marshal(contract.Membership{PublicKey: r.PublicKey, Role: role, Kind: kind, GithubID: r.GithubID})
 	if err != nil {
 		_ = req.Error(contract.CodeInternal, err.Error(), nil)
 		return

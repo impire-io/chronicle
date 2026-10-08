@@ -130,7 +130,7 @@ func TestSemanticEndToEnd(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	if _, err := alice.CreateLog(ctx, "orders", ""); err != nil {
+	if _, err := alice.CreateStore(ctx, "orders", ""); err != nil {
 		t.Fatalf("create log: %v", err)
 	}
 	if _, err := alice.DefineType(ctx, "orders", "invoice", client.TypeDefinition{
@@ -139,10 +139,10 @@ func TestSemanticEndToEnd(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("define type: %v", err)
 	}
-	if _, err := alice.CreateThing(ctx, "orders", "invoice.invoice-1", json.RawMessage(`{"title":"quantum widget order"}`)); err != nil {
+	if _, err := alice.CreateFromSnapshot(ctx, "orders", "invoice/invoice-1", json.RawMessage(`{"title":"quantum widget order"}`)); err != nil {
 		t.Fatalf("create invoice-1: %v", err)
 	}
-	if _, err := alice.CreateThing(ctx, "orders", "invoice.invoice-2", json.RawMessage(`{"title":"gadget shipment"}`)); err != nil {
+	if _, err := alice.CreateFromSnapshot(ctx, "orders", "invoice/invoice-2", json.RawMessage(`{"title":"gadget shipment"}`)); err != nil {
 		t.Fatalf("create invoice-2: %v", err)
 	}
 	if _, err := alice.DeclareIndex(ctx, "orders", "meaning", "semantic", nil); err != nil {
@@ -150,7 +150,7 @@ func TestSemanticEndToEnd(t *testing.T) {
 	}
 
 	svc, err := semantic.Start(ctx, nc, semantic.Config{
-		Log: "orders", Index: "meaning",
+		Store: "orders", Index: "meaning",
 		Provider: semantic.ProviderConfig{BaseURL: provider.URL + "/v1", Model: "test-embed"},
 	})
 	if err != nil {
@@ -162,11 +162,11 @@ func TestSemanticEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
-	if len(resp.Hits) == 0 || resp.Hits[0].Thing != "invoice.invoice-1" || resp.Unembedded != 0 {
+	if len(resp.Hits) == 0 || resp.Hits[0].Instance != "invoice/invoice-1" || resp.Unembedded != 0 {
 		t.Fatalf("widget query = %+v", resp)
 	}
 	resp, err = querySemantic(ctx, alice, "orders", "meaning", "gadget")
-	if err != nil || resp.Hits[0].Thing != "invoice.invoice-2" {
+	if err != nil || resp.Hits[0].Instance != "invoice/invoice-2" {
 		t.Fatalf("gadget query = %+v, %v", resp, err)
 	}
 
@@ -175,7 +175,7 @@ func TestSemanticEndToEnd(t *testing.T) {
 	// reply says so while the embedded corpus keeps answering and query
 	// embedding still works.
 	provider.failSubstr.Store("unembeddable")
-	if _, err := alice.CreateThing(ctx, "orders", "invoice.invoice-3", json.RawMessage(`{"title":"widget widget widget unembeddable"}`)); err != nil {
+	if _, err := alice.CreateFromSnapshot(ctx, "orders", "invoice/invoice-3", json.RawMessage(`{"title":"widget widget widget unembeddable"}`)); err != nil {
 		t.Fatalf("create invoice-3: %v", err)
 	}
 	deadline := time.Now().Add(10 * time.Second)
@@ -190,7 +190,7 @@ func TestSemanticEndToEnd(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	for _, h := range resp.Hits {
-		if h.Thing == "invoice.invoice-3" {
+		if h.Instance == "invoice/invoice-3" {
 			t.Fatalf("unembedded thing served a score: %+v", resp)
 		}
 	}
@@ -202,7 +202,7 @@ func TestSemanticEndToEnd(t *testing.T) {
 	deadline = time.Now().Add(15 * time.Second)
 	for {
 		resp, err = querySemantic(ctx, alice, "orders", "meaning", "widget")
-		if err == nil && resp.Unembedded == 0 && scoreOf(resp, "invoice.invoice-3") > 0.9 {
+		if err == nil && resp.Unembedded == 0 && scoreOf(resp, "invoice/invoice-3") > 0.9 {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -214,7 +214,7 @@ func TestSemanticEndToEnd(t *testing.T) {
 
 func scoreOf(resp semanticResult, thing string) float64 {
 	for _, h := range resp.Hits {
-		if h.Thing == thing {
+		if h.Instance == thing {
 			return h.Score
 		}
 	}
@@ -231,7 +231,7 @@ func TestSemanticOpsSource(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	if _, err := alice.CreateLog(ctx, "items", ""); err != nil {
+	if _, err := alice.CreateStore(ctx, "items", ""); err != nil {
 		t.Fatalf("create log: %v", err)
 	}
 	// note.add stays effect-none: invisible to any state-sourced index.
@@ -241,27 +241,27 @@ func TestSemanticOpsSource(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("define type: %v", err)
 	}
-	if _, err := alice.CreateThing(ctx, "items", "item.item-1", json.RawMessage(`{}`)); err != nil {
+	if _, err := alice.CreateFromSnapshot(ctx, "items", "item/item-1", json.RawMessage(`{}`)); err != nil {
 		t.Fatalf("create item-1: %v", err)
 	}
-	if _, err := alice.CreateThing(ctx, "items", "item.item-2", json.RawMessage(`{}`)); err != nil {
+	if _, err := alice.CreateFromSnapshot(ctx, "items", "item/item-2", json.RawMessage(`{}`)); err != nil {
 		t.Fatalf("create item-2: %v", err)
 	}
-	if _, err := alice.Append(ctx, "items", "item.item-1", "note.add", []byte(`{"body":"a widget hums"}`)); err != nil {
+	if _, err := alice.Apply(ctx, "items", "item/item-1", "note.add", []byte(`{"body":"a widget hums"}`)); err != nil {
 		t.Fatalf("append: %v", err)
 	}
-	if _, err := alice.Append(ctx, "items", "item.item-1", "note.add", []byte(`{"body":"widget widget maintenance"}`)); err != nil {
+	if _, err := alice.Apply(ctx, "items", "item/item-1", "note.add", []byte(`{"body":"widget widget maintenance"}`)); err != nil {
 		t.Fatalf("append: %v", err)
 	}
-	if _, err := alice.Append(ctx, "items", "item.item-2", "note.add", []byte(`{"body":"a gadget spins"}`)); err != nil {
+	if _, err := alice.Apply(ctx, "items", "item/item-2", "note.add", []byte(`{"body":"a gadget spins"}`)); err != nil {
 		t.Fatalf("append: %v", err)
 	}
 
-	if _, err := alice.DeclareIndex(ctx, "items", "meaning", "semantic", json.RawMessage(`{"source":"ops","types":["note.add"]}`)); err != nil {
+	if _, err := alice.DeclareIndex(ctx, "items", "meaning", "semantic", json.RawMessage(`{"source":"history","types":["note.add"]}`)); err != nil {
 		t.Fatalf("declare ops-sourced semantic index: %v", err)
 	}
 	svc, err := semantic.Start(ctx, nc, semantic.Config{
-		Log: "items", Index: "meaning",
+		Store: "items", Index: "meaning",
 		Provider: semantic.ProviderConfig{BaseURL: provider.URL + "/v1", Model: "test-embed"},
 	})
 	if err != nil {
@@ -275,25 +275,25 @@ func TestSemanticOpsSource(t *testing.T) {
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
-	if resp.Unembedded != 0 || len(resp.Hits) == 0 || resp.Hits[0].Thing != "item.item-1" {
+	if resp.Unembedded != 0 || len(resp.Hits) == 0 || resp.Hits[0].Instance != "item/item-1" {
 		t.Fatalf("widget query = %+v", resp)
 	}
 	for i, h := range resp.Hits {
 		for j := i + 1; j < len(resp.Hits); j++ {
-			if h.Thing == resp.Hits[j].Thing {
+			if h.Instance == resp.Hits[j].Instance {
 				t.Fatalf("a thing hit twice: %+v", resp.Hits)
 			}
 		}
 	}
 
 	// The live tail: a fresh op embeds and answers, no effects involved.
-	if _, err := alice.Append(ctx, "items", "item.item-2", "note.add", []byte(`{"body":"gadget gadget gadget"}`)); err != nil {
+	if _, err := alice.Apply(ctx, "items", "item/item-2", "note.add", []byte(`{"body":"gadget gadget gadget"}`)); err != nil {
 		t.Fatalf("append live: %v", err)
 	}
 	deadline := time.Now().Add(15 * time.Second)
 	for {
 		resp, err = querySemantic(ctx, alice, "items", "meaning", "gadget")
-		if err == nil && resp.Unembedded == 0 && len(resp.Hits) > 0 && resp.Hits[0].Thing == "item.item-2" {
+		if err == nil && resp.Unembedded == 0 && len(resp.Hits) > 0 && resp.Hits[0].Instance == "item/item-2" {
 			break
 		}
 		if time.Now().After(deadline) {

@@ -82,7 +82,7 @@ func run() error {
 		if *logName == "" || *index == "" {
 			return fmt.Errorf("kind %s needs --log and --index", *kind)
 		}
-		svc, err := search.Start(startCtx, c.Conn(), search.Config{Log: *logName, Index: *index})
+		svc, err := search.Start(startCtx, c.Conn(), search.Config{Store: *logName, Index: *index})
 		if err != nil {
 			return err
 		}
@@ -91,7 +91,7 @@ func run() error {
 		if *logName == "" || *index == "" {
 			return fmt.Errorf("kind %s needs --log and --index", *kind)
 		}
-		svc, err := graph.Start(startCtx, c.Conn(), graph.Config{Log: *logName, Index: *index})
+		svc, err := graph.Start(startCtx, c.Conn(), graph.Config{Store: *logName, Index: *index})
 		if err != nil {
 			return err
 		}
@@ -108,7 +108,7 @@ func run() error {
 			}
 			provider.APIKey = strings.TrimSpace(string(key))
 		}
-		svc, err := semantic.Start(startCtx, c.Conn(), semantic.Config{Log: *logName, Index: *index, Provider: provider})
+		svc, err := semantic.Start(startCtx, c.Conn(), semantic.Config{Store: *logName, Index: *index, Provider: provider})
 		if err != nil {
 			return err
 		}

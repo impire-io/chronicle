@@ -15,7 +15,7 @@ import (
 // strategies, swaps — stay with the callers; the rules live here. A
 // rebuild is a fresh Pass: derived state is rebuilt by replay.
 type Pass struct {
-	// Resolve classifies a thing tail: the pair walk (ResolveThing) for
+	// Resolve classifies a thing tail: the pair walk (ResolveInstance) for
 	// tenant logs, by-family for the fleet log.
 	Resolve func(ctx context.Context, thing string) (contract.Resolution, error)
 	// Sink receives a thing's freshly derived state at its seq — the
@@ -130,8 +130,8 @@ func (p *Pass) Snapshot(thing string) (json.RawMessage, uint64, bool) {
 	return st.state, st.stateSeq, true
 }
 
-// Things names every thing this pass has seen — the fleet's roster scan.
-func (p *Pass) Things() []string {
+// Instances names every thing this pass has seen — the fleet's roster scan.
+func (p *Pass) Instances() []string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	things := make([]string, 0, len(p.states))

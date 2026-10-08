@@ -18,14 +18,14 @@ import (
 // managed service's CHRON.CTRL.> surface is not tenant wire contract and
 // lives with the service (chronicle-service).
 const (
-	LogCreateSubject    = "CHRON.API.LOG.CREATE"
-	TypeDefineSubject   = "CHRON.API.TYPE.DEFINE"
-	ThingRollupSubject  = "CHRON.API.THING.ROLLUP"
-	IndexDeclareSubject = "CHRON.API.INDEX.DECLARE"
-	IndexDeleteSubject  = "CHRON.API.INDEX.DELETE"
-	MemberAddSubject    = "CHRON.API.MEMBER.ADD"
-	MemberRevokeSubject = "CHRON.API.MEMBER.REVOKE"
-	PingSubject         = "CHRON.API.PING"
+	StoreCreateSubject      = "CHRON.API.LOG.CREATE"
+	TypeDefineSubject       = "CHRON.API.TYPE.DEFINE"
+	InstanceSnapshotSubject = "CHRON.API.THING.ROLLUP"
+	IndexDeclareSubject     = "CHRON.API.INDEX.DECLARE"
+	IndexDeleteSubject      = "CHRON.API.INDEX.DELETE"
+	MemberAddSubject        = "CHRON.API.MEMBER.ADD"
+	MemberRevokeSubject     = "CHRON.API.MEMBER.REVOKE"
+	PingSubject             = "CHRON.API.PING"
 )
 
 // IndexQuerySubject is the endpoint one index serves, in-account —
@@ -37,12 +37,12 @@ func IndexQuerySubject(log, index string) string {
 	return "CHRON.API.INDEX.QUERY." + log + "." + index
 }
 
-// LogCreateRequest creates a log: a stream and META entries — no key
+// StoreCreateRequest creates a log: a stream and META entries — no key
 // operations, no JWT pushes. Principal is the caller's assertion, checked
 // against the registry (role admin), the same trust tier as Op-Author.
-type LogCreateRequest struct {
+type StoreCreateRequest struct {
 	Principal   string `json:"principal"`
-	Log         string `json:"log"`
+	Store       string `json:"store"`
 	Description string `json:"description,omitempty"`
 	// MaxBytes overrides the stream's default byte budget; zero means the
 	// decided default (1 GiB).
@@ -52,8 +52,8 @@ type LogCreateRequest struct {
 	History string `json:"history,omitempty"`
 }
 
-// LogCreateResponse names the created stream.
-type LogCreateResponse struct {
+// StoreCreateResponse names the created stream.
+type StoreCreateResponse struct {
 	Stream string `json:"stream"`
 }
 
@@ -64,11 +64,11 @@ type LogCreateResponse struct {
 // state (decision 0011, unchanged in substance).
 type TypeDefineRequest struct {
 	Principal  string                    `json:"principal"`
-	Log        string                    `json:"log"`
+	Store      string                    `json:"store"`
 	Type       string                    `json:"type"`
 	Schema     json.RawMessage           `json:"schema"`
 	History    string                    `json:"history,omitempty"`
-	Aspects    map[string]string         `json:"aspects,omitempty"`
+	Children   map[string]string         `json:"children,omitempty"`
 	Operations map[string]contract.OpDef `json:"operations,omitempty"`
 }
 
@@ -77,22 +77,22 @@ type TypeDefineResponse struct {
 	Revision uint64 `json:"revision"`
 }
 
-// ThingRollupRequest asks the node to compact one thing's history into a
+// InstanceSnapshotRequest asks the node to compact one thing's history into a
 // fresh snapshot — the on-demand rollup trigger (04-fleet.md § the node's
 // duties). The node applies the effect gate (decision 0011): history its
 // fold has not fully captured into state is refused with the reason, and
-// compaction stays the application's call (SaveVersion).
-type ThingRollupRequest struct {
+// compaction stays the application's call (SaveSnapshot).
+type InstanceSnapshotRequest struct {
 	Principal string `json:"principal"`
-	Log       string `json:"log"`
-	Thing     string `json:"thing"`
+	Store     string `json:"store"`
+	Instance  string `json:"instance"`
 }
 
-// ThingRollupResponse says what happened: Rolled with the new snapshot's
+// InstanceSnapshotResponse says what happened: Taken with the new snapshot's
 // stream seq, or the reason the node declined — a gate veto, nothing to
 // compact, or a lost race. Declining is an answer, not an error.
-type ThingRollupResponse struct {
-	Rolled bool   `json:"rolled"`
+type InstanceSnapshotResponse struct {
+	Taken  bool   `json:"taken"`
 	Seq    uint64 `json:"seq,omitempty"`
 	Reason string `json:"reason,omitempty"`
 }
@@ -104,7 +104,7 @@ type ThingRollupResponse struct {
 // refuses config.
 type IndexDeclareRequest struct {
 	Principal string          `json:"principal"`
-	Log       string          `json:"log"`
+	Store     string          `json:"store"`
 	Index     string          `json:"index"`
 	Kind      string          `json:"kind"`
 	Config    json.RawMessage `json:"config,omitempty"`
@@ -121,7 +121,7 @@ type IndexDeclareResponse struct {
 // record is lost. Changing a declaration is delete + declare.
 type IndexDeleteRequest struct {
 	Principal string `json:"principal"`
-	Log       string `json:"log"`
+	Store     string `json:"store"`
 	Index     string `json:"index"`
 }
 
@@ -144,8 +144,8 @@ type IndexQueryRequest struct {
 // IndexHit names a thing and its relevance. The index is never authority:
 // the thing's state is the state bucket's, its history the log's.
 type IndexHit struct {
-	Thing string  `json:"thing"`
-	Score float64 `json:"score"`
+	Instance string  `json:"instance"`
+	Score    float64 `json:"score"`
 }
 
 // QueryTrailer closes a search's streamed reply: the total match count,
@@ -165,6 +165,9 @@ type MemberAddRequest struct {
 	Member    string `json:"member"`
 	// Role is one of admin, writer, reader; "writer" when empty.
 	Role string `json:"role,omitempty"`
+	// Kind is what the principal is to the user: "member" (a person, the
+	// default) or "service" (a service account).
+	Kind string `json:"kind,omitempty"`
 	// PublicKey is the member's NATS user public key where one is known.
 	PublicKey string `json:"public_key,omitempty"`
 	// GithubID binds the membership to a GitHub identity for the managed
@@ -222,7 +225,7 @@ func Request[Req, Resp any](ctx context.Context, nc *nats.Conn, subject string, 
 	msg, err := nc.RequestWithContext(ctx, subject, data)
 	if err != nil {
 		if errors.Is(err, nats.ErrNoResponders) {
-			return zero, fmt.Errorf("%s: no responder (is the node running for this account?)", subject)
+			return zero, fmt.Errorf("no responder for %s: is chronicle running for this account?", subject)
 		}
 		return zero, fmt.Errorf("%s: %w", subject, err)
 	}
@@ -236,28 +239,28 @@ func Request[Req, Resp any](ctx context.Context, nc *nats.Conn, subject string, 
 	return resp, nil
 }
 
-// LogOpt adjusts one log creation.
-type LogOpt func(*LogCreateRequest)
+// StoreOpt adjusts one log creation.
+type StoreOpt func(*StoreCreateRequest)
 
 // WithHistory declares the log's history posture (0019): "preserved"
 // makes the trail the product — the node never compacts the log, and its
 // stream refuses rollup writes outright. Unset means "compactable",
 // today's behavior. Declared at creation, immutable for now.
-func WithHistory(history string) LogOpt {
-	return func(r *LogCreateRequest) { r.History = history }
+func WithHistory(history string) StoreOpt {
+	return func(r *StoreCreateRequest) { r.History = history }
 }
 
-// CreateLog creates a log through the node's control verb.
-func (c *Client) CreateLog(ctx context.Context, log, description string, opts ...LogOpt) (LogCreateResponse, error) {
-	r := LogCreateRequest{
+// CreateStore creates a log through the node's control verb.
+func (c *Client) CreateStore(ctx context.Context, log, description string, opts ...StoreOpt) (StoreCreateResponse, error) {
+	r := StoreCreateRequest{
 		Principal:   c.author,
-		Log:         log,
+		Store:       log,
 		Description: description,
 	}
 	for _, apply := range opts {
 		apply(&r)
 	}
-	return Request[LogCreateRequest, LogCreateResponse](ctx, c.nc, LogCreateSubject, r)
+	return Request[StoreCreateRequest, StoreCreateResponse](ctx, c.nc, StoreCreateSubject, r)
 }
 
 // TypeDefinition is the caller's side of a type record: every facet but
@@ -269,9 +272,9 @@ type TypeDefinition struct {
 	// History is the type's compaction declaration: "compactable" (the
 	// default when unset) or "preserved" — the soft tier (0022 § 4).
 	History string
-	// Aspects maps segment names to the types valid under a thing of
+	// Children maps segment names to the types valid under a thing of
 	// this type. Targets may be defined later — latest declaration wins.
-	Aspects map[string]string
+	Children map[string]string
 	// Operations is the op vocabulary: payload schema + effect per op.
 	Operations map[string]contract.OpDef
 }
@@ -281,11 +284,11 @@ type TypeDefinition struct {
 func (c *Client) DefineType(ctx context.Context, log, name string, def TypeDefinition) (TypeDefineResponse, error) {
 	return Request[TypeDefineRequest, TypeDefineResponse](ctx, c.nc, TypeDefineSubject, TypeDefineRequest{
 		Principal:  c.author,
-		Log:        log,
+		Store:      log,
 		Type:       name,
 		Schema:     def.Schema,
 		History:    def.History,
-		Aspects:    def.Aspects,
+		Children:   def.Children,
 		Operations: def.Operations,
 	})
 }
@@ -296,7 +299,7 @@ func (c *Client) DefineType(ctx context.Context, log, name string, def TypeDefin
 func (c *Client) DeclareIndex(ctx context.Context, log, index, kind string, config json.RawMessage) (IndexDeclareResponse, error) {
 	return Request[IndexDeclareRequest, IndexDeclareResponse](ctx, c.nc, IndexDeclareSubject, IndexDeclareRequest{
 		Principal: c.author,
-		Log:       log,
+		Store:     log,
 		Index:     index,
 		Kind:      kind,
 		Config:    config,
@@ -308,7 +311,7 @@ func (c *Client) DeclareIndex(ctx context.Context, log, index, kind string, conf
 func (c *Client) DeleteIndex(ctx context.Context, log, index string) (IndexDeleteResponse, error) {
 	return Request[IndexDeleteRequest, IndexDeleteResponse](ctx, c.nc, IndexDeleteSubject, IndexDeleteRequest{
 		Principal: c.author,
-		Log:       log,
+		Store:     log,
 		Index:     index,
 	})
 }
@@ -324,15 +327,15 @@ func (c *Client) QueryIndex(ctx context.Context, log, index, query string, limit
 	})
 }
 
-// RollupThing asks the node to compact one thing's history now. A
-// response with Rolled false is the node declining — the effect gate, an
+// Snapshot asks the node to compact one thing's history now. A
+// response with Taken false is the node declining — the effect gate, an
 // empty tail, or a lost race — with the reason; only transport and
 // refusal failures are errors.
-func (c *Client) RollupThing(ctx context.Context, log, thing string) (ThingRollupResponse, error) {
-	return Request[ThingRollupRequest, ThingRollupResponse](ctx, c.nc, ThingRollupSubject, ThingRollupRequest{
+func (c *Client) snapshotTail(ctx context.Context, log, thing string) (InstanceSnapshotResponse, error) {
+	return Request[InstanceSnapshotRequest, InstanceSnapshotResponse](ctx, c.nc, InstanceSnapshotSubject, InstanceSnapshotRequest{
 		Principal: c.author,
-		Log:       log,
-		Thing:     thing,
+		Store:     log,
+		Instance:  thing,
 	})
 }
 
@@ -347,6 +350,12 @@ func WithPublicKey(key string) MemberOpt {
 // WithGithubID binds the membership to a GitHub identity.
 func WithGithubID(id int64) MemberOpt {
 	return func(r *MemberAddRequest) { r.GithubID = id }
+}
+
+// AsServiceAccount records the principal as a service account — a
+// machine with a credential — rather than a member.
+func AsServiceAccount() MemberOpt {
+	return func(r *MemberAddRequest) { r.Kind = contract.PrincipalKindService }
 }
 
 // AddMember registers a principal as a member with a role (admin only).
@@ -372,7 +381,7 @@ func (c *Client) RevokeMember(ctx context.Context, member string) (MemberRevokeR
 type GraphQueryRequest struct {
 	Principal string `json:"principal"`
 	Op        string `json:"op"`
-	Thing     string `json:"thing"`
+	Instance  string `json:"instance"`
 	// Direction: out (default), in, or both. In-edges cover this log's
 	// things pointing at the target.
 	Direction string `json:"direction,omitempty"`
@@ -425,9 +434,9 @@ type SemanticQueryRequest struct {
 // SemanticHit names a thing, its best-chunk score, and the field the
 // meaning matched in. The index is never authority.
 type SemanticHit struct {
-	Thing string  `json:"thing"`
-	Score float64 `json:"score"`
-	Field string  `json:"field,omitempty"`
+	Instance string  `json:"instance"`
+	Score    float64 `json:"score"`
+	Field    string  `json:"field,omitempty"`
 }
 
 // SemanticTrailer closes a semantic query's streamed reply: the total

@@ -22,8 +22,8 @@ func TestUpperLogAndResourceNames(t *testing.T) {
 }
 
 func TestSubjectGrammar(t *testing.T) {
-	if got := LogSubjects("orders"); got != "CHRON.orders.>" {
-		t.Errorf("LogSubjects = %q", got)
+	if got := StoreSubjects("orders"); got != "CHRON.orders.>" {
+		t.Errorf("StoreSubjects = %q", got)
 	}
 	if got := OpsFilter("orders"); got != "CHRON.orders.OPS.>" {
 		t.Errorf("OpsFilter = %q", got)
@@ -32,33 +32,33 @@ func TestSubjectGrammar(t *testing.T) {
 	if subj != "CHRON.orders.OPS.invoice-42.line-3" {
 		t.Errorf("OpsSubject = %q", subj)
 	}
-	if got := ThingFromSubject("orders", subj); got != "invoice-42.line-3" {
-		t.Errorf("ThingFromSubject = %q", got)
+	if got := InstanceFromSubject("orders", subj); got != "invoice-42.line-3" {
+		t.Errorf("InstanceFromSubject = %q", got)
 	}
 }
 
 func TestValidateLogName(t *testing.T) {
 	for _, ok := range []string{"orders", "my-log", "a1", "x"} {
-		if err := ValidateLogName(ok); err != nil {
-			t.Errorf("ValidateLogName(%q): unexpected error %v", ok, err)
+		if err := ValidateStoreName(ok); err != nil {
+			t.Errorf("ValidateStoreName(%q): unexpected error %v", ok, err)
 		}
 	}
 	for _, bad := range []string{"", "Orders", "my_log", "my.log", "api", "sys", "meta", "a b", "CHRON"} {
-		if err := ValidateLogName(bad); err == nil {
-			t.Errorf("ValidateLogName(%q): expected refusal", bad)
+		if err := ValidateStoreName(bad); err == nil {
+			t.Errorf("ValidateStoreName(%q): expected refusal", bad)
 		}
 	}
 }
 
 func TestValidateThing(t *testing.T) {
 	for _, ok := range []string{"invoice-42", "invoice-42.line-3", "A.b.c_1"} {
-		if err := ValidateThing(ok); err != nil {
-			t.Errorf("ValidateThing(%q): unexpected error %v", ok, err)
+		if err := ValidateInstance(ok); err != nil {
+			t.Errorf("ValidateInstance(%q): unexpected error %v", ok, err)
 		}
 	}
 	for _, bad := range []string{"", ".", "a..b", "a b", "a.*", "a.>", "a/b"} {
-		if err := ValidateThing(bad); err == nil {
-			t.Errorf("ValidateThing(%q): expected refusal", bad)
+		if err := ValidateInstance(bad); err == nil {
+			t.Errorf("ValidateInstance(%q): expected refusal", bad)
 		}
 	}
 }
@@ -92,7 +92,7 @@ func TestOpHeaderRoundTrip(t *testing.T) {
 }
 
 func TestLogStreamConfig(t *testing.T) {
-	cfg := LogStreamConfig("my-log", 0, "")
+	cfg := StoreStreamConfig("my-log", 0, "")
 	if cfg.Name != "LOG_MY_LOG" {
 		t.Errorf("stream name %q", cfg.Name)
 	}
@@ -114,29 +114,29 @@ func TestLogStreamConfig(t *testing.T) {
 	if cfg.MaxBytes != 1<<30 {
 		t.Errorf("decided default is 1 GiB, got %d", cfg.MaxBytes)
 	}
-	if over := LogStreamConfig("my-log", 42, ""); over.MaxBytes != 42 {
+	if over := StoreStreamConfig("my-log", 42, ""); over.MaxBytes != 42 {
 		t.Errorf("per-log override lost: %d", over.MaxBytes)
 	}
 	// The 0019 declaration reaches the stream: a preserved log refuses
 	// rollup writes outright, and everything else in the table stands.
-	preserved := LogStreamConfig("my-log", 0, HistoryPreserved)
+	preserved := StoreStreamConfig("my-log", 0, HistoryFull)
 	if preserved.AllowRollup {
 		t.Error("a preserved log's stream must refuse rollup writes (0019)")
 	}
 	if !preserved.DenyDelete {
 		t.Error("DenyDelete stands on a preserved log")
 	}
-	if explicit := LogStreamConfig("my-log", 0, HistoryCompactable); !explicit.AllowRollup {
+	if explicit := StoreStreamConfig("my-log", 0, HistoryCompactable); !explicit.AllowRollup {
 		t.Error("an explicitly compactable log keeps AllowRollup")
 	}
 }
 
 func TestMetaKeys(t *testing.T) {
-	if got := MetaLogConfig("orders"); got != "log.orders.config" {
-		t.Errorf("MetaLogConfig = %q", got)
+	if got := MetaStoreConfig("orders"); got != "log.orders.config" {
+		t.Errorf("MetaStoreConfig = %q", got)
 	}
-	if got := MetaLogType("orders", "comment.add"); got != "log.orders.type.comment.add" {
-		t.Errorf("MetaLogType = %q", got)
+	if got := MetaStoreType("orders", "comment.add"); got != "log.orders.type.comment.add" {
+		t.Errorf("MetaStoreType = %q", got)
 	}
 	if got := MetaMember("alice"); got != "identity.member.alice" {
 		t.Errorf("MetaMember = %q", got)
@@ -164,8 +164,8 @@ func TestLogBudget(t *testing.T) {
 		{8 << 20, 64 << 20, 8 << 20},
 		{8 << 20, 0, 8 << 20},
 	} {
-		if got := LogBudget(c.requested, c.accountCap); got != c.want {
-			t.Errorf("LogBudget(%d, %d) = %d, want %d", c.requested, c.accountCap, got, c.want)
+		if got := StoreBudget(c.requested, c.accountCap); got != c.want {
+			t.Errorf("StoreBudget(%d, %d) = %d, want %d", c.requested, c.accountCap, got, c.want)
 		}
 	}
 }

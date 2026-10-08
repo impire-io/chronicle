@@ -12,23 +12,23 @@ import (
 )
 
 // TestGuardedAppend proves 0018's contract: an opt-in expected-sequence
-// guard on plain Append, server-enforced, with the typed refusal and the
+// guard on plain Apply, server-enforced, with the typed refusal and the
 // same retry recovery birth and save carry.
 func TestGuardedAppend(t *testing.T) {
 	_, alice := startNode(t, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	if _, err := alice.CreateLog(ctx, "ledger", ""); err != nil {
+	if _, err := alice.CreateStore(ctx, "ledger", ""); err != nil {
 		t.Fatalf("create log: %v", err)
 	}
-	birth, err := alice.CreateThing(ctx, "ledger", "acct-1", json.RawMessage(`{"n":0}`))
+	birth, err := alice.CreateFromSnapshot(ctx, "ledger", "acct-1", json.RawMessage(`{"n":0}`))
 	if err != nil {
 		t.Fatalf("create thing: %v", err)
 	}
 
 	// A guarded append at the observed head lands.
-	first, err := alice.Append(ctx, "ledger", "acct-1", "n.add", []byte(`{"v":1}`), client.WithExpectedSeq(birth.Seq))
+	first, err := alice.Apply(ctx, "ledger", "acct-1", "n.add", []byte(`{"v":1}`), client.WithExpectedSeq(birth.Seq))
 	if err != nil {
 		t.Fatalf("guarded append: %v", err)
 	}
@@ -37,14 +37,14 @@ func TestGuardedAppend(t *testing.T) {
 	}
 
 	// The same guard re-used: the thing moved, and the refusal is typed.
-	if _, err := alice.Append(ctx, "ledger", "acct-1", "n.add", []byte(`{"v":2}`), client.WithExpectedSeq(birth.Seq)); !errors.Is(err, client.ErrThingMoved) {
-		t.Fatalf("expected ErrThingMoved, got %v", err)
+	if _, err := alice.Apply(ctx, "ledger", "acct-1", "n.add", []byte(`{"v":2}`), client.WithExpectedSeq(birth.Seq)); !errors.Is(err, client.ErrInstanceMoved) {
+		t.Fatalf("expected ErrInstanceMoved, got %v", err)
 	}
 
 	// A retried guarded append with a pinned op ID reports the original
 	// landing — the guard fires before dedup, and the recovery reads
 	// through it.
-	retry, err := alice.Append(ctx, "ledger", "acct-1", "n.add", []byte(`{"v":1}`), client.WithExpectedSeq(birth.Seq), client.WithOpID(first.OpID))
+	retry, err := alice.Apply(ctx, "ledger", "acct-1", "n.add", []byte(`{"v":1}`), client.WithExpectedSeq(birth.Seq), client.WithOpID(first.OpID))
 	if err != nil {
 		t.Fatalf("guarded retry: %v", err)
 	}
@@ -61,7 +61,7 @@ func TestGuardedAppend(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, errs[i] = alice.Append(ctx, "ledger", "acct-1", "race.op", []byte(`{}`), client.WithExpectedSeq(head))
+			_, errs[i] = alice.Apply(ctx, "ledger", "acct-1", "race.op", []byte(`{}`), client.WithExpectedSeq(head))
 		}()
 	}
 	wg.Wait()
@@ -70,7 +70,7 @@ func TestGuardedAppend(t *testing.T) {
 		switch {
 		case e == nil:
 			wins++
-		case errors.Is(e, client.ErrThingMoved):
+		case errors.Is(e, client.ErrInstanceMoved):
 		default:
 			t.Fatalf("racer failed oddly: %v", e)
 		}
@@ -81,22 +81,22 @@ func TestGuardedAppend(t *testing.T) {
 
 	// An unguarded append still lands regardless of history — the
 	// default is unchanged.
-	if _, err := alice.Append(ctx, "ledger", "acct-1", "n.add", []byte(`{"v":9}`)); err != nil {
+	if _, err := alice.Apply(ctx, "ledger", "acct-1", "n.add", []byte(`{"v":9}`)); err != nil {
 		t.Fatalf("unguarded append: %v", err)
 	}
 
 	// Guard 0 is the birth guard: on an occupied subject the thing has
 	// moved by definition.
-	if _, err := alice.Append(ctx, "ledger", "acct-1", "n.add", []byte(`{"v":3}`), client.WithExpectedSeq(0)); !errors.Is(err, client.ErrThingMoved) {
-		t.Fatalf("expected ErrThingMoved on guard 0, got %v", err)
+	if _, err := alice.Apply(ctx, "ledger", "acct-1", "n.add", []byte(`{"v":3}`), client.WithExpectedSeq(0)); !errors.Is(err, client.ErrInstanceMoved) {
+		t.Fatalf("expected ErrInstanceMoved on guard 0, got %v", err)
 	}
 
-	// The option belongs to Append alone: a birth guards at 0 by
+	// The option belongs to Apply alone: a birth guards at 0 by
 	// definition, a save guards at upTo — both refuse it loudly.
-	if _, err := alice.CreateThing(ctx, "ledger", "acct-2", nil, client.WithExpectedSeq(1)); err == nil {
+	if _, err := alice.CreateFromSnapshot(ctx, "ledger", "acct-2", nil, client.WithExpectedSeq(1)); err == nil {
 		t.Fatal("birth accepted WithExpectedSeq")
 	}
-	if _, err := alice.SaveVersion(ctx, "ledger", "acct-1", json.RawMessage(`{}`), nil, 1, client.WithExpectedSeq(1)); err == nil {
+	if _, err := alice.SaveSnapshot(ctx, "ledger", "acct-1", json.RawMessage(`{}`), nil, 1, client.WithExpectedSeq(1)); err == nil {
 		t.Fatal("save accepted WithExpectedSeq")
 	}
 }

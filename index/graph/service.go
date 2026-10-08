@@ -20,7 +20,7 @@ import (
 
 // Config names the one index this service materializes.
 type Config struct {
-	Log   string
+	Store string
 	Index string
 	// Logger receives the fold's warnings; nil means slog.Default.
 	Logger *slog.Logger
@@ -50,16 +50,16 @@ func Start(ctx context.Context, nc *nats.Conn, cfg Config) (*Service, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open META: %w", err)
 	}
-	entry, err := meta.Get(ctx, contract.MetaIndex(cfg.Log, cfg.Index))
+	entry, err := meta.Get(ctx, contract.MetaIndex(cfg.Store, cfg.Index))
 	if err != nil {
-		return nil, fmt.Errorf("read declaration for %s/%s: %w", cfg.Log, cfg.Index, err)
+		return nil, fmt.Errorf("read declaration for %s/%s: %w", cfg.Store, cfg.Index, err)
 	}
 	var decl contract.IndexDeclaration
 	if err := json.Unmarshal(entry.Value(), &decl); err != nil {
 		return nil, fmt.Errorf("decode declaration: %w", err)
 	}
 	if decl.Kind != contract.IndexKindGraph {
-		return nil, fmt.Errorf("declaration %s/%s is kind %q, not graph", cfg.Log, cfg.Index, decl.Kind)
+		return nil, fmt.Errorf("declaration %s/%s is kind %q, not graph", cfg.Store, cfg.Index, decl.Kind)
 	}
 	gcfg, err := contract.ParseGraphConfig(decl.Config)
 	if err != nil {
@@ -67,11 +67,11 @@ func Start(ctx context.Context, nc *nats.Conn, cfg Config) (*Service, error) {
 	}
 
 	proj, err := projection.Start(ctx, nc, projection.Config{
-		Log:    cfg.Log,
+		Store:  cfg.Store,
 		Index:  cfg.Index,
 		Kind:   "graph index",
 		Logger: logger,
-		NewRun: func() (projection.Run, error) { return newGraphRun(cfg.Log, gcfg.Edges, logger), nil },
+		NewRun: func() (projection.Run, error) { return newGraphRun(cfg.Store, gcfg.Edges, logger), nil },
 	})
 	if err != nil {
 		return nil, err
@@ -81,15 +81,15 @@ func Start(ctx context.Context, nc *nats.Conn, cfg Config) (*Service, error) {
 	m, err := micro.AddService(nc, micro.Config{
 		Name:        "chronicle-index-graph",
 		Version:     version.Version,
-		Description: "chronicle graph index: declared edges over thing state",
-		Metadata:    map[string]string{"log": cfg.Log, "index": cfg.Index},
+		Description: "chronicle graph index: declared edges over instance state",
+		Metadata:    map[string]string{"log": cfg.Store, "index": cfg.Index},
 	})
 	if err != nil {
 		proj.Stop()
 		return nil, fmt.Errorf("register service: %w", err)
 	}
 	if err := m.AddEndpoint("query", micro.HandlerFunc(s.handleQuery),
-		micro.WithEndpointSubject(client.IndexQuerySubject(cfg.Log, cfg.Index))); err != nil {
+		micro.WithEndpointSubject(client.IndexQuerySubject(cfg.Store, cfg.Index))); err != nil {
 		_ = m.Stop()
 		proj.Stop()
 		return nil, fmt.Errorf("add query endpoint: %w", err)
@@ -126,14 +126,14 @@ func (s *Service) handleQuery(req micro.Request) {
 		_ = req.Error(contract.CodeForbidden, err.Error(), nil)
 		return
 	}
-	if r.Thing == "" {
-		_ = req.Error(contract.CodeBadRequest, "thing is required", nil)
+	if r.Instance == "" {
+		_ = req.Error(contract.CodeBadRequest, "instance is required: the path to start from", nil)
 		return
 	}
 	switch r.Direction {
 	case "", contract.GraphDirectionOut, contract.GraphDirectionIn, contract.GraphDirectionBoth:
 	default:
-		_ = req.Error(contract.CodeBadDirection, fmt.Sprintf("direction %q is not in the vocabulary (out, in, both)", r.Direction), nil)
+		_ = req.Error(contract.CodeBadDirection, fmt.Sprintf("direction %q: out, in or both", r.Direction), nil)
 		return
 	}
 	run, ok := s.proj.Serving().(*graphRun)
@@ -150,7 +150,7 @@ func (s *Service) handleQuery(req micro.Request) {
 		projection.Stream(req, res.Edges, client.GraphTrailer{Total: res.Total})
 	case contract.GraphOpWalk:
 		res := run.walk(r)
-		projection.Stream(req, res.Things, client.GraphTrailer{Total: res.Total, DepthCapped: res.DepthCapped, Truncated: res.Truncated})
+		projection.Stream(req, res.Instances, client.GraphTrailer{Total: res.Total, DepthCapped: res.DepthCapped, Truncated: res.Truncated})
 	default:
 		// The kind-shaped payload rule (05-indexes.md § the query surface):
 		// a payload outside the index's kind is refused with the kind named.

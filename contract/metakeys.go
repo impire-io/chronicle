@@ -19,17 +19,17 @@ func MetaKeyAllowed(key string) bool {
 	return false
 }
 
-// MetaLogConfig is log.<log>.config — stream overrides, status, description.
-func MetaLogConfig(log string) string { return "log." + log + ".config" }
+// MetaStoreConfig is log.<log>.config — stream overrides, status, description.
+func MetaStoreConfig(log string) string { return "log." + log + ".config" }
 
-// MetaLogConfigPrefix lists every log: the authoritative inventory the node
+// MetaStoreConfigPrefix lists every log: the authoritative inventory the node
 // boots from.
-const MetaLogConfigPrefix = "log."
+const MetaStoreConfigPrefix = "log."
 
-// MetaLogType is log.<log>.type.<type> — the type record, the unit of
+// MetaStoreType is log.<log>.type.<type> — the type record, the unit of
 // definition (decision 0021). Type names follow the log-name grammar, so
 // they can never collide with the dotted op-type keys this shape replaced.
-func MetaLogType(log, typeName string) string { return "log." + log + ".type." + typeName }
+func MetaStoreType(log, typeName string) string { return "log." + log + ".type." + typeName }
 
 // MetaIndex is index.<log>.<index> — an index declaration. The index
 // exists because this key does: declared through INDEX.DECLARE, realized
@@ -100,21 +100,21 @@ func MetaMember(id string) string { return "identity.member." + id }
 // MetaInvite is identity.invite.<digest>.
 func MetaInvite(digest string) string { return "identity.invite." + digest }
 
-// LogConfig is the value at log.<log>.config.
-type LogConfig struct {
+// StoreConfig is the value at log.<log>.config.
+type StoreConfig struct {
 	Status      string `json:"status"`
 	Description string `json:"description,omitempty"`
 	// MaxBytes is the per-log byte-budget override; zero means the decided
 	// default.
 	MaxBytes int64 `json:"max_bytes,omitempty"`
 	// History is the log's 0019 declaration: HistoryCompactable (the
-	// default when unset) or HistoryPreserved. Set at creation, immutable
+	// default when unset) or HistoryFull. Set at creation, immutable
 	// until a config-edit verb exists.
 	History string `json:"history,omitempty"`
 }
 
-// LogStatusActive is the one status the skeleton knows.
-const LogStatusActive = "active"
+// StoreStatusActive is the one status the skeleton knows.
+const StoreStatusActive = "active"
 
 // The history vocabulary (decision 0019). Write-side strict at LOG.CREATE,
 // read-side tolerant: an unknown stored value reads as compactable — the
@@ -123,10 +123,10 @@ const (
 	// HistoryCompactable: node-driven rollup acts wherever the effect gate
 	// (0011) allows. The default.
 	HistoryCompactable = "compactable"
-	// HistoryPreserved: the log's trail is the product — the node never
+	// HistoryFull: the log's trail is the product — the node never
 	// compacts it, and its stream is created with AllowRollup false so no
 	// writer can replace a subject's history.
-	HistoryPreserved = "preserved"
+	HistoryFull = "full"
 )
 
 // NormalizeHistory maps the unset declaration to its meaning.
@@ -150,10 +150,10 @@ type TypeRecord struct {
 	// type level (decision 0022 § 4): the soft tier, honored by the
 	// node's roll-up gate, never server-enforced.
 	History string `json:"history,omitempty"`
-	// Aspects maps segment names to the types that may live under a
+	// Children maps segment names to the types that may live under a
 	// thing of this type (decision 0022): {segment → type}. Declared
 	// means possible, not present; the latest declaration wins.
-	Aspects map[string]string `json:"aspects,omitempty"`
+	Children map[string]string `json:"children,omitempty"`
 	// Operations is the op vocabulary, keyed by op-type string (natural
 	// dots kept). An operation is defined inside exactly one type and
 	// writes to exactly one subject when invoked (0021 § 2).
@@ -213,10 +213,40 @@ type Principal struct {
 type Membership struct {
 	PublicKey string `json:"public_key"`
 	Role      string `json:"role"`
+	// Kind says what the principal is to the user (decision 0044): a
+	// member — a person — or a service account — a machine with a
+	// credential. Empty reads as member. The registry holds both the same
+	// way; the role check does not care.
+	Kind string `json:"kind,omitempty"`
 	// GithubID binds the membership to a GitHub identity for the browser
 	// bridge (decision 0026) — the numeric user ID, because handles are
 	// mutable. Zero means unbound; the bridge refuses unbound principals.
 	GithubID int64 `json:"github_id,omitempty"`
+}
+
+// The principal kinds: the two nouns the CLI and the console give the
+// registry's entries.
+const (
+	PrincipalKindMember  = "member"
+	PrincipalKindService = "service"
+)
+
+// NormalizePrincipalKind maps the unset kind to its meaning.
+func NormalizePrincipalKind(kind string) string {
+	if kind == "" {
+		return PrincipalKindMember
+	}
+	return kind
+}
+
+// KnownPrincipalKind reports whether the kind is in the vocabulary —
+// write-side strict at MEMBER.ADD.
+func KnownPrincipalKind(kind string) bool {
+	switch NormalizePrincipalKind(kind) {
+	case PrincipalKindMember, PrincipalKindService:
+		return true
+	}
+	return false
 }
 
 // The roles to start (onboarding design § identity).

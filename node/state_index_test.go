@@ -20,7 +20,7 @@ func TestStateIndexDeclaration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	if _, err := alice.CreateLog(ctx, "orders", ""); err != nil {
+	if _, err := alice.CreateStore(ctx, "orders", ""); err != nil {
 		t.Fatalf("create log: %v", err)
 	}
 

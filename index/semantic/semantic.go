@@ -313,8 +313,8 @@ func (r *semanticRun) query(ctx context.Context, req client.SemanticQueryRequest
 	byThing := map[string]int{}
 	hits := make([]client.SemanticHit, 0, len(r.embedded))
 	for id, cvs := range r.embedded {
-		thing := projection.DocThing(id)
-		best := client.SemanticHit{Thing: thing, Score: math.Inf(-1)}
+		thing := projection.DocInstance(id)
+		best := client.SemanticHit{Instance: contract.TailPath(thing), Score: math.Inf(-1)}
 		for _, cv := range cvs {
 			if s := cosine(qv, cv.vec); s > best.Score {
 				best.Score = s
@@ -340,7 +340,7 @@ func (r *semanticRun) query(ctx context.Context, req client.SemanticQueryRequest
 		if hits[i].Score != hits[j].Score {
 			return hits[i].Score > hits[j].Score
 		}
-		return hits[i].Thing < hits[j].Thing
+		return hits[i].Instance < hits[j].Instance
 	})
 	total := uint64(len(hits))
 	if req.Limit > 0 && req.Limit < len(hits) {

@@ -92,9 +92,9 @@ type node struct {
 	rolls map[string]*sync.Mutex
 }
 
-// logMutex hands out the log's derived-state mutex, minting it on first
+// storeMutex hands out the log's derived-state mutex, minting it on first
 // use; it survives fold restarts.
-func (n *node) logMutex(log string) *sync.Mutex {
+func (n *node) storeMutex(log string) *sync.Mutex {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	mu, ok := n.rolls[log]
@@ -148,7 +148,7 @@ func Start(ctx context.Context, nc *nats.Conn, cfg Config) (*Node, error) {
 
 	// The logs live in META: log.<log>.config is the authoritative
 	// inventory the node boots from.
-	logs, err := n.listLogs(ctx)
+	logs, err := n.listStores(ctx)
 	if err != nil {
 		cancel()
 		return nil, err
@@ -184,9 +184,9 @@ func Start(ctx context.Context, nc *nats.Conn, cfg Config) (*Node, error) {
 		handler micro.HandlerFunc
 	}{
 		{"ping", client.PingSubject, n.handlePing},
-		{"log-create", client.LogCreateSubject, n.handleLogCreate},
+		{"log-create", client.StoreCreateSubject, n.handleStoreCreate},
 		{"type-define", client.TypeDefineSubject, n.handleTypeDefine},
-		{"thing-rollup", client.ThingRollupSubject, n.handleThingRollup},
+		{"instance-snapshot", client.InstanceSnapshotSubject, n.handleInstanceSnapshot},
 		{"index-declare", client.IndexDeclareSubject, n.handleIndexDeclare},
 		{"index-delete", client.IndexDeleteSubject, n.handleIndexDelete},
 		{"member-add", client.MemberAddSubject, n.handleMemberAdd},
@@ -218,11 +218,11 @@ func (n *node) handlePing(req micro.Request) {
 	_ = req.Respond(reply)
 }
 
-func (n *node) handleLogCreate(req micro.Request) {
+func (n *node) handleStoreCreate(req micro.Request) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	var r client.LogCreateRequest
+	var r client.StoreCreateRequest
 	if err := json.Unmarshal(req.Data(), &r); err != nil {
 		_ = req.Error(contract.CodeBadRequest, err.Error(), nil)
 		return
@@ -231,20 +231,20 @@ func (n *node) handleLogCreate(req micro.Request) {
 		_ = req.Error(contract.CodeForbidden, err.Error(), nil)
 		return
 	}
-	if err := contract.ValidateLogName(r.Log); err != nil {
-		_ = req.Error(contract.CodeBadLogName, err.Error(), nil)
+	if err := contract.ValidateStoreName(r.Store); err != nil {
+		_ = req.Error(contract.CodeBadStoreName, err.Error(), nil)
 		return
 	}
 	// Write-side strict, like effects and index kinds: the history
 	// vocabulary (0019) refuses values outside it.
-	if h := contract.NormalizeHistory(r.History); h != contract.HistoryCompactable && h != contract.HistoryPreserved {
-		_ = req.Error(contract.CodeBadHistory, fmt.Sprintf("history %q: %q or %q", r.History, contract.HistoryCompactable, contract.HistoryPreserved), nil)
+	if h := contract.NormalizeHistory(r.History); h != contract.HistoryCompactable && h != contract.HistoryFull {
+		_ = req.Error(contract.CodeBadHistory, fmt.Sprintf("history policy %q: %q or %q", r.History, contract.HistoryCompactable, contract.HistoryFull), nil)
 		return
 	}
 
 	// The budget is the account's to bound (decision 0039): read before
 	// the claim, so a refusal leaves nothing behind.
-	budget, err := n.logBudget(ctx, r.MaxBytes)
+	budget, err := n.storeBudget(ctx, r.MaxBytes)
 	if err != nil {
 		code := contract.CodeInternal
 		if errors.Is(err, errAboveAccountCap) {
@@ -256,8 +256,8 @@ func (n *node) handleLogCreate(req micro.Request) {
 
 	// The META key is the claim: create-if-absent, so two racing creates
 	// settle without a lock.
-	cfg, err := json.Marshal(contract.LogConfig{
-		Status:      contract.LogStatusActive,
+	cfg, err := json.Marshal(contract.StoreConfig{
+		Status:      contract.StoreStatusActive,
 		Description: r.Description,
 		MaxBytes:    r.MaxBytes,
 		History:     r.History,
@@ -266,20 +266,20 @@ func (n *node) handleLogCreate(req micro.Request) {
 		_ = req.Error(contract.CodeInternal, err.Error(), nil)
 		return
 	}
-	if _, err := n.meta.Create(ctx, contract.MetaLogConfig(r.Log), cfg); err != nil {
+	if _, err := n.meta.Create(ctx, contract.MetaStoreConfig(r.Store), cfg); err != nil {
 		if errors.Is(err, jetstream.ErrKeyExists) {
-			_ = req.Error(contract.CodeLogExists, fmt.Sprintf("log %q already exists", r.Log), nil)
+			_ = req.Error(contract.CodeStoreExists, fmt.Sprintf("store %q already exists", r.Store), nil)
 			return
 		}
 		_ = req.Error(contract.CodeInternal, err.Error(), nil)
 		return
 	}
 
-	if _, err := n.js.CreateStream(ctx, contract.LogStreamConfig(r.Log, budget, r.History)); err != nil {
+	if _, err := n.js.CreateStream(ctx, contract.StoreStreamConfig(r.Store, budget, r.History)); err != nil {
 		_ = req.Error(contract.CodeInternal, fmt.Sprintf("create stream: %v", err), nil)
 		return
 	}
-	if _, err := n.js.CreateKeyValue(ctx, contract.StateBucketConfig(r.Log)); err != nil {
+	if _, err := n.js.CreateKeyValue(ctx, contract.StateBucketConfig(r.Store)); err != nil {
 		_ = req.Error(contract.CodeInternal, fmt.Sprintf("create state bucket: %v", err), nil)
 		return
 	}
@@ -290,16 +290,16 @@ func (n *node) handleLogCreate(req micro.Request) {
 		_ = req.Error(contract.CodeInternal, err.Error(), nil)
 		return
 	}
-	if _, err := n.meta.Create(ctx, contract.MetaIndex(r.Log, contract.StateIndexName), decl); err != nil && !errors.Is(err, jetstream.ErrKeyExists) {
+	if _, err := n.meta.Create(ctx, contract.MetaIndex(r.Store, contract.StateIndexName), decl); err != nil && !errors.Is(err, jetstream.ErrKeyExists) {
 		_ = req.Error(contract.CodeInternal, fmt.Sprintf("declare state index: %v", err), nil)
 		return
 	}
-	if err := n.startFold(ctx, r.Log); err != nil {
+	if err := n.startFold(ctx, r.Store); err != nil {
 		_ = req.Error(contract.CodeInternal, fmt.Sprintf("start fold: %v", err), nil)
 		return
 	}
 
-	reply, err := json.Marshal(client.LogCreateResponse{Stream: contract.StreamName(r.Log)})
+	reply, err := json.Marshal(client.StoreCreateResponse{Stream: contract.StreamName(r.Store)})
 	if err != nil {
 		_ = req.Error(contract.CodeInternal, err.Error(), nil)
 		return
@@ -311,11 +311,11 @@ func (n *node) handleLogCreate(req micro.Request) {
 // not allow — the creator's to fix, not the node's.
 var errAboveAccountCap = errors.New("above the account's per-log cap")
 
-// logBudget is a new log's byte budget: the request's override, or the
+// storeBudget is a new log's byte budget: the request's override, or the
 // default bounded by the account's per-stream cap, which JetStream's own
 // account information carries — any NATS, any auth mode. An override above
 // the cap is refused here, where the server would refuse the stream.
-func (n *node) logBudget(ctx context.Context, requested int64) (int64, error) {
+func (n *node) storeBudget(ctx context.Context, requested int64) (int64, error) {
 	ai, err := n.js.AccountInfo(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("account limits: %w", err)
@@ -324,7 +324,7 @@ func (n *node) logBudget(ctx context.Context, requested int64) (int64, error) {
 	if requested > 0 && limit > 0 && requested > limit {
 		return 0, fmt.Errorf("%w: max bytes %d, cap %d", errAboveAccountCap, requested, limit)
 	}
-	return contract.LogBudget(requested, limit), nil
+	return contract.StoreBudget(requested, limit), nil
 }
 
 func (n *node) handleTypeDefine(req micro.Request) {
@@ -340,8 +340,8 @@ func (n *node) handleTypeDefine(req micro.Request) {
 		_ = req.Error(contract.CodeForbidden, err.Error(), nil)
 		return
 	}
-	if err := contract.ValidateLogName(r.Log); err != nil {
-		_ = req.Error(contract.CodeBadLogName, err.Error(), nil)
+	if err := contract.ValidateStoreName(r.Store); err != nil {
+		_ = req.Error(contract.CodeBadStoreName, err.Error(), nil)
 		return
 	}
 	if err := contract.ValidateTypeName(r.Type); err != nil {
@@ -350,19 +350,19 @@ func (n *node) handleTypeDefine(req micro.Request) {
 	}
 	// Write-side strict on every facet's vocabulary; the fold stays
 	// tolerant of values a newer node recorded.
-	if h := contract.NormalizeHistory(r.History); h != contract.HistoryCompactable && h != contract.HistoryPreserved {
-		_ = req.Error(contract.CodeBadHistory, fmt.Sprintf("history %q: %q or %q", r.History, contract.HistoryCompactable, contract.HistoryPreserved), nil)
+	if h := contract.NormalizeHistory(r.History); h != contract.HistoryCompactable && h != contract.HistoryFull {
+		_ = req.Error(contract.CodeBadHistory, fmt.Sprintf("history policy %q: %q or %q", r.History, contract.HistoryCompactable, contract.HistoryFull), nil)
 		return
 	}
-	for seg, target := range r.Aspects {
+	for seg, target := range r.Children {
 		if err := contract.ValidateTypeName(seg); err != nil {
-			_ = req.Error(contract.CodeBadAspectSegment, err.Error(), nil)
+			_ = req.Error(contract.CodeBadChildName, err.Error(), nil)
 			return
 		}
 		// The target may be defined later — latest declaration wins; only
 		// its grammar is checked here.
 		if err := contract.ValidateTypeName(target); err != nil {
-			_ = req.Error(contract.CodeBadAspectType, err.Error(), nil)
+			_ = req.Error(contract.CodeBadChildType, err.Error(), nil)
 			return
 		}
 	}
@@ -372,7 +372,7 @@ func (n *node) handleTypeDefine(req micro.Request) {
 			return
 		}
 		if e := contract.NormalizeEffect(def.Effect); !contract.KnownEffect(e) {
-			_ = req.Error(contract.CodeBadEffect, fmt.Sprintf("operation %s: effect %q is not in this node's vocabulary (none, merge)", opType, def.Effect), nil)
+			_ = req.Error(contract.CodeBadEffect, fmt.Sprintf("operation %s: effect %q is outside the vocabulary (merge, none)", opType, def.Effect), nil)
 			return
 		}
 		if _, err := contract.CompileSchema(def.Schema); err != nil {
@@ -380,8 +380,8 @@ func (n *node) handleTypeDefine(req micro.Request) {
 			return
 		}
 	}
-	if _, err := n.meta.Get(ctx, contract.MetaLogConfig(r.Log)); err != nil {
-		_ = req.Error(contract.CodeNoSuchLog, fmt.Sprintf("log %q is not created", r.Log), nil)
+	if _, err := n.meta.Get(ctx, contract.MetaStoreConfig(r.Store)); err != nil {
+		_ = req.Error(contract.CodeNoSuchStore, fmt.Sprintf("store %q does not exist", r.Store), nil)
 		return
 	}
 	// The thing schema must compile before it is declared: type and schema
@@ -401,7 +401,7 @@ func (n *node) handleTypeDefine(req micro.Request) {
 	// the log's derived state suspect, and suspect state is rebuilt by
 	// replay (0011 § 3, 0021 § 5).
 	if changed {
-		if err := n.rebuildLog(ctx, r.Log); err != nil {
+		if err := n.rebuildStore(ctx, r.Store); err != nil {
 			_ = req.Error(contract.CodeInternal, fmt.Sprintf("rebuild state: %v", err), nil)
 			return
 		}
@@ -414,15 +414,15 @@ func (n *node) handleTypeDefine(req micro.Request) {
 	_ = req.Respond(reply)
 }
 
-// handleThingRollup is the on-demand rollup trigger. Writers and admins
+// handleInstanceSnapshot is the on-demand rollup trigger. Writers and admins
 // may ask — a member can publish a rollup snapshot on the wire anyway
 // (the member baseline); the verb only adds the node's gated routine —
 // while readers are refused. Declining is answered, never errored.
-func (n *node) handleThingRollup(req micro.Request) {
+func (n *node) handleInstanceSnapshot(req micro.Request) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	var r client.ThingRollupRequest
+	var r client.InstanceSnapshotRequest
 	if err := json.Unmarshal(req.Data(), &r); err != nil {
 		_ = req.Error(contract.CodeBadRequest, err.Error(), nil)
 		return
@@ -431,29 +431,30 @@ func (n *node) handleThingRollup(req micro.Request) {
 		_ = req.Error(contract.CodeForbidden, err.Error(), nil)
 		return
 	}
-	if err := contract.ValidateLogName(r.Log); err != nil {
-		_ = req.Error(contract.CodeBadLogName, err.Error(), nil)
+	if err := contract.ValidateStoreName(r.Store); err != nil {
+		_ = req.Error(contract.CodeBadStoreName, err.Error(), nil)
 		return
 	}
-	if err := contract.ValidateThing(r.Thing); err != nil {
-		_ = req.Error(contract.CodeBadThing, err.Error(), nil)
+	tail, err := contract.PathTail(r.Instance)
+	if err != nil {
+		_ = req.Error(contract.CodeBadInstance, err.Error(), nil)
 		return
 	}
-	if _, err := n.meta.Get(ctx, contract.MetaLogConfig(r.Log)); err != nil {
-		_ = req.Error(contract.CodeNoSuchLog, fmt.Sprintf("log %q is not created", r.Log), nil)
+	if _, err := n.meta.Get(ctx, contract.MetaStoreConfig(r.Store)); err != nil {
+		_ = req.Error(contract.CodeNoSuchStore, fmt.Sprintf("store %q does not exist", r.Store), nil)
 		return
 	}
 
-	res, err := n.rollupThing(ctx, r.Log, r.Thing)
-	if errors.Is(err, errNoThing) {
-		_ = req.Error(contract.CodeNoSuchThing, fmt.Sprintf("thing %q has no history in %s", r.Thing, r.Log), nil)
+	res, err := n.snapshotInstance(ctx, r.Store, tail)
+	if errors.Is(err, errNoInstance) {
+		_ = req.Error(contract.CodeNoSuchInstance, fmt.Sprintf("instance %q has no history in store %s", r.Instance, r.Store), nil)
 		return
 	}
 	if err != nil {
 		_ = req.Error(contract.CodeInternal, err.Error(), nil)
 		return
 	}
-	reply, err := json.Marshal(client.ThingRollupResponse{Rolled: res.rolled, Seq: res.seq, Reason: res.reason})
+	reply, err := json.Marshal(client.InstanceSnapshotResponse{Taken: res.rolled, Seq: res.seq, Reason: res.reason})
 	if err != nil {
 		_ = req.Error(contract.CodeInternal, err.Error(), nil)
 		return

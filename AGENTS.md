@@ -45,6 +45,13 @@ non-negotiables.
 - **Any NATS, any auth mode.** The client and the binaries take a creds
   file or an nkey with the principal stated; a change that assumes
   operator mode, a minter, or a fleet is on the wrong side of the line.
+- **The words are the user's** (chronicle-hq decision 0044,
+  `../chronicle-hq/00-META/vocabulary.md`): a store, its types, their
+  instances named by paths, children, snapshots, members and service
+  accounts. No retired word — thing, aspect, fold, rollup, birth, marked,
+  tail, META, bucket, stream, subject — on any surface a user reads: help,
+  errors, the README, the SDK's names; `cli/vocabulary_test.go` checks the
+  help. The protocol tokens underneath keep their names.
 - **Minimal build**: every addition names the present need it serves; "we
   might want it later" is not a need.
 - **The client surface is the artifact's.** `contract/sdk-contract.json`

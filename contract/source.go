@@ -13,10 +13,10 @@ const (
 	// SourceState: the index materializes folded thing state — 0012's
 	// answer, the default.
 	SourceState = "state"
-	// SourceOps: the index materializes per-op documents — history as it
+	// SourceHistory: the index materializes per-op documents — history as it
 	// is, every op, unknown types included. Schemas and effects shape
 	// state, never history's visibility; hits stay thing-level.
-	SourceOps = "ops"
+	SourceHistory = "history"
 )
 
 // NormalizeSource maps the unset declaration to its meaning.
@@ -29,8 +29,8 @@ func NormalizeSource(source string) string {
 
 // validateSource refuses values outside the vocabulary.
 func validateSource(source string) error {
-	if s := NormalizeSource(source); s != SourceState && s != SourceOps {
-		return fmt.Errorf("source %q: %q or %q", source, SourceState, SourceOps)
+	if s := NormalizeSource(source); s != SourceState && s != SourceHistory {
+		return fmt.Errorf("source %q: %q or %q", source, SourceState, SourceHistory)
 	}
 	return nil
 }
@@ -42,7 +42,7 @@ func validateSourcedTypes(source string, types []string) error {
 	if len(types) == 0 {
 		return nil
 	}
-	if NormalizeSource(source) != SourceOps {
+	if NormalizeSource(source) != SourceHistory {
 		return fmt.Errorf("types narrows an ops-sourced index; this one reads state")
 	}
 	seen := map[string]struct{}{}

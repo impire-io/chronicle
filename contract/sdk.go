@@ -6,7 +6,7 @@ import "time"
 // the artifact's version, declared by every SDK that implements it
 // (design 12 § the artifact). Additive changes bump minor; a changed
 // meaning bumps major. Unrelated to the envelope's Op-Version.
-const ContractVersion = "1.0.0"
+const ContractVersion = "2.0.0"
 
 // The interaction shapes an SDK may implement (design 12 § the shapes).
 // Every shape is describable in the artifact; an SDK implements the ones

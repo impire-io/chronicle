@@ -1,6 +1,6 @@
 {
-  "$comment": "The chronicle SDK contract (chronicle-hq design 12): the wire described once, restated by every SDK. The Go contract package proves it matches; an SDK generates its types, constants and error enum from it and nothing else.",
-  "version": "1.0.0",
+  "$comment": "The chronicle SDK contract (chronicle-hq design 12): the wire described once, restated by every SDK. The Go contract package proves it matches; an SDK generates its types, constants and error enum from it and nothing else. The words are the user's (chronicle-hq/00-META/vocabulary.md, decision 0044): a store, its types, their instances named by paths, children, snapshots; the protocol tokens underneath — subjects, verb names, headers, resource names, the log. META prefix — do not change with the words.",
+  "version": "2.0.0",
   "shapes": [
     {
       "name": "request-reply",
@@ -38,7 +38,7 @@
     },
     "envelopeVersion": "1",
     "guards": {
-      "Nats-Expected-Last-Subject-Sequence": "JetStream's per-subject CAS; 0 is birth",
+      "Nats-Expected-Last-Subject-Sequence": "JetStream's per-subject CAS; 0 is create",
       "Nats-Rollup": "a snapshot that replaces its subject's history; only ever the rollup subject value"
     },
     "rollupSubject": "sub",
@@ -55,18 +55,23 @@
     "name": {
       "pattern": "^[a-z0-9-]+$",
       "appliesTo": [
-        "log",
+        "store",
         "index",
         "type",
         "principal",
-        "aspect segment"
+        "child name"
       ]
     },
-    "thingToken": {
+    "instanceToken": {
       "pattern": "^[a-zA-Z0-9_-]+$",
-      "note": "a thing tail is one or more tokens joined with '.'; the tail is also the state bucket's key"
+      "note": "one segment of an instance's path; a path is the segments joined with '/' as the user writes it, and with '.' as it is stored — the tail, which is also the state bucket's key"
     },
-    "reservedLogNames": [
+    "path": {
+      "separator": "/",
+      "storedSeparator": ".",
+      "note": "type/id, then name/id for each child, e.g. invoice/inv-1/comments/c-3; converted to and from the stored tail segment for segment"
+    },
+    "reservedStoreNames": [
       "api",
       "meta",
       "sys"
@@ -77,17 +82,17 @@
     "snapshotOpType": "snapshot",
     "stateFoldKey": "=fold",
     "derivations": {
-      "upperLog": "the log name uppercased with '-' mapped to '_'",
-      "stream": "LOG_<LOG>",
-      "stateBucket": "STATE_<LOG>",
-      "logSubjects": "CHRON.<log>.>",
-      "opsFilter": "CHRON.<log>.OPS.>",
-      "opsSubject": "CHRON.<log>.OPS.<thing>"
+      "upperStore": "the store name uppercased with '-' mapped to '_'",
+      "stream": "LOG_<STORE>",
+      "stateBucket": "STATE_<STORE>",
+      "storeSubjects": "CHRON.<store>.>",
+      "opsFilter": "CHRON.<store>.OPS.>",
+      "opsSubject": "CHRON.<store>.OPS.<tail>"
     },
     "metaKeys": {
-      "logConfig": "log.<log>.config",
-      "type": "log.<log>.type.<type>",
-      "index": "index.<log>.<index>",
+      "storeConfig": "log.<store>.config",
+      "type": "log.<store>.type.<type>",
+      "index": "index.<store>.<index>",
       "principal": "identity.principal.<id>",
       "member": "identity.member.<id>",
       "invite": "identity.invite.<digest>"
@@ -103,13 +108,17 @@
     ],
     "history": [
       "compactable",
-      "preserved"
+      "full"
     ],
     "indexKinds": [
       "state",
       "search",
       "graph",
       "semantic"
+    ],
+    "principalKinds": [
+      "member",
+      "service"
     ]
   },
   "records": {
@@ -130,16 +139,16 @@
           "type": "string",
           "enum": [
             "compactable",
-            "preserved"
+            "full"
           ]
         },
-        "aspects": {
+        "children": {
           "type": "object",
           "additionalProperties": {
             "type": "string",
             "pattern": "^[a-z0-9-]+$"
           },
-          "description": "{segment → type}"
+          "description": "{name → type}: the child types that may live under an instance of this type"
         },
         "operations": {
           "type": "object",
@@ -285,7 +294,7 @@
       "reset",
       "malformed-snapshot"
     ],
-    "rules": "resolve the tail first: an undeclared aspect is marked and moves nothing; a snapshot resets state to its payload's, judged against the thing schema when typed; a declared merge applies RFC 7386 onto current state, empty included; none, an unknown type, an unknown effect, a bad record or an invalid payload moves nothing; an untyped subject moves only by snapshot"
+    "rules": "resolve the tail (the path as stored) first: an undeclared child (one its parent type does not declare) is marked and moves nothing; a snapshot resets state to its payload's, judged against the instance schema when typed; a declared merge applies RFC 7386 onto current state, empty included; none, an unknown type, an unknown effect, a bad record or an invalid payload moves nothing; an untyped subject moves only by snapshot"
   },
   "errors": [
     {
@@ -302,11 +311,11 @@
     },
     {
       "code": "not-a-member",
-      "meaning": "the principal is not in the registry"
+      "meaning": "the principal is not a member of the account"
     },
     {
-      "code": "bad-log-name",
-      "meaning": "the log name is outside [a-z0-9-]+ or reserved"
+      "code": "bad-store-name",
+      "meaning": "the store name is outside [a-z0-9-]+ or reserved"
     },
     {
       "code": "bad-index-name",
@@ -321,8 +330,8 @@
       "meaning": "the principal name is outside [a-z0-9-]+ or reserved"
     },
     {
-      "code": "bad-thing",
-      "meaning": "the thing tail is not subject-token safe"
+      "code": "bad-instance",
+      "meaning": "the instance path has a segment outside [a-zA-Z0-9_-]+"
     },
     {
       "code": "bad-role",
@@ -330,11 +339,11 @@
     },
     {
       "code": "bad-history",
-      "meaning": "the history declaration is outside the vocabulary (compactable, preserved)"
+      "meaning": "the history policy is outside the vocabulary (compactable, full)"
     },
     {
       "code": "bad-kind",
-      "meaning": "the index kind is outside the node's vocabulary"
+      "meaning": "the index kind is outside the vocabulary (search, graph, semantic)"
     },
     {
       "code": "bad-config",
@@ -353,12 +362,12 @@
       "meaning": "an operation's name is not a valid op type"
     },
     {
-      "code": "bad-aspect-segment",
-      "meaning": "an aspects key is outside [a-z0-9-]+"
+      "code": "bad-child-name",
+      "meaning": "a child name is outside [a-z0-9-]+"
     },
     {
-      "code": "bad-aspect-type",
-      "meaning": "an aspects value names a type outside [a-z0-9-]+"
+      "code": "bad-child-type",
+      "meaning": "a child names a type outside [a-z0-9-]+"
     },
     {
       "code": "bad-op",
@@ -369,8 +378,8 @@
       "meaning": "the graph direction is outside the vocabulary (out, in, both)"
     },
     {
-      "code": "log-exists",
-      "meaning": "the log already exists"
+      "code": "store-exists",
+      "meaning": "the store already exists"
     },
     {
       "code": "index-exists",
@@ -381,20 +390,20 @@
       "meaning": "the member is already registered"
     },
     {
-      "code": "no-such-log",
-      "meaning": "the log does not exist"
+      "code": "no-such-store",
+      "meaning": "the store does not exist"
     },
     {
       "code": "no-such-index",
       "meaning": "the index is not declared"
     },
     {
-      "code": "no-such-thing",
-      "meaning": "the thing has no history on the log"
+      "code": "no-such-instance",
+      "meaning": "the instance has no history in the store"
     },
     {
       "code": "reserved-state-index",
-      "meaning": "the state index is the node's: not declarable, not deletable while the log exists"
+      "meaning": "state is not an index a caller declares or deletes; it is read as the instance's state"
     },
     {
       "code": "provider-unavailable",
@@ -431,7 +440,7 @@
       ]
     },
     {
-      "name": "log.create",
+      "name": "store.create",
       "shape": "request-reply",
       "subject": "CHRON.API.LOG.CREATE",
       "role": "admin",
@@ -442,7 +451,7 @@
             "type": "string",
             "description": "the caller's principal ID — the same assertion as Op-Author"
           },
-          "log": {
+          "store": {
             "type": "string",
             "pattern": "^[a-z0-9-]+$"
           },
@@ -457,13 +466,13 @@
             "type": "string",
             "enum": [
               "compactable",
-              "preserved"
+              "full"
             ]
           }
         },
         "required": [
           "principal",
-          "log"
+          "store"
         ],
         "additionalProperties": false
       },
@@ -472,7 +481,7 @@
         "properties": {
           "stream": {
             "type": "string",
-            "description": "the created stream, LOG_<LOG>"
+            "description": "the created stream, LOG_<STORE>"
           }
         },
         "required": [
@@ -485,9 +494,9 @@
         "bad-request",
         "forbidden",
         "not-a-member",
-        "bad-log-name",
+        "bad-store-name",
         "bad-history",
-        "log-exists"
+        "store-exists"
       ]
     },
     {
@@ -502,7 +511,7 @@
             "type": "string",
             "description": "the caller's principal ID — the same assertion as Op-Author"
           },
-          "log": {
+          "store": {
             "type": "string",
             "pattern": "^[a-z0-9-]+$"
           },
@@ -521,10 +530,10 @@
             "type": "string",
             "enum": [
               "compactable",
-              "preserved"
+              "full"
             ]
           },
-          "aspects": {
+          "children": {
             "type": "object",
             "additionalProperties": {
               "type": "string",
@@ -560,7 +569,7 @@
         },
         "required": [
           "principal",
-          "log",
+          "store",
           "type",
           "schema"
         ],
@@ -583,19 +592,19 @@
         "bad-request",
         "forbidden",
         "not-a-member",
-        "bad-log-name",
+        "bad-store-name",
         "bad-type-name",
         "bad-schema",
         "bad-history",
         "bad-effect",
         "bad-op-type",
-        "bad-aspect-segment",
-        "bad-aspect-type",
-        "no-such-log"
+        "bad-child-name",
+        "bad-child-type",
+        "no-such-store"
       ]
     },
     {
-      "name": "thing.rollup",
+      "name": "instance.snapshot",
       "shape": "request-reply",
       "subject": "CHRON.API.THING.ROLLUP",
       "role": "admin, writer",
@@ -606,26 +615,26 @@
             "type": "string",
             "description": "the caller's principal ID — the same assertion as Op-Author"
           },
-          "log": {
+          "store": {
             "type": "string",
             "pattern": "^[a-z0-9-]+$"
           },
-          "thing": {
+          "instance": {
             "type": "string",
-            "description": "a thing tail: subject-token-safe segments joined with '.'"
+            "description": "a instance tail: subject-token-safe segments joined with '.'"
           }
         },
         "required": [
           "principal",
-          "log",
-          "thing"
+          "store",
+          "instance"
         ],
         "additionalProperties": false
       },
       "reply": {
         "type": "object",
         "properties": {
-          "rolled": {
+          "taken": {
             "type": "boolean"
           },
           "seq": {
@@ -638,7 +647,7 @@
           }
         },
         "required": [
-          "rolled"
+          "taken"
         ],
         "additionalProperties": false
       },
@@ -647,10 +656,10 @@
         "bad-request",
         "forbidden",
         "not-a-member",
-        "bad-log-name",
-        "bad-thing",
-        "no-such-log",
-        "no-such-thing"
+        "bad-store-name",
+        "bad-instance",
+        "no-such-store",
+        "no-such-instance"
       ]
     },
     {
@@ -665,7 +674,7 @@
             "type": "string",
             "description": "the caller's principal ID — the same assertion as Op-Author"
           },
-          "log": {
+          "store": {
             "type": "string",
             "pattern": "^[a-z0-9-]+$"
           },
@@ -683,7 +692,7 @@
         },
         "required": [
           "principal",
-          "log",
+          "store",
           "index",
           "kind"
         ],
@@ -707,11 +716,11 @@
         "bad-request",
         "forbidden",
         "not-a-member",
-        "bad-log-name",
+        "bad-store-name",
         "bad-index-name",
         "bad-kind",
         "bad-config",
-        "no-such-log",
+        "no-such-store",
         "index-exists",
         "reserved-state-index"
       ]
@@ -728,7 +737,7 @@
             "type": "string",
             "description": "the caller's principal ID — the same assertion as Op-Author"
           },
-          "log": {
+          "store": {
             "type": "string",
             "pattern": "^[a-z0-9-]+$"
           },
@@ -739,7 +748,7 @@
         },
         "required": [
           "principal",
-          "log",
+          "store",
           "index"
         ],
         "additionalProperties": false
@@ -761,9 +770,9 @@
         "bad-request",
         "forbidden",
         "not-a-member",
-        "bad-log-name",
+        "bad-store-name",
         "bad-index-name",
-        "no-such-log",
+        "no-such-store",
         "no-such-index",
         "reserved-state-index"
       ]
@@ -799,6 +808,14 @@
           "github_id": {
             "type": "integer",
             "description": "the GitHub numeric ID the membership is bound to; zero means unbound"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "member",
+              "service"
+            ],
+            "description": "a person (member, the default) or a machine (service account)"
           }
         },
         "required": [
@@ -887,7 +904,7 @@
     {
       "name": "index.query.search",
       "shape": "streamed-reply",
-      "subject": "CHRON.API.INDEX.QUERY.<log>.<index>",
+      "subject": "CHRON.API.INDEX.QUERY.<store>.<index>",
       "role": "any",
       "request": {
         "type": "object",
@@ -914,16 +931,16 @@
       "item": {
         "type": "object",
         "properties": {
-          "thing": {
+          "instance": {
             "type": "string",
-            "description": "a thing tail: subject-token-safe segments joined with '.'"
+            "description": "a instance tail: subject-token-safe segments joined with '.'"
           },
           "score": {
             "type": "number"
           }
         },
         "required": [
-          "thing",
+          "instance",
           "score"
         ],
         "additionalProperties": false
@@ -951,7 +968,7 @@
     {
       "name": "index.query.graph.neighbors",
       "shape": "streamed-reply",
-      "subject": "CHRON.API.INDEX.QUERY.<log>.<index>",
+      "subject": "CHRON.API.INDEX.QUERY.<store>.<index>",
       "role": "any",
       "request": {
         "type": "object",
@@ -966,9 +983,9 @@
               "neighbors"
             ]
           },
-          "thing": {
+          "instance": {
             "type": "string",
-            "description": "a thing tail: subject-token-safe segments joined with '.'"
+            "description": "a instance tail: subject-token-safe segments joined with '.'"
           },
           "direction": {
             "type": "string",
@@ -988,7 +1005,7 @@
         },
         "required": [
           "principal",
-          "thing"
+          "instance"
         ],
         "additionalProperties": false
       },
@@ -997,11 +1014,11 @@
         "properties": {
           "from": {
             "type": "string",
-            "description": "a thing tail: subject-token-safe segments joined with '.'"
+            "description": "a instance tail: subject-token-safe segments joined with '.'"
           },
           "to": {
             "type": "string",
-            "description": "a thing tail: subject-token-safe segments joined with '.'"
+            "description": "a instance tail: subject-token-safe segments joined with '.'"
           },
           "label": {
             "type": "string"
@@ -1037,7 +1054,7 @@
     {
       "name": "index.query.graph.walk",
       "shape": "streamed-reply",
-      "subject": "CHRON.API.INDEX.QUERY.<log>.<index>",
+      "subject": "CHRON.API.INDEX.QUERY.<store>.<index>",
       "role": "any",
       "request": {
         "type": "object",
@@ -1052,9 +1069,9 @@
               "walk"
             ]
           },
-          "thing": {
+          "instance": {
             "type": "string",
-            "description": "a thing tail: subject-token-safe segments joined with '.'"
+            "description": "a instance tail: subject-token-safe segments joined with '.'"
           },
           "direction": {
             "type": "string",
@@ -1076,22 +1093,22 @@
           },
           "limit": {
             "type": "integer",
-            "description": "zero streams every reachable thing"
+            "description": "zero streams every reachable instance"
           }
         },
         "required": [
           "principal",
           "op",
-          "thing"
+          "instance"
         ],
         "additionalProperties": false
       },
       "item": {
         "type": "object",
         "properties": {
-          "thing": {
+          "instance": {
             "type": "string",
-            "description": "a thing tail: subject-token-safe segments joined with '.'"
+            "description": "a instance tail: subject-token-safe segments joined with '.'"
           },
           "depth": {
             "type": "integer"
@@ -1101,7 +1118,7 @@
           }
         },
         "required": [
-          "thing",
+          "instance",
           "depth",
           "via"
         ],
@@ -1137,7 +1154,7 @@
     {
       "name": "index.query.semantic",
       "shape": "streamed-reply",
-      "subject": "CHRON.API.INDEX.QUERY.<log>.<index>",
+      "subject": "CHRON.API.INDEX.QUERY.<store>.<index>",
       "role": "any",
       "request": {
         "type": "object",
@@ -1163,9 +1180,9 @@
       "item": {
         "type": "object",
         "properties": {
-          "thing": {
+          "instance": {
             "type": "string",
-            "description": "a thing tail: subject-token-safe segments joined with '.'"
+            "description": "a instance tail: subject-token-safe segments joined with '.'"
           },
           "score": {
             "type": "number"
@@ -1175,7 +1192,7 @@
           }
         },
         "required": [
-          "thing",
+          "instance",
           "score"
         ],
         "additionalProperties": false
@@ -1188,7 +1205,7 @@
           },
           "unembedded": {
             "type": "integer",
-            "description": "things folded but not yet embedded — the honest degradation signal"
+            "description": "instances folded but not yet embedded — the honest degradation signal"
           }
         },
         "required": [
@@ -1208,7 +1225,7 @@
     {
       "name": "append",
       "shape": "publish",
-      "subject": "CHRON.<log>.OPS.<thing>",
+      "subject": "CHRON.<store>.OPS.<tail>",
       "headers": [
         "Nats-Msg-Id",
         "Op-Type",
@@ -1218,18 +1235,18 @@
         "Op-Version"
       ],
       "guards": {
-        "birth": "Nats-Expected-Last-Subject-Sequence: 0",
+        "create": "Nats-Expected-Last-Subject-Sequence: 0",
         "expected": "Nats-Expected-Last-Subject-Sequence: <seq>",
         "rollup": "Nats-Rollup: sub"
       },
       "payload": "data only; a snapshot op's payload is {state, frontier}",
-      "preflight": "validate the payload against the type's operation schema; refuse a birth under an undeclared aspect; one in-flight publish per subject",
-      "retry": "keep Nats-Msg-Id across retries; after a guard refusal read the subject's last op and compare IDs: equal is landed, different is thing-moved"
+      "preflight": "validate the payload against the type's operation schema; refuse a create under an undeclared child; one in-flight publish per subject",
+      "retry": "keep Nats-Msg-Id across retries; after a guard refusal read the subject's last op and compare IDs: equal is landed, different is instance-moved"
     },
     {
       "name": "history",
       "shape": "subscribe",
-      "source": "ordered consumer on LOG_<LOG> filtered to CHRON.<log>.OPS.<thing>",
+      "source": "ordered consumer on LOG_<STORE> filtered to CHRON.<store>.OPS.<tail>",
       "start": "sequence 1 (Replay) or after a given sequence (FoldTail)",
       "bounded": "at the stream head observed at the start",
       "item": {
@@ -1277,7 +1294,7 @@
     {
       "name": "tail",
       "shape": "subscribe",
-      "source": "ordered consumer on LOG_<LOG> filtered to CHRON.<log>.OPS.> or one thing's subject",
+      "source": "ordered consumer on LOG_<STORE> filtered to CHRON.<store>.OPS.> or one instance's subject",
       "start": "sequence 1, after a given sequence, or new only",
       "bounded": "never; the caller cancels",
       "item": {
@@ -1325,7 +1342,7 @@
     {
       "name": "watch.state",
       "shape": "subscribe",
-      "source": "KV watch on STATE_<LOG>, key <thing>",
+      "source": "KV watch on STATE_<STORE>, key <tail>",
       "start": "the current value, then every change",
       "bounded": "never; the caller cancels",
       "item": {
@@ -1348,7 +1365,7 @@
     {
       "name": "watch.declarations",
       "shape": "subscribe",
-      "source": "KV watch on META, keys log.<log>.type.* and index.<log>.*",
+      "source": "KV watch on META, keys log.<store>.type.* and index.<store>.*",
       "start": "every declaration at rest, then every change",
       "bounded": "never; the caller cancels",
       "item": {
@@ -1383,19 +1400,19 @@
       }
     },
     {
-      "name": "list.logs",
+      "name": "list.stores",
       "shape": "subscribe",
       "source": "KV scan on META, keys log.*.config, names only",
       "bounded": "at the values at rest",
       "item": {
         "type": "string",
-        "description": "the log name"
+        "description": "the store name"
       }
     },
     {
       "name": "list.types",
       "shape": "subscribe",
-      "source": "KV scan on META, keys log.<log>.type.*, names only",
+      "source": "KV scan on META, keys log.<store>.type.*, names only",
       "bounded": "at the values at rest",
       "item": {
         "type": "string",
@@ -1405,7 +1422,7 @@
     {
       "name": "list.indexes",
       "shape": "subscribe",
-      "source": "KV scan on META, keys index.<log>.*",
+      "source": "KV scan on META, keys index.<store>.*",
       "bounded": "at the values at rest",
       "item": {
         "type": "object",
@@ -1446,6 +1463,13 @@
               "reader"
             ]
           },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "member",
+              "service"
+            ]
+          },
           "public_key": {
             "type": "string"
           },
@@ -1461,14 +1485,36 @@
       }
     },
     {
-      "name": "list.things",
+      "name": "list.instances",
       "shape": "subscribe",
-      "source": "KV scan on STATE_<LOG>, every key but =fold, narrowed by prefix client-side",
+      "source": "KV scan on STATE_<STORE>, every key but =fold, narrowed by prefix client-side",
       "bounded": "at the values at rest",
       "item": {
-        "type": "string",
-        "description": "a thing tail: subject-token-safe segments joined with '.'"
-      }
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "the instance as the user writes it: type/id, then name/id per child"
+          },
+          "type": {
+            "type": "string",
+            "description": "the type its path names"
+          },
+          "seq": {
+            "type": "integer"
+          },
+          "state": {
+            "description": "the folded state, when the scan carried values"
+          }
+        },
+        "required": [
+          "path",
+          "type",
+          "seq"
+        ]
+      },
+      "description": "the store's instances from its state, one per key; narrowed by the SDK: by type (top-level instances of it), under a parent (its direct children), by a scalar field's value — bucket scans, client-side filters, never a node verb",
+      "feed": "a KV watch on the state bucket, values included when a filter needs them, consumed to the initial-values marker"
     }
   ]
 }

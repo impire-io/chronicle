@@ -1,21 +1,21 @@
 {
   "name": "the spine",
-  "$comment": "One account end to end over the quick start: create a log, define a type, birth a thing, do operations, guard one, miss the guard, read state, replay, roll up, declare and query an index, list everything as an iterator. Every step names a sentence of design 07 and an interaction of the artifact.",
+  "$comment": "One account end to end over the quick start: create a store, define a type, create a instance, do operations, guard one, miss the guard, read state, replay, roll up, declare and query an index, list everything as an iterator. Every step names a sentence of design 07 and an interaction of the artifact.",
   "steps": [
     {
-      "do": "log.create",
-      "log": "orders"
+      "do": "store.create",
+      "store": "orders"
     },
     {
-      "do": "log.create",
-      "log": "orders",
+      "do": "store.create",
+      "store": "orders",
       "expect": {
-        "error": "log-exists"
+        "error": "store-exists"
       }
     },
     {
       "do": "type.define",
-      "log": "orders",
+      "store": "orders",
       "type": "invoice",
       "def": {
         "schema": {
@@ -24,7 +24,7 @@
             "total"
           ]
         },
-        "aspects": {
+        "children": {
           "comments": "comment"
         },
         "operations": {
@@ -54,7 +54,7 @@
     },
     {
       "do": "type.define",
-      "log": "orders",
+      "store": "orders",
       "type": "comment",
       "def": {
         "schema": {},
@@ -69,37 +69,37 @@
       }
     },
     {
-      "do": "create.op",
-      "log": "orders",
-      "thing": "invoice.inv-1",
+      "do": "instance.create",
+      "store": "orders",
+      "instance": "invoice/inv-1",
       "payload": {
         "total": 120
       }
     },
     {
-      "do": "create.op",
-      "log": "orders",
-      "thing": "invoice.inv-1",
+      "do": "instance.create",
+      "store": "orders",
+      "instance": "invoice/inv-1",
       "payload": {
         "total": 999
       },
       "expect": {
-        "error": "thing-exists"
+        "error": "instance-exists"
       }
     },
     {
-      "do": "do",
-      "log": "orders",
-      "thing": "invoice.inv-1",
+      "do": "apply",
+      "store": "orders",
+      "instance": "invoice/inv-1",
       "op": "send",
       "payload": {
         "to": "x"
       }
     },
     {
-      "do": "do",
-      "log": "orders",
-      "thing": "invoice.inv-1",
+      "do": "apply",
+      "store": "orders",
+      "instance": "invoice/inv-1",
       "op": "send",
       "payload": {},
       "expect": {
@@ -107,9 +107,9 @@
       }
     },
     {
-      "do": "do",
-      "log": "orders",
-      "thing": "invoice.inv-1",
+      "do": "apply",
+      "store": "orders",
+      "instance": "invoice/inv-1",
       "op": "frobnicate",
       "payload": {},
       "expect": {
@@ -118,8 +118,8 @@
     },
     {
       "do": "get",
-      "log": "orders",
-      "thing": "invoice.inv-1",
+      "store": "orders",
+      "instance": "invoice/inv-1",
       "expect": {
         "state": {
           "total": 120,
@@ -128,22 +128,22 @@
       }
     },
     {
-      "do": "do",
-      "log": "orders",
-      "thing": "invoice.inv-1",
+      "do": "apply",
+      "store": "orders",
+      "instance": "invoice/inv-1",
       "op": "note",
       "payload": {
         "text": "hi"
       },
       "expectSeq": 1,
       "expect": {
-        "error": "thing-moved"
+        "error": "instance-moved"
       }
     },
     {
-      "do": "do.guarded",
-      "log": "orders",
-      "thing": "invoice.inv-1",
+      "do": "apply.guarded",
+      "store": "orders",
+      "instance": "invoice/inv-1",
       "op": "note",
       "payload": {
         "text": "hi"
@@ -151,8 +151,8 @@
     },
     {
       "do": "history",
-      "log": "orders",
-      "thing": "invoice.inv-1",
+      "store": "orders",
+      "instance": "invoice/inv-1",
       "expect": {
         "types": [
           "create",
@@ -162,34 +162,34 @@
       }
     },
     {
-      "do": "create.op",
-      "log": "orders",
-      "thing": "invoice.inv-1.comments.c-1",
+      "do": "instance.create",
+      "store": "orders",
+      "instance": "invoice/inv-1/comments/c-1",
       "payload": {
         "text": "first"
       }
     },
     {
-      "do": "create.op",
-      "log": "orders",
-      "thing": "invoice.inv-1.notes.n-1",
+      "do": "instance.create",
+      "store": "orders",
+      "instance": "invoice/inv-1/notes/n-1",
       "payload": {},
       "expect": {
         "error": "preflight"
       }
     },
     {
-      "do": "create",
-      "log": "orders",
-      "thing": "widget.w-1",
+      "do": "instance.create.snapshot",
+      "store": "orders",
+      "instance": "widget/w-1",
       "payload": {
         "a": 1
       }
     },
     {
       "do": "get",
-      "log": "orders",
-      "thing": "widget.w-1",
+      "store": "orders",
+      "instance": "widget/w-1",
       "expect": {
         "state": {
           "a": 1
@@ -197,18 +197,18 @@
       }
     },
     {
-      "do": "rollup",
-      "log": "orders",
-      "thing": "invoice.inv-1",
+      "do": "snapshot",
+      "store": "orders",
+      "instance": "invoice/inv-1",
       "expect": {
-        "rolled": true
+        "taken": true
       },
-      "$comment": "a typed, compactable thing absorbs its history whole (0022 \u00a7 5): no per-op veto"
+      "$comment": "a typed, compactable instance absorbs its history whole (0022 § 5): no per-op veto"
     },
     {
       "do": "history",
-      "log": "orders",
-      "thing": "invoice.inv-1",
+      "store": "orders",
+      "instance": "invoice/inv-1",
       "expect": {
         "types": [
           "snapshot"
@@ -216,23 +216,23 @@
       }
     },
     {
-      "do": "rollup",
-      "log": "orders",
-      "thing": "widget.w-1",
+      "do": "snapshot",
+      "store": "orders",
+      "instance": "widget/w-1",
       "expect": {
-        "rolled": false
+        "taken": false
       },
-      "$comment": "an untyped thing with only a snapshot has nothing to compact; declining is an answer"
+      "$comment": "an untyped instance with only a snapshot has nothing to compact; declining is an answer"
     },
     {
       "do": "index.declare",
-      "log": "orders",
+      "store": "orders",
       "index": "text",
       "kind": "search"
     },
     {
       "do": "index.declare",
-      "log": "orders",
+      "store": "orders",
       "index": "state",
       "kind": "state",
       "expect": {
@@ -241,19 +241,19 @@
     },
     {
       "do": "query",
-      "log": "orders",
+      "store": "orders",
       "index": "text",
       "text": "x",
       "expect": {
-        "things": [
-          "invoice.inv-1"
+        "instances": [
+          "invoice/inv-1"
         ],
         "total": 1
       }
     },
     {
       "do": "query",
-      "log": "orders",
+      "store": "orders",
       "index": "text",
       "text": "",
       "limit": 1,
@@ -264,7 +264,7 @@
     },
     {
       "do": "query",
-      "log": "orders",
+      "store": "orders",
       "index": "nowhere",
       "text": "x",
       "expect": {
@@ -272,7 +272,7 @@
       }
     },
     {
-      "do": "list.logs",
+      "do": "list.stores",
       "expect": {
         "items": [
           "orders"
@@ -281,7 +281,7 @@
     },
     {
       "do": "list.types",
-      "log": "orders",
+      "store": "orders",
       "expect": {
         "items": [
           "comment",
@@ -291,48 +291,80 @@
     },
     {
       "do": "list.indexes",
-      "log": "orders",
+      "store": "orders",
       "expect": {
         "items": [
-          "state",
           "text"
         ]
       }
     },
     {
-      "do": "list.things",
-      "log": "orders",
+      "do": "list.instances",
+      "store": "orders",
       "expect": {
         "items": [
-          "invoice.inv-1",
-          "invoice.inv-1.comments.c-1",
-          "widget.w-1"
+          "invoice/inv-1",
+          "invoice/inv-1/comments/c-1",
+          "widget/w-1"
         ]
       }
     },
     {
-      "do": "list.things",
-      "log": "orders",
-      "prefix": "invoice.inv-1",
+      "do": "list.instances",
+      "store": "orders",
+      "in": "invoice/inv-1",
       "expect": {
         "items": [
-          "invoice.inv-1",
-          "invoice.inv-1.comments.c-1"
+          "invoice/inv-1/comments/c-1"
         ]
       }
+    },
+    {
+      "do": "list.instances",
+      "store": "orders",
+      "type": "invoice",
+      "expect": {
+        "items": [
+          "invoice/inv-1"
+        ]
+      },
+      "$comment": "the instances of one type: top level, children excluded"
+    },
+    {
+      "do": "list.instances",
+      "store": "orders",
+      "in": "invoice/inv-1",
+      "type": "comment",
+      "expect": {
+        "items": [
+          "invoice/inv-1/comments/c-1"
+        ]
+      },
+      "$comment": "a parent's children of one type, by its children map"
+    },
+    {
+      "do": "list.instances",
+      "store": "orders",
+      "where": {
+        "a": "1"
+      },
+      "expect": {
+        "items": [
+          "widget/w-1"
+        ]
+      },
+      "$comment": "a field filter on the state"
     },
     {
       "do": "index.delete",
-      "log": "orders",
+      "store": "orders",
       "index": "text"
     },
     {
       "do": "list.indexes",
-      "log": "orders",
+      "store": "orders",
       "expect": {
-        "items": [
-          "state"
-        ]
+        "items": []
       }
     }
   ]

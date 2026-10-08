@@ -49,9 +49,9 @@ func DocID(thing string, seq uint64) string {
 	return thing + "\x00" + strconv.FormatUint(seq, 10)
 }
 
-// DocThing names the thing a document ID belongs to — the ID itself when
+// DocInstance names the thing a document ID belongs to — the ID itself when
 // it carries no seq (a state-sourced document).
-func DocThing(id string) string {
+func DocInstance(id string) string {
 	if i := strings.IndexByte(id, 0); i >= 0 {
 		return id[:i]
 	}
@@ -60,8 +60,8 @@ func DocThing(id string) string {
 
 // Config wires one projection.
 type Config struct {
-	// Log is the log this projection folds.
-	Log string
+	// Store is the log this projection folds.
+	Store string
 	// Index names the declaration, for log lines.
 	Index string
 	// Kind labels log lines ("search index", "graph index").
@@ -122,9 +122,9 @@ func Start(ctx context.Context, nc *nats.Conn, cfg Config) (*Projection, error) 
 	if err != nil {
 		return nil, fmt.Errorf("open META: %w", err)
 	}
-	stream, err := js.Stream(ctx, contract.StreamName(cfg.Log))
+	stream, err := js.Stream(ctx, contract.StreamName(cfg.Store))
 	if err != nil {
-		return nil, fmt.Errorf("open stream for log %q: %w", cfg.Log, err)
+		return nil, fmt.Errorf("open stream for log %q: %w", cfg.Store, err)
 	}
 	logger := cfg.Logger
 	if logger == nil {
@@ -134,7 +134,7 @@ func Start(ctx context.Context, nc *nats.Conn, cfg Config) (*Projection, error) 
 	runCtx, cancel := context.WithCancel(context.Background())
 	p := &Projection{
 		cfg:       cfg,
-		opsSource: contract.NormalizeSource(cfg.Source) == contract.SourceOps,
+		opsSource: contract.NormalizeSource(cfg.Source) == contract.SourceHistory,
 		logger:    logger,
 		nc:        nc,
 		js:        js,
@@ -277,24 +277,24 @@ func (p *Projection) startRun(ctx context.Context) (jetstream.ConsumeContext, ch
 
 	ps := &pass{run: run, opRun: opRun, states: map[string]*thingState{}, ready: make(chan struct{}), p: p}
 	consCfg := jetstream.OrderedConsumerConfig{
-		FilterSubjects: []string{contract.OpsFilter(p.cfg.Log)},
+		FilterSubjects: []string{contract.OpsFilter(p.cfg.Store)},
 	}
 	if !p.opsSource {
 		ps.fold = &foldcore.Pass{
 			Resolve: func(ctx context.Context, thing string) (contract.Resolution, error) {
-				return foldcore.ResolveThing(ctx, p.meta, p.cfg.Log, thing)
+				return foldcore.ResolveInstance(ctx, p.meta, p.cfg.Store, thing)
 			},
 			Sink: func(_ context.Context, thing string, _ uint64, state json.RawMessage) {
 				run.Upsert(thing, state)
 			},
 			Warn: func(msg string, args ...any) {
-				p.logger.Warn(p.cfg.Kind+": "+msg, append([]any{"log", p.cfg.Log}, args...)...)
+				p.logger.Warn(p.cfg.Kind+": "+msg, append([]any{"log", p.cfg.Store}, args...)...)
 			},
 		}
 		if from, seeded := p.seedFromCheckpoint(ctx, ps.fold, run); seeded > 0 {
 			consCfg.DeliverPolicy = jetstream.DeliverByStartSequencePolicy
 			consCfg.OptStartSeq = from
-			p.logger.Info(p.cfg.Kind+": state checkpoint seeded", "log", p.cfg.Log, "index", p.cfg.Index, "things", seeded, "from", from)
+			p.logger.Info(p.cfg.Kind+": state checkpoint seeded", "log", p.cfg.Store, "index", p.cfg.Index, "things", seeded, "from", from)
 		}
 	}
 
@@ -328,7 +328,7 @@ func (p *Projection) startRun(ctx context.Context) (jetstream.ConsumeContext, ch
 // what the seeds already cover. Anything less than a clean, matching
 // read voids the shortcut and the pass replays whole: the suspicion rule.
 func (p *Projection) seedFromCheckpoint(ctx context.Context, fold *foldcore.Pass, run Run) (uint64, int) {
-	states, err := p.js.KeyValue(ctx, contract.StateBucket(p.cfg.Log))
+	states, err := p.js.KeyValue(ctx, contract.StateBucket(p.cfg.Store))
 	if err != nil {
 		return 0, 0
 	}
@@ -340,7 +340,7 @@ func (p *Projection) seedFromCheckpoint(ctx context.Context, fold *foldcore.Pass
 	if json.Unmarshal(entry.Value(), &wm) != nil {
 		return 0, 0
 	}
-	current, err := foldcore.LogFingerprint(ctx, p.meta, p.cfg.Log)
+	current, err := foldcore.StoreFingerprint(ctx, p.meta, p.cfg.Store)
 	if err != nil || wm.Declarations != current {
 		return 0, 0
 	}
@@ -386,11 +386,11 @@ func (ps *pass) apply(msg jetstream.Msg) {
 	kind := p.cfg.Kind
 	md, err := msg.Metadata()
 	if err != nil {
-		p.logger.Warn(kind+": message without metadata", "log", p.cfg.Log, "err", err)
+		p.logger.Warn(kind+": message without metadata", "log", p.cfg.Store, "err", err)
 		return
 	}
 	op := contract.ParseOp(msg.Subject(), md.Sequence.Stream, msg.Headers(), msg.Data())
-	thing := contract.ThingFromSubject(p.cfg.Log, op.Subject)
+	thing := contract.InstanceFromSubject(p.cfg.Store, op.Subject)
 	if thing == op.Subject {
 		// Not the ops family; the filter should not deliver this, but a
 		// projection stays tolerant.
@@ -444,7 +444,7 @@ func (ps *pass) countdown() {
 // derived state is rebuilt by replay. Schema-only revisions change no
 // fingerprint and trigger nothing.
 func (p *Projection) watchTypes() error {
-	prefix := contract.MetaLogType(p.cfg.Log, "") + ">"
+	prefix := contract.MetaStoreType(p.cfg.Store, "") + ">"
 	w, err := p.meta.Watch(p.runCtx, prefix)
 	if err != nil {
 		return fmt.Errorf("watch type declarations: %w", err)
@@ -470,7 +470,7 @@ func (p *Projection) watchTypes() error {
 					inited = true
 					continue
 				}
-				typeName := strings.TrimPrefix(entry.Key(), contract.MetaLogType(p.cfg.Log, ""))
+				typeName := strings.TrimPrefix(entry.Key(), contract.MetaStoreType(p.cfg.Store, ""))
 				fp := baseline
 				if entry.Operation() == jetstream.KeyValuePut {
 					var rec contract.TypeRecord
@@ -484,7 +484,7 @@ func (p *Projection) watchTypes() error {
 				}
 				prints[typeName] = fp
 				if inited && prev != fp {
-					p.logger.Info(p.cfg.Kind+": declaration changed; re-folding", "log", p.cfg.Log, "index", p.cfg.Index, "type", typeName)
+					p.logger.Info(p.cfg.Kind+": declaration changed; re-folding", "log", p.cfg.Store, "index", p.cfg.Index, "type", typeName)
 					select {
 					case p.rebuildCh <- struct{}{}:
 					default:
@@ -510,7 +510,7 @@ func (p *Projection) manage() {
 			cc, ready, run, err := p.startRun(ctx)
 			cancel()
 			if err != nil {
-				p.logger.Warn(p.cfg.Kind+": rebuild failed; serving the previous fold", "log", p.cfg.Log, "index", p.cfg.Index, "err", err)
+				p.logger.Warn(p.cfg.Kind+": rebuild failed; serving the previous fold", "log", p.cfg.Store, "index", p.cfg.Index, "err", err)
 				continue
 			}
 			select {

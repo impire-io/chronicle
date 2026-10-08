@@ -72,9 +72,9 @@ func (s *supervisor) handle(m *nats.Msg) {
 	var err error
 	switch r.Action {
 	case contract.IndexReportDeclared:
-		err = s.start(r.Log, r.Index, r.Kind)
+		err = s.start(r.Store, r.Index, r.Kind)
 	case contract.IndexReportDeleted:
-		s.stopIndex(r.Log, r.Index)
+		s.stopIndex(r.Store, r.Index)
 	default:
 		s.refuse(m, "bad-action", fmt.Sprintf("report action %q is not declared or deleted", r.Action))
 		return
@@ -109,13 +109,13 @@ func (s *supervisor) start(log, index, kind string) error {
 	var stop func()
 	switch kind {
 	case contract.IndexKindSearch:
-		svc, err := search.Start(ctx, s.nc, search.Config{Log: log, Index: index, Logger: s.logger})
+		svc, err := search.Start(ctx, s.nc, search.Config{Store: log, Index: index, Logger: s.logger})
 		if err != nil {
 			return fmt.Errorf("start search index %s on %s: %w", index, log, err)
 		}
 		stop = svc.Stop
 	case contract.IndexKindGraph:
-		svc, err := graph.Start(ctx, s.nc, graph.Config{Log: log, Index: index, Logger: s.logger})
+		svc, err := graph.Start(ctx, s.nc, graph.Config{Store: log, Index: index, Logger: s.logger})
 		if err != nil {
 			return fmt.Errorf("start graph index %s on %s: %w", index, log, err)
 		}
@@ -125,7 +125,7 @@ func (s *supervisor) start(log, index, kind string) error {
 			s.logger.Warn("semantic index declared but this quick start has no embedding provider; it stays declared and unserved (chronicle up --embedding-url --embedding-model)", "log", log, "index", index)
 			return nil
 		}
-		svc, err := semantic.Start(ctx, s.nc, semantic.Config{Log: log, Index: index, Provider: *s.embedding, Logger: s.logger})
+		svc, err := semantic.Start(ctx, s.nc, semantic.Config{Store: log, Index: index, Provider: *s.embedding, Logger: s.logger})
 		if err != nil {
 			return fmt.Errorf("start semantic index %s on %s: %w", index, log, err)
 		}

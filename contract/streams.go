@@ -10,11 +10,11 @@ import (
 // at the cap, per-log override in META (0008 point 3).
 const DefaultMaxBytes = 1 << 30
 
-// LogBudget is the byte budget a new log's stream gets (decision 0039):
+// StoreBudget is the byte budget a new log's stream gets (decision 0039):
 // the creator's override when it names one, else the contract's default
 // — or the account's per-stream cap when that is smaller. An account cap
 // of zero or less means none.
-func LogBudget(requested, accountCap int64) int64 {
+func StoreBudget(requested, accountCap int64) int64 {
 	if requested > 0 {
 		return requested
 	}
@@ -28,23 +28,23 @@ func LogBudget(requested, accountCap int64) int64 {
 // a retried publish dedups instead of double-appending.
 const DuplicateWindow = 2 * time.Minute
 
-// LogStreamConfig is the wire contract's stream settings table, applied by
+// StoreStreamConfig is the wire contract's stream settings table, applied by
 // chronicle at log creation — the customer never hand-configures a stream.
 // maxBytes zero means the decided default; history is the log's 0019
 // declaration (empty means compactable) — a preserved log's stream refuses
 // rollup writes outright, so nothing can replace a subject's history.
-func LogStreamConfig(log string, maxBytes int64, history string) jetstream.StreamConfig {
+func StoreStreamConfig(log string, maxBytes int64, history string) jetstream.StreamConfig {
 	if maxBytes == 0 {
 		maxBytes = DefaultMaxBytes
 	}
 	return jetstream.StreamConfig{
 		Name:        StreamName(log),
 		Description: "chronicle ops-log: " + log,
-		Subjects:    []string{LogSubjects(log)},
+		Subjects:    []string{StoreSubjects(log)},
 		Retention:   jetstream.LimitsPolicy,
 		// MaxAge stays unset: rollup keeps the stream small; age-based
 		// expiry would delete independently of the state referencing it.
-		AllowRollup: NormalizeHistory(history) != HistoryPreserved,
+		AllowRollup: NormalizeHistory(history) != HistoryFull,
 		DenyDelete:  true,
 		Duplicates:  DuplicateWindow,
 		Storage:     jetstream.FileStorage,

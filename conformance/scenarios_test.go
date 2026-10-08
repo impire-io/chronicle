@@ -19,44 +19,45 @@ import (
 
 // The scenario runner: boots the quick start, connects its local user,
 // and speaks each step through the Go client. Derived observations are
-// polled — state and indexes are projections that trail the log.
+// polled — state and indexes are projections that trail the history.
 
 const settle = 15 * time.Second
 
 type step struct {
-	Do        string          `json:"do"`
-	Log       string          `json:"log"`
-	Thing     string          `json:"thing"`
-	Type      string          `json:"type"`
-	Index     string          `json:"index"`
-	Kind      string          `json:"kind"`
-	Op        string          `json:"op"`
-	Text      string          `json:"text"`
-	Prefix    string          `json:"prefix"`
-	Def       json.RawMessage `json:"def"`
-	Config    json.RawMessage `json:"config"`
-	Payload   json.RawMessage `json:"payload"`
-	ExpectSeq *uint64         `json:"expectSeq"`
-	Limit     int             `json:"limit"`
-	Live      bool            `json:"live"`
-	After     *uint64         `json:"after"`
-	Then      *step           `json:"then"`
-	Expect    *expect         `json:"expect"`
+	Do        string            `json:"do"`
+	Store     string            `json:"store"`
+	Instance  string            `json:"instance"`
+	Type      string            `json:"type"`
+	Index     string            `json:"index"`
+	Kind      string            `json:"kind"`
+	Op        string            `json:"op"`
+	Text      string            `json:"text"`
+	In        string            `json:"in"`
+	Where     map[string]string `json:"where"`
+	Def       json.RawMessage   `json:"def"`
+	Config    json.RawMessage   `json:"config"`
+	Payload   json.RawMessage   `json:"payload"`
+	ExpectSeq *uint64           `json:"expectSeq"`
+	Limit     int               `json:"limit"`
+	Live      bool              `json:"live"`
+	After     *uint64           `json:"after"`
+	Then      *step             `json:"then"`
+	Expect    *expect           `json:"expect"`
 }
 
 type expect struct {
-	State    json.RawMessage `json:"state"`
-	Types    []string        `json:"types"`
-	Items    []string        `json:"items"`
-	Things   []string        `json:"things"`
-	Total    *uint64         `json:"total"`
-	Count    *uint64         `json:"count"`
-	Error    string          `json:"error"`
-	Rolled   *bool           `json:"rolled"`
-	Type     string          `json:"type"`
-	First    json.RawMessage `json:"first"`
-	Contains json.RawMessage `json:"contains"`
-	Arrives  string          `json:"arrives"`
+	State     json.RawMessage `json:"state"`
+	Types     []string        `json:"types"`
+	Items     []string        `json:"items"`
+	Instances []string        `json:"instances"`
+	Total     *uint64         `json:"total"`
+	Count     *uint64         `json:"count"`
+	Error     string          `json:"error"`
+	Taken     *bool           `json:"taken"`
+	Type      string          `json:"type"`
+	First     json.RawMessage `json:"first"`
+	Contains  json.RawMessage `json:"contains"`
+	Arrives   string          `json:"arrives"`
 }
 
 type scenario struct {
@@ -134,16 +135,16 @@ func (r *runner) step(label string, s step) {
 func matchesError(err error, want string) bool {
 	var serr *client.ServiceError
 	switch want {
-	case "thing-exists":
-		return errors.Is(err, client.ErrThingExists)
-	case "thing-moved":
-		return errors.Is(err, client.ErrThingMoved)
+	case "instance-exists":
+		return errors.Is(err, client.ErrInstanceExists)
+	case "instance-moved":
+		return errors.Is(err, client.ErrInstanceMoved)
 	case "undefined-operation":
 		return errors.Is(err, client.ErrUndefinedOperation)
 	case "no-responder":
 		return errors.Is(err, client.ErrNoResponder)
 	case "preflight":
-		return !errors.As(err, &serr) && !errors.Is(err, client.ErrThingExists) && !errors.Is(err, client.ErrThingMoved)
+		return !errors.As(err, &serr) && !errors.Is(err, client.ErrInstanceExists) && !errors.Is(err, client.ErrInstanceMoved)
 	}
 	// Otherwise a catalogued code.
 	return errors.As(err, &serr) && serr.Code == want
@@ -152,60 +153,61 @@ func matchesError(err error, want string) bool {
 func (r *runner) perform(label string, s step) error {
 	ctx := r.ctx
 	switch s.Do {
-	case "log.create":
-		_, err := r.c.CreateLog(ctx, s.Log, "")
+	case "store.create":
+		_, err := r.c.CreateStore(ctx, s.Store, "")
 		return err
 	case "type.define":
 		var def client.TypeDefinition
 		if err := json.Unmarshal(s.Def, &def); err != nil {
 			return fmt.Errorf("def: %w", err)
 		}
-		_, err := r.c.DefineType(ctx, s.Log, s.Type, def)
+		_, err := r.c.DefineType(ctx, s.Store, s.Type, def)
 		return err
 	case "index.declare":
-		_, err := r.c.DeclareIndex(ctx, s.Log, s.Index, s.Kind, s.Config)
+		_, err := r.c.DeclareIndex(ctx, s.Store, s.Index, s.Kind, s.Config)
 		return err
 	case "index.delete":
-		_, err := r.c.DeleteIndex(ctx, s.Log, s.Index)
+		_, err := r.c.DeleteIndex(ctx, s.Store, s.Index)
 		return err
-	case "create":
-		_, err := r.c.CreateThing(ctx, s.Log, s.Thing, s.Payload)
+	case "instance.create.snapshot":
+		_, err := r.c.CreateFromSnapshot(ctx, s.Store, s.Instance, s.Payload)
 		return err
-	case "create.op":
+	case "instance.create":
 		op := s.Op
 		if op == "" {
 			op = "create"
 		}
-		_, err := r.c.CreateWith(ctx, s.Log, s.Thing, op, s.Payload)
+		_, err := r.c.Create(ctx, s.Store, s.Instance, op, s.Payload)
 		return err
-	case "do":
-		var opts []client.AppendOpt
+	case "apply":
+		var opts []client.ApplyOpt
 		if s.ExpectSeq != nil {
 			opts = append(opts, client.WithExpectedSeq(*s.ExpectSeq))
 		}
-		_, err := r.c.Append(ctx, s.Log, s.Thing, s.Op, s.Payload, opts...)
+		_, err := r.c.Apply(ctx, s.Store, s.Instance, s.Op, s.Payload, opts...)
 		return err
-	case "do.guarded":
-		// The exactness recipe's guard: the state's seq is the last op
-		// that moved it, and nothing has landed since when the guard holds.
-		sv, err := r.c.State(ctx, s.Log, s.Thing)
+	case "apply.guarded":
+		// The exactness recipe's guard: the state's seq is the last
+		// operation that moved it, and nothing has landed since when the
+		// expected sequence holds.
+		sv, err := r.c.State(ctx, s.Store, s.Instance)
 		if err != nil {
 			return err
 		}
-		_, err = r.c.Append(ctx, s.Log, s.Thing, s.Op, s.Payload, client.WithExpectedSeq(sv.Seq))
+		_, err = r.c.Apply(ctx, s.Store, s.Instance, s.Op, s.Payload, client.WithExpectedSeq(sv.Seq))
 		return err
-	case "rollup":
-		resp, err := r.c.RollupThing(ctx, s.Log, s.Thing)
+	case "snapshot":
+		resp, err := r.c.Snapshot(ctx, s.Store, s.Instance)
 		if err != nil {
 			return err
 		}
-		if s.Expect != nil && s.Expect.Rolled != nil && resp.Rolled != *s.Expect.Rolled {
-			return fmt.Errorf("rolled=%v (%s), want %v", resp.Rolled, resp.Reason, *s.Expect.Rolled)
+		if s.Expect != nil && s.Expect.Taken != nil && resp.Taken != *s.Expect.Taken {
+			return fmt.Errorf("taken=%v (%s), want %v", resp.Taken, resp.Reason, *s.Expect.Taken)
 		}
 		return nil
 	case "get":
 		return r.until(label, s, func() error {
-			sv, err := r.c.State(ctx, s.Log, s.Thing)
+			sv, err := r.c.State(ctx, s.Store, s.Instance)
 			if err != nil {
 				return err
 			}
@@ -214,7 +216,7 @@ func (r *runner) perform(label string, s step) error {
 	case "history":
 		return r.until(label, s, func() error {
 			var types []string
-			for op, err := range r.c.Replay(ctx, s.Log, s.Thing) {
+			for op, err := range r.c.History(ctx, s.Store, s.Instance) {
 				if err != nil {
 					return err
 				}
@@ -227,20 +229,20 @@ func (r *runner) perform(label string, s step) error {
 		})
 	case "query":
 		return r.until(label, s, func() error {
-			st := r.c.QueryIndex(ctx, s.Log, s.Index, s.Text, s.Limit)
-			var things []string
+			st := r.c.QueryIndex(ctx, s.Store, s.Index, s.Text, s.Limit)
+			var instances []string
 			for hit, err := range st.Items() {
 				if err != nil {
 					return err
 				}
-				things = append(things, hit.Thing)
+				instances = append(instances, hit.Instance)
 			}
 			tr, ok := st.Trailer()
 			if !ok {
 				return errors.New("no trailer")
 			}
-			if s.Expect.Things != nil && !sameSet(things, s.Expect.Things) {
-				return fmt.Errorf("hits %v, want %v", things, s.Expect.Things)
+			if s.Expect.Instances != nil && !sameSet(instances, s.Expect.Instances) {
+				return fmt.Errorf("hits %v, want %v", instances, s.Expect.Instances)
 			}
 			if s.Expect.Total != nil && tr.Total != *s.Expect.Total {
 				return fmt.Errorf("total %d, want %d", tr.Total, *s.Expect.Total)
@@ -250,21 +252,39 @@ func (r *runner) perform(label string, s step) error {
 			}
 			return nil
 		})
-	case "list.logs", "list.types", "list.indexes", "list.members", "list.things":
+	case "list.stores", "list.types", "list.indexes", "list.members", "list.instances":
 		return r.until(label, s, func() error {
 			var items []string
 			var err error
 			switch s.Do {
-			case "list.logs":
-				items, err = collect(r.c.ListLogs(ctx))
+			case "list.stores":
+				items, err = collect(r.c.ListStores(ctx))
 			case "list.types":
-				items, err = collect(r.c.ListTypes(ctx, s.Log))
-			case "list.things":
-				items, err = collect(r.c.ListThings(ctx, s.Log, s.Prefix))
-			case "list.indexes":
-				for info, ierr := range r.c.ListIndexes(ctx, s.Log) {
+				items, err = collect(r.c.ListTypes(ctx, s.Store))
+			case "list.instances":
+				var opts []client.ListOpt
+				if s.Type != "" {
+					opts = append(opts, client.ByType(s.Type))
+				}
+				if s.In != "" {
+					opts = append(opts, client.Under(s.In))
+				}
+				for field, value := range s.Where {
+					opts = append(opts, client.Where(field, value))
+				}
+				for info, ierr := range r.c.ListInstances(ctx, s.Store, opts...) {
 					if ierr != nil {
 						return ierr
+					}
+					items = append(items, info.Path)
+				}
+			case "list.indexes":
+				for info, ierr := range r.c.ListIndexes(ctx, s.Store) {
+					if ierr != nil {
+						return ierr
+					}
+					if info.Kind == "state" {
+						continue // state is read as each instance's state, not listed as an index
 					}
 					items = append(items, info.Name)
 				}
@@ -286,7 +306,7 @@ func (r *runner) perform(label string, s step) error {
 		})
 	case "watch":
 		return r.live(label, s, func(ctx context.Context, got chan<- json.RawMessage) error {
-			for sv, err := range r.c.Watch(ctx, s.Log, s.Thing) {
+			for sv, err := range r.c.Watch(ctx, s.Store, s.Instance) {
 				if err != nil {
 					return err
 				}
@@ -303,7 +323,7 @@ func (r *runner) perform(label string, s step) error {
 			opts = append(opts, client.After(*s.After))
 		}
 		return r.live(label, s, func(ctx context.Context, got chan<- json.RawMessage) error {
-			for op, err := range r.c.Tail(ctx, s.Log, s.Thing, opts...) {
+			for op, err := range r.c.Tail(ctx, s.Store, s.Instance, opts...) {
 				if err != nil {
 					return err
 				}
@@ -313,7 +333,7 @@ func (r *runner) perform(label string, s step) error {
 		})
 	case "watch.declarations":
 		return r.live(label, s, func(ctx context.Context, got chan<- json.RawMessage) error {
-			for d, err := range r.c.WatchDeclarations(ctx, s.Log) {
+			for d, err := range r.c.WatchDeclarations(ctx, s.Store) {
 				if err != nil {
 					return err
 				}

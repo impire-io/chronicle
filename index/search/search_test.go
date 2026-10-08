@@ -78,7 +78,7 @@ func waitHit(ctx context.Context, t *testing.T, c *client.Client, log, index, qu
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		resp, err := queryAll(ctx, c, log, index, query)
-		if err == nil && len(resp.Hits) == 1 && resp.Hits[0].Thing == thing {
+		if err == nil && len(resp.Hits) == 1 && resp.Hits[0].Instance == thing {
 			return
 		}
 		if time.Now().After(deadline) {
@@ -97,7 +97,7 @@ func TestSearchEndToEnd(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	if _, err := alice.CreateLog(ctx, "orders", ""); err != nil {
+	if _, err := alice.CreateStore(ctx, "orders", ""); err != nil {
 		t.Fatalf("create log: %v", err)
 	}
 	if _, err := alice.DefineType(ctx, "orders", "invoice", client.TypeDefinition{
@@ -106,10 +106,10 @@ func TestSearchEndToEnd(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("define type: %v", err)
 	}
-	if _, err := alice.CreateThing(ctx, "orders", "invoice.invoice-1", json.RawMessage(`{"title":"quantum widgets"}`)); err != nil {
+	if _, err := alice.CreateFromSnapshot(ctx, "orders", "invoice/invoice-1", json.RawMessage(`{"title":"quantum widgets"}`)); err != nil {
 		t.Fatalf("create thing: %v", err)
 	}
-	if _, err := alice.CreateThing(ctx, "orders", "invoice.invoice-2", json.RawMessage(`{"title":"boring paperclips"}`)); err != nil {
+	if _, err := alice.CreateFromSnapshot(ctx, "orders", "invoice/invoice-2", json.RawMessage(`{"title":"boring paperclips"}`)); err != nil {
 		t.Fatalf("create thing: %v", err)
 	}
 
@@ -122,7 +122,7 @@ func TestSearchEndToEnd(t *testing.T) {
 	if _, err := alice.DeclareIndex(ctx, "orders", "text", "search", nil); err != nil {
 		t.Fatalf("declare index: %v", err)
 	}
-	svc, err := search.Start(ctx, nc, search.Config{Log: "orders", Index: "text"})
+	svc, err := search.Start(ctx, nc, search.Config{Store: "orders", Index: "text"})
 	if err != nil {
 		t.Fatalf("start indexer: %v", err)
 	}
@@ -134,15 +134,15 @@ func TestSearchEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
-	if len(resp.Hits) != 1 || resp.Hits[0].Thing != "invoice.invoice-1" || resp.Hits[0].Score <= 0 {
+	if len(resp.Hits) != 1 || resp.Hits[0].Instance != "invoice/invoice-1" || resp.Hits[0].Score <= 0 {
 		t.Fatalf("boot replay hits: %+v", resp)
 	}
 
 	// The live tail: a merge op changes the state the index sees.
-	if _, err := alice.Append(ctx, "orders", "invoice.invoice-1", "status.set", []byte(`{"title":"chrono gadgets"}`)); err != nil {
+	if _, err := alice.Apply(ctx, "orders", "invoice/invoice-1", "status.set", []byte(`{"title":"chrono gadgets"}`)); err != nil {
 		t.Fatalf("append: %v", err)
 	}
-	waitHit(ctx, t, alice, "orders", "text", "gadgets", "invoice.invoice-1")
+	waitHit(ctx, t, alice, "orders", "text", "gadgets", "invoice/invoice-1")
 
 	// An empty query matches everything — the total counts things, not ops.
 	resp, err = queryAll(ctx, alice, "orders", "text", "")
@@ -178,7 +178,7 @@ func TestSearchFollowsEffects(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	if _, err := alice.CreateLog(ctx, "notes", ""); err != nil {
+	if _, err := alice.CreateStore(ctx, "notes", ""); err != nil {
 		t.Fatalf("create log: %v", err)
 	}
 	if _, err := alice.DefineType(ctx, "notes", "note", client.TypeDefinition{
@@ -187,17 +187,17 @@ func TestSearchFollowsEffects(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("define type: %v", err)
 	}
-	if _, err := alice.CreateThing(ctx, "notes", "note.n1", json.RawMessage(`{}`)); err != nil {
+	if _, err := alice.CreateFromSnapshot(ctx, "notes", "note/n1", json.RawMessage(`{}`)); err != nil {
 		t.Fatalf("create thing: %v", err)
 	}
-	if _, err := alice.Append(ctx, "notes", "note.n1", "note.add", []byte(`{"body":"xyzzy plugh"}`)); err != nil {
+	if _, err := alice.Apply(ctx, "notes", "note/n1", "note.add", []byte(`{"body":"xyzzy plugh"}`)); err != nil {
 		t.Fatalf("append: %v", err)
 	}
 
 	if _, err := alice.DeclareIndex(ctx, "notes", "text", "search", nil); err != nil {
 		t.Fatalf("declare index: %v", err)
 	}
-	svc, err := search.Start(ctx, nc, search.Config{Log: "notes", Index: "text"})
+	svc, err := search.Start(ctx, nc, search.Config{Store: "notes", Index: "text"})
 	if err != nil {
 		t.Fatalf("start indexer: %v", err)
 	}
@@ -219,7 +219,7 @@ func TestSearchFollowsEffects(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("change effect: %v", err)
 	}
-	waitHit(ctx, t, alice, "notes", "text", "xyzzy", "note.n1")
+	waitHit(ctx, t, alice, "notes", "text", "xyzzy", "note/n1")
 }
 
 // TestSearchOpsSource proves 0020's contract for the search kind: an
@@ -231,7 +231,7 @@ func TestSearchOpsSource(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	if _, err := alice.CreateLog(ctx, "items", ""); err != nil {
+	if _, err := alice.CreateStore(ctx, "items", ""); err != nil {
 		t.Fatalf("create log: %v", err)
 	}
 	// note.add stays effect-none: its content is invisible to any
@@ -242,26 +242,26 @@ func TestSearchOpsSource(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("define type: %v", err)
 	}
-	if _, err := alice.CreateThing(ctx, "items", "item.item-1", json.RawMessage(`{"title":"a widget"}`)); err != nil {
+	if _, err := alice.CreateFromSnapshot(ctx, "items", "item/item-1", json.RawMessage(`{"title":"a widget"}`)); err != nil {
 		t.Fatalf("create thing: %v", err)
 	}
-	if _, err := alice.CreateThing(ctx, "items", "item.item-2", json.RawMessage(`{"title":"a gadget"}`)); err != nil {
+	if _, err := alice.CreateFromSnapshot(ctx, "items", "item/item-2", json.RawMessage(`{"title":"a gadget"}`)); err != nil {
 		t.Fatalf("create thing: %v", err)
 	}
-	if _, err := alice.Append(ctx, "items", "item.item-1", "note.add", []byte(`{"body":"the flux capacitor hums"}`)); err != nil {
+	if _, err := alice.Apply(ctx, "items", "item/item-1", "note.add", []byte(`{"body":"the flux capacitor hums"}`)); err != nil {
 		t.Fatalf("append: %v", err)
 	}
-	if _, err := alice.Append(ctx, "items", "item.item-1", "note.add", []byte(`{"body":"the flux capacitor still hums"}`)); err != nil {
+	if _, err := alice.Apply(ctx, "items", "item/item-1", "note.add", []byte(`{"body":"the flux capacitor still hums"}`)); err != nil {
 		t.Fatalf("append: %v", err)
 	}
-	if _, err := alice.Append(ctx, "items", "item.item-2", "note.add", []byte(`{"body":"nothing flux about this one"}`)); err != nil {
+	if _, err := alice.Apply(ctx, "items", "item/item-2", "note.add", []byte(`{"body":"nothing flux about this one"}`)); err != nil {
 		t.Fatalf("append: %v", err)
 	}
 
-	if _, err := alice.DeclareIndex(ctx, "items", "trail", "search", json.RawMessage(`{"source":"ops"}`)); err != nil {
+	if _, err := alice.DeclareIndex(ctx, "items", "trail", "search", json.RawMessage(`{"source":"history"}`)); err != nil {
 		t.Fatalf("declare ops index: %v", err)
 	}
-	svc, err := search.Start(ctx, nc, search.Config{Log: "items", Index: "trail"})
+	svc, err := search.Start(ctx, nc, search.Config{Store: "items", Index: "trail"})
 	if err != nil {
 		t.Fatalf("start indexer: %v", err)
 	}
@@ -278,24 +278,24 @@ func TestSearchOpsSource(t *testing.T) {
 	}
 	seen := map[string]bool{}
 	for _, h := range resp.Hits {
-		seen[h.Thing] = true
+		seen[h.Instance] = true
 	}
-	if !seen["item.item-1"] || !seen["item.item-2"] {
+	if !seen["item/item-1"] || !seen["item/item-2"] {
 		t.Fatalf("hits must name the things: %+v", resp.Hits)
 	}
 
 	// The live tail: a fresh op becomes findable without any effect help.
-	if _, err := alice.Append(ctx, "items", "item.item-2", "note.add", []byte(`{"body":"zorble"}`)); err != nil {
+	if _, err := alice.Apply(ctx, "items", "item/item-2", "note.add", []byte(`{"body":"zorble"}`)); err != nil {
 		t.Fatalf("append live: %v", err)
 	}
-	waitHit(ctx, t, alice, "items", "trail", "zorble", "item.item-2")
+	waitHit(ctx, t, alice, "items", "trail", "zorble", "item/item-2")
 
 	// The types narrowing: an index reading only note.add cannot see the
 	// birth snapshots' state text.
-	if _, err := alice.DeclareIndex(ctx, "items", "notes-only", "search", json.RawMessage(`{"source":"ops","types":["note.add"]}`)); err != nil {
+	if _, err := alice.DeclareIndex(ctx, "items", "notes-only", "search", json.RawMessage(`{"source":"history","types":["note.add"]}`)); err != nil {
 		t.Fatalf("declare narrowed index: %v", err)
 	}
-	svc2, err := search.Start(ctx, nc, search.Config{Log: "items", Index: "notes-only"})
+	svc2, err := search.Start(ctx, nc, search.Config{Store: "items", Index: "notes-only"})
 	if err != nil {
 		t.Fatalf("start narrowed indexer: %v", err)
 	}
@@ -319,7 +319,7 @@ func TestParseSearchConfigIsWriteSideStrict(t *testing.T) {
 	if _, err := contract.ParseSearchConfig(nil); err != nil {
 		t.Fatalf("absent config: %v", err)
 	}
-	if cfg, err := contract.ParseSearchConfig(json.RawMessage(`{"source":"ops"}`)); err != nil || cfg.Source != "ops" {
+	if cfg, err := contract.ParseSearchConfig(json.RawMessage(`{"source":"history"}`)); err != nil || cfg.Source != "history" {
 		t.Fatalf("ops source: %v %+v", err, cfg)
 	}
 	if _, err := contract.ParseSearchConfig(json.RawMessage(`{"source":"tape"}`)); err == nil {
@@ -331,10 +331,10 @@ func TestParseSearchConfigIsWriteSideStrict(t *testing.T) {
 	if _, err := contract.ParseSearchConfig(json.RawMessage(`{"types":["note.add"]}`)); err == nil {
 		t.Fatal("types accepted on the state source")
 	}
-	if _, err := contract.ParseSearchConfig(json.RawMessage(`{"source":"ops","types":["note.add"]}`)); err != nil {
+	if _, err := contract.ParseSearchConfig(json.RawMessage(`{"source":"history","types":["note.add"]}`)); err != nil {
 		t.Fatalf("ops types narrowing refused: %v", err)
 	}
-	if _, err := contract.ParseSearchConfig(json.RawMessage(`{"source":"ops","types":[""]}`)); err == nil {
+	if _, err := contract.ParseSearchConfig(json.RawMessage(`{"source":"history","types":[""]}`)); err == nil {
 		t.Fatal("empty type accepted")
 	}
 }
@@ -368,7 +368,7 @@ func TestSearchBootsFromStateCheckpoint(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	if _, err := alice.CreateLog(ctx, "orders", ""); err != nil {
+	if _, err := alice.CreateStore(ctx, "orders", ""); err != nil {
 		t.Fatalf("create log: %v", err)
 	}
 	if _, err := alice.DefineType(ctx, "orders", "invoice", client.TypeDefinition{
@@ -377,13 +377,13 @@ func TestSearchBootsFromStateCheckpoint(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("define type: %v", err)
 	}
-	if _, err := alice.CreateThing(ctx, "orders", "invoice.invoice-1", json.RawMessage(`{"title":"quantum widgets"}`)); err != nil {
+	if _, err := alice.CreateFromSnapshot(ctx, "orders", "invoice/invoice-1", json.RawMessage(`{"title":"quantum widgets"}`)); err != nil {
 		t.Fatalf("create thing: %v", err)
 	}
-	if _, err := alice.CreateThing(ctx, "orders", "invoice.invoice-2", json.RawMessage(`{"title":"plain paperclips"}`)); err != nil {
+	if _, err := alice.CreateFromSnapshot(ctx, "orders", "invoice/invoice-2", json.RawMessage(`{"title":"plain paperclips"}`)); err != nil {
 		t.Fatalf("create thing: %v", err)
 	}
-	moved, err := alice.Append(ctx, "orders", "invoice.invoice-1", "status.set", []byte(`{"title":"chrono gadgets"}`))
+	moved, err := alice.Apply(ctx, "orders", "invoice/invoice-1", "status.set", []byte(`{"title":"chrono gadgets"}`))
 	if err != nil {
 		t.Fatalf("append: %v", err)
 	}
@@ -391,7 +391,7 @@ func TestSearchBootsFromStateCheckpoint(t *testing.T) {
 	// boots.
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		sv, err := alice.State(ctx, "orders", "invoice.invoice-1")
+		sv, err := alice.State(ctx, "orders", "invoice/invoice-1")
 		if err == nil && sv.Seq == moved.Seq {
 			break
 		}
@@ -405,11 +405,11 @@ func TestSearchBootsFromStateCheckpoint(t *testing.T) {
 		t.Fatalf("declare index: %v", err)
 	}
 	catcher := &lineCatcher{}
-	svc, err := search.Start(ctx, nc, search.Config{Log: "orders", Index: "text", Logger: slog.New(slog.NewTextHandler(catcher, nil))})
+	svc, err := search.Start(ctx, nc, search.Config{Store: "orders", Index: "text", Logger: slog.New(slog.NewTextHandler(catcher, nil))})
 	if err != nil {
 		t.Fatalf("start indexer: %v", err)
 	}
-	waitHit(ctx, t, alice, "orders", "text", "gadgets", "invoice.invoice-1")
+	waitHit(ctx, t, alice, "orders", "text", "gadgets", "invoice/invoice-1")
 	if !catcher.has("state checkpoint seeded") {
 		t.Fatal("the boot did not use the state checkpoint")
 	}
@@ -430,12 +430,12 @@ func TestSearchBootsFromStateCheckpoint(t *testing.T) {
 		t.Fatalf("tamper watermark: %v", err)
 	}
 	catcher2 := &lineCatcher{}
-	svc2, err := search.Start(ctx, nc, search.Config{Log: "orders", Index: "text", Logger: slog.New(slog.NewTextHandler(catcher2, nil))})
+	svc2, err := search.Start(ctx, nc, search.Config{Store: "orders", Index: "text", Logger: slog.New(slog.NewTextHandler(catcher2, nil))})
 	if err != nil {
 		t.Fatalf("restart indexer: %v", err)
 	}
 	defer svc2.Stop()
-	waitHit(ctx, t, alice, "orders", "text", "gadgets", "invoice.invoice-1")
+	waitHit(ctx, t, alice, "orders", "text", "gadgets", "invoice/invoice-1")
 	if catcher2.has("state checkpoint seeded") {
 		t.Fatal("a stale watermark must void the checkpoint")
 	}

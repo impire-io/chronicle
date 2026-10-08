@@ -44,8 +44,8 @@ func TestFixtureNames(t *testing.T) {
 	}
 	load(t, "names.json", &f)
 	rules := map[string]func(string) error{
-		"log": contract.ValidateLogName, "index": contract.ValidateIndexName, "type": contract.ValidateTypeName,
-		"principal": contract.ValidatePrincipalName, "thing": contract.ValidateThing,
+		"store": contract.ValidateStoreName, "index": contract.ValidateIndexName, "type": contract.ValidateTypeName,
+		"principal": contract.ValidatePrincipalName, "instance": contract.ValidateInstance, "path": contract.ValidatePath,
 	}
 	for _, c := range f.Cases {
 		rule, ok := rules[c.Kind]
@@ -61,9 +61,9 @@ func TestFixtureNames(t *testing.T) {
 func TestFixtureDerivations(t *testing.T) {
 	var f struct {
 		Cases []struct {
-			Log, Thing, Upper, Stream, StateBucket, LogSubjects, OpsFilter, OpsSubject, OpsPrefix, ThingFromSubject, MetaLogConfig string
-			MetaType                                                                                                               struct{ Type, Key string }
-			MetaIndex                                                                                                              struct{ Index, Key string }
+			Store, Tail, Path, Upper, Stream, StateBucket, StoreSubjects, OpsFilter, OpsSubject, OpsPrefix, InstanceFromSubject, MetaStoreConfig string
+			MetaType                                                                                                                             struct{ Type, Key string }
+			MetaIndex                                                                                                                            struct{ Index, Key string }
 		}
 		Identity struct {
 			Principal struct{ ID, Key string }
@@ -73,20 +73,26 @@ func TestFixtureDerivations(t *testing.T) {
 	}
 	load(t, "derivations.json", &f)
 	for _, c := range f.Cases {
+		tail, err := contract.PathTail(c.Path)
+		if err != nil {
+			t.Fatalf("path %q: %v", c.Path, err)
+		}
 		got := map[string]string{
-			"upper": contract.UpperLog(c.Log), "stream": contract.StreamName(c.Log), "stateBucket": contract.StateBucket(c.Log),
-			"logSubjects": contract.LogSubjects(c.Log), "opsFilter": contract.OpsFilter(c.Log), "opsSubject": contract.OpsSubject(c.Log, c.Thing),
-			"opsPrefix": contract.OpsPrefix(c.Log), "thingFromSubject": contract.ThingFromSubject(c.Log, contract.OpsSubject(c.Log, c.Thing)),
-			"metaLogConfig": contract.MetaLogConfig(c.Log), "metaType": contract.MetaLogType(c.Log, c.MetaType.Type), "metaIndex": contract.MetaIndex(c.Log, c.MetaIndex.Index),
+			"tail": tail, "path": contract.TailPath(c.Tail),
+			"upper": contract.UpperStore(c.Store), "stream": contract.StreamName(c.Store), "stateBucket": contract.StateBucket(c.Store),
+			"storeSubjects": contract.StoreSubjects(c.Store), "opsFilter": contract.OpsFilter(c.Store), "opsSubject": contract.OpsSubject(c.Store, c.Tail),
+			"opsPrefix": contract.OpsPrefix(c.Store), "instanceFromSubject": contract.InstanceFromSubject(c.Store, contract.OpsSubject(c.Store, c.Tail)),
+			"metaStoreConfig": contract.MetaStoreConfig(c.Store), "metaType": contract.MetaStoreType(c.Store, c.MetaType.Type), "metaIndex": contract.MetaIndex(c.Store, c.MetaIndex.Index),
 		}
 		want := map[string]string{
-			"upper": c.Upper, "stream": c.Stream, "stateBucket": c.StateBucket, "logSubjects": c.LogSubjects, "opsFilter": c.OpsFilter,
-			"opsSubject": c.OpsSubject, "opsPrefix": c.OpsPrefix, "thingFromSubject": c.ThingFromSubject, "metaLogConfig": c.MetaLogConfig,
+			"tail": c.Tail, "path": c.Path,
+			"upper": c.Upper, "stream": c.Stream, "stateBucket": c.StateBucket, "storeSubjects": c.StoreSubjects, "opsFilter": c.OpsFilter,
+			"opsSubject": c.OpsSubject, "opsPrefix": c.OpsPrefix, "instanceFromSubject": c.InstanceFromSubject, "metaStoreConfig": c.MetaStoreConfig,
 			"metaType": c.MetaType.Key, "metaIndex": c.MetaIndex.Key,
 		}
 		for k := range want {
 			if got[k] != want[k] {
-				t.Errorf("%s of %q/%q = %q, want %q", k, c.Log, c.Thing, got[k], want[k])
+				t.Errorf("%s of %q/%q = %q, want %q", k, c.Store, c.Path, got[k], want[k])
 			}
 		}
 	}
@@ -167,17 +173,17 @@ func kindName(k contract.ResolutionKind) string {
 func TestFixtureResolve(t *testing.T) {
 	var f struct {
 		Types map[string]json.RawMessage
-		Cases []struct{ Thing, Kind, Type string }
+		Cases []struct{ Tail, Kind, Type string }
 	}
 	load(t, "resolve.json", &f)
 	lookup := lookupOf(f.Types)
 	for _, c := range f.Cases {
-		res, err := contract.ResolveTail(c.Thing, lookup)
+		res, err := contract.ResolveInstance(c.Tail, lookup)
 		if err != nil {
-			t.Fatalf("%s: %v", c.Thing, err)
+			t.Fatalf("%s: %v", c.Tail, err)
 		}
 		if kindName(res.Kind) != c.Kind || res.TypeName != c.Type {
-			t.Errorf("%s: %s %q (%s), want %s %q", c.Thing, kindName(res.Kind), res.TypeName, res.Detail, c.Kind, c.Type)
+			t.Errorf("%s: %s %q (%s), want %s %q", c.Tail, kindName(res.Kind), res.TypeName, res.Detail, c.Kind, c.Type)
 		}
 	}
 }
@@ -203,8 +209,8 @@ func TestFixtureFold(t *testing.T) {
 	var f struct {
 		Types map[string]json.RawMessage
 		Cases []struct {
-			Name, Thing string
-			Ops         []struct {
+			Name, Tail string
+			Ops        []struct {
 				Type    string
 				Payload json.RawMessage
 				Raw     string
@@ -216,7 +222,7 @@ func TestFixtureFold(t *testing.T) {
 	load(t, "fold.json", &f)
 	lookup := lookupOf(f.Types)
 	for _, c := range f.Cases {
-		res, err := contract.ResolveTail(c.Thing, lookup)
+		res, err := contract.ResolveInstance(c.Tail, lookup)
 		if err != nil {
 			t.Fatalf("%s: resolve: %v", c.Name, err)
 		}
@@ -257,7 +263,7 @@ func TestFixtureGuardRetry(t *testing.T) {
 	for _, c := range f.Cases {
 		// The rule the client applies after a guard refusal (client/ops.go
 		// ownOpLanded): the subject's last op carries the retried ID, or
-		// the thing moved.
+		// the instance moved.
 		if landed := c.LastOpID != "" && c.LastOpID == c.RetriedOpID; landed != c.Landed {
 			t.Errorf("%s: landed=%v, want %v", c.Name, landed, c.Landed)
 		}

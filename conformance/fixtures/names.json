@@ -2,47 +2,47 @@
   "$comment": "Name validation (design 02 § subject grammar; decisions 0021, 0022): kind names the rule, valid says whether the input passes it.",
   "cases": [
     {
-      "kind": "log",
+      "kind": "store",
       "input": "my-log",
       "valid": true
     },
     {
-      "kind": "log",
+      "kind": "store",
       "input": "orders2",
       "valid": true
     },
     {
-      "kind": "log",
+      "kind": "store",
       "input": "My-Log",
       "valid": false
     },
     {
-      "kind": "log",
+      "kind": "store",
       "input": "my_log",
       "valid": false
     },
     {
-      "kind": "log",
+      "kind": "store",
       "input": "my.log",
       "valid": false
     },
     {
-      "kind": "log",
+      "kind": "store",
       "input": "",
       "valid": false
     },
     {
-      "kind": "log",
+      "kind": "store",
       "input": "api",
       "valid": false
     },
     {
-      "kind": "log",
+      "kind": "store",
       "input": "meta",
       "valid": false
     },
     {
-      "kind": "log",
+      "kind": "store",
       "input": "sys",
       "valid": false
     },
@@ -97,48 +97,88 @@
       "valid": false
     },
     {
-      "kind": "thing",
+      "kind": "instance",
       "input": "invoice.inv-1",
       "valid": true
     },
     {
-      "kind": "thing",
+      "kind": "instance",
       "input": "Invoice.INV_1",
       "valid": true
     },
     {
-      "kind": "thing",
+      "kind": "instance",
       "input": "a.b.c.d",
       "valid": true
     },
     {
-      "kind": "thing",
+      "kind": "instance",
       "input": "single",
       "valid": true
     },
     {
-      "kind": "thing",
+      "kind": "instance",
       "input": "",
       "valid": false
     },
     {
-      "kind": "thing",
+      "kind": "instance",
       "input": "invoice..inv",
       "valid": false
     },
     {
-      "kind": "thing",
+      "kind": "instance",
       "input": "invoice.inv*",
       "valid": false
     },
     {
-      "kind": "thing",
+      "kind": "instance",
       "input": "invoice.inv 1",
       "valid": false
     },
     {
-      "kind": "thing",
+      "kind": "instance",
       "input": ".inv",
+      "valid": false
+    },
+    {
+      "kind": "path",
+      "input": "invoice/inv-1",
+      "valid": true
+    },
+    {
+      "kind": "path",
+      "input": "invoice/inv-1/comments/c-3",
+      "valid": true
+    },
+    {
+      "kind": "path",
+      "input": "a",
+      "valid": true
+    },
+    {
+      "kind": "path",
+      "input": "invoice.inv-1",
+      "valid": false
+    },
+    {
+      "kind": "path",
+      "input": "invoice//x",
+      "valid": false
+    },
+    {
+      "kind": "path",
+      "input": "/invoice/x",
+      "valid": false
+    },
+    {
+      "kind": "path",
+      "input": "",
+      "valid": false
+    },
+    {
+      "kind": "path",
+      "input": "inv$oice/x",
       "valid": false
     }
   ]

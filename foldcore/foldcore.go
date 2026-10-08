@@ -7,7 +7,7 @@
 // copy at once.
 //
 // Since 0021 the vocabulary lives in type records, so judgment is in two
-// halves: resolve the thing to its type (the pair walk of ResolveThing
+// halves: resolve the thing to its type (the pair walk of ResolveInstance
 // for tenant logs; the fleet resolves by family), then judge the op
 // through the type's operations (JudgeRecord). Pass drives both halves
 // per op and keeps the per-thing frontier — the one fold implementation
@@ -49,7 +49,7 @@ const (
 // Lookup closes over one log's META bucket as a contract.TypeLookup.
 func Lookup(ctx context.Context, meta jetstream.KeyValue, log string) contract.TypeLookup {
 	return func(name string) (*contract.TypeRecord, bool, error) {
-		entry, err := meta.Get(ctx, contract.MetaLogType(log, name))
+		entry, err := meta.Get(ctx, contract.MetaStoreType(log, name))
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return nil, false, nil
 		}
@@ -64,10 +64,10 @@ func Lookup(ctx context.Context, meta jetstream.KeyValue, log string) contract.T
 	}
 }
 
-// ResolveThing resolves a thing tail against the log's declared types —
+// ResolveInstance resolves a thing tail against the log's declared types —
 // the pair walk of 0021 § 4 / 0022 § 2 over live META reads.
-func ResolveThing(ctx context.Context, meta jetstream.KeyValue, log, thing string) (contract.Resolution, error) {
-	return contract.ResolveTail(thing, Lookup(ctx, meta, log))
+func ResolveInstance(ctx context.Context, meta jetstream.KeyValue, log, thing string) (contract.Resolution, error) {
+	return contract.ResolveInstance(thing, Lookup(ctx, meta, log))
 }
 
 // FoldFingerprint captures the facets of a type record whose change makes
@@ -81,12 +81,12 @@ func FoldFingerprint(rec *contract.TypeRecord) string {
 		rec = &contract.TypeRecord{}
 	}
 	fp := struct {
-		History string            `json:"h"`
-		Aspects map[string]string `json:"a,omitempty"`
-		Effects map[string]string `json:"e,omitempty"`
+		History  string            `json:"h"`
+		Children map[string]string `json:"a,omitempty"`
+		Effects  map[string]string `json:"e,omitempty"`
 	}{History: contract.NormalizeHistory(rec.History)}
-	if len(rec.Aspects) > 0 {
-		fp.Aspects = rec.Aspects
+	if len(rec.Children) > 0 {
+		fp.Children = rec.Children
 	}
 	for op, def := range rec.Operations {
 		if contract.NormalizeEffect(def.Effect) != contract.EffectNone {
@@ -100,12 +100,12 @@ func FoldFingerprint(rec *contract.TypeRecord) string {
 	return string(b)
 }
 
-// LogFingerprint combines every type record's fold fingerprint into the
+// StoreFingerprint combines every type record's fold fingerprint into the
 // log's declaration watermark (0023 § 4): equal watermarks mean a state
 // bucket's values were derived under the current declarations, so a
 // state-sourced indexer may bootstrap from them.
-func LogFingerprint(ctx context.Context, meta jetstream.KeyValue, log string) (string, error) {
-	prefix := contract.MetaLogType(log, "")
+func StoreFingerprint(ctx context.Context, meta jetstream.KeyValue, log string) (string, error) {
+	prefix := contract.MetaStoreType(log, "")
 	lister, err := meta.ListKeysFiltered(ctx, prefix+">")
 	if err != nil {
 		if errors.Is(err, jetstream.ErrNoKeysFound) {
