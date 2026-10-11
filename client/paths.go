@@ -96,6 +96,17 @@ func (c *Client) History(ctx context.Context, store, path string) iter.Seq2[cont
 	return c.historyTail(ctx, store, tail)
 }
 
+// HistoryUnder streams an instance's operations and its children's, in
+// one stream order, as of the call (decision 0049) — a parent with what
+// lives under it: a room with its messages, an invoice with its comments.
+func (c *Client) HistoryUnder(ctx context.Context, store, path string) iter.Seq2[contract.Op, error] {
+	tail, err := contract.PathTail(path)
+	if err != nil {
+		return fail[contract.Op](err)
+	}
+	return c.historyUnderTail(ctx, store, tail)
+}
+
 // FoldTail streams an instance's operations after the given sequence, as
 // of the call — the exactness recipe: read the state value, then fold
 // from Seq+1 with contract.FoldStep.

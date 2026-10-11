@@ -40,6 +40,8 @@ type step struct {
 	ExpectSeq *uint64           `json:"expectSeq"`
 	Limit     int               `json:"limit"`
 	Live      bool              `json:"live"`
+	Children  bool              `json:"children"`
+	Schedules bool              `json:"schedules"`
 	After     *uint64           `json:"after"`
 	Then      *step             `json:"then"`
 	Expect    *expect           `json:"expect"`
@@ -154,7 +156,11 @@ func (r *runner) perform(label string, s step) error {
 	ctx := r.ctx
 	switch s.Do {
 	case "store.create":
-		_, err := r.c.CreateStore(ctx, s.Store, "")
+		var opts []client.StoreOpt
+		if s.Schedules {
+			opts = append(opts, client.WithSchedules())
+		}
+		_, err := r.c.CreateStore(ctx, s.Store, "", opts...)
 		return err
 	case "type.define":
 		var def client.TypeDefinition
@@ -216,7 +222,11 @@ func (r *runner) perform(label string, s step) error {
 	case "history":
 		return r.until(label, s, func() error {
 			var types []string
-			for op, err := range r.c.History(ctx, s.Store, s.Instance) {
+			hist := r.c.History(ctx, s.Store, s.Instance)
+			if s.Children {
+				hist = r.c.HistoryUnder(ctx, s.Store, s.Instance)
+			}
+			for op, err := range hist {
 				if err != nil {
 					return err
 				}
@@ -321,6 +331,9 @@ func (r *runner) perform(label string, s step) error {
 		}
 		if s.After != nil {
 			opts = append(opts, client.After(*s.After))
+		}
+		if s.Children {
+			opts = append(opts, client.Children())
 		}
 		return r.live(label, s, func(ctx context.Context, got chan<- json.RawMessage) error {
 			for op, err := range r.c.Tail(ctx, s.Store, s.Instance, opts...) {

@@ -111,6 +111,10 @@ type StoreConfig struct {
 	// default when unset) or HistoryFull. Set at creation, immutable
 	// until a config-edit verb exists.
 	History string `json:"history,omitempty"`
+	// Schedules says the store's stream allows NATS message schedules and
+	// per-message TTLs (decision 0050): a schedule registered in the store
+	// has the server write its ticks into the store, whether anyone reads.
+	Schedules bool `json:"schedules,omitempty"`
 }
 
 // StoreStatusActive is the one status the skeleton knows.

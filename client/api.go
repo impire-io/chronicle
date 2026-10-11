@@ -48,8 +48,12 @@ type StoreCreateRequest struct {
 	// decided default (1 GiB).
 	MaxBytes int64 `json:"max_bytes,omitempty"`
 	// History is the log's 0019 declaration: "compactable" (the default
-	// when unset) or "preserved". Set at creation, immutable for now.
+	// when unset) or "full". Set at creation, immutable for now.
 	History string `json:"history,omitempty"`
+	// Schedules asks for a store whose stream allows NATS message
+	// schedules and per-message TTLs (decision 0050), so a schedule
+	// registered in it has its ticks written by the server.
+	Schedules bool `json:"schedules,omitempty"`
 }
 
 // StoreCreateResponse names the created stream.
@@ -248,6 +252,13 @@ type StoreOpt func(*StoreCreateRequest)
 // today's behavior. Declared at creation, immutable for now.
 func WithHistory(history string) StoreOpt {
 	return func(r *StoreCreateRequest) { r.History = history }
+}
+
+// WithSchedules asks for a store that allows schedules: its stream takes
+// NATS message schedules and per-message TTLs, so a schedule registered
+// in it has the server write its ticks into the store (decision 0050).
+func WithSchedules() StoreOpt {
+	return func(r *StoreCreateRequest) { r.Schedules = true }
 }
 
 // CreateStore creates a log through the node's control verb.

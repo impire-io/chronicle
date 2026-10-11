@@ -14,6 +14,9 @@
         "schema": {
           "type": "object"
         },
+        "children": {
+          "comments": "comment"
+        },
         "operations": {
           "create": {
             "schema": {
@@ -22,6 +25,24 @@
             "effect": "merge"
           },
           "send": {
+            "schema": {
+              "type": "object"
+            },
+            "effect": "merge"
+          }
+        }
+      }
+    },
+    {
+      "do": "type.define",
+      "store": "orders",
+      "type": "comment",
+      "def": {
+        "schema": {
+          "type": "object"
+        },
+        "operations": {
+          "create": {
             "schema": {
               "type": "object"
             },
@@ -99,6 +120,46 @@
           "send"
         ]
       }
+    },
+    {
+      "$comment": "a parent with its children: the tail includes what lives under the instance (decision 0049)",
+      "do": "tail",
+      "store": "orders",
+      "instance": "invoice/inv-1",
+      "children": true,
+      "live": true,
+      "then": {
+        "do": "instance.create",
+        "store": "orders",
+        "instance": "invoice/inv-1/comments/c-9",
+        "payload": {
+          "text": "a child lands under the parent"
+        }
+      },
+      "expect": {
+        "type": "create"
+      }
+    },
+    {
+      "$comment": "a parent's bounded history with children reads the child's create too",
+      "do": "history",
+      "store": "orders",
+      "instance": "invoice/inv-1",
+      "children": true,
+      "expect": {
+        "types": [
+          "create",
+          "send",
+          "send",
+          "create"
+        ]
+      }
+    },
+    {
+      "$comment": "a store that allows schedules is created like any other (decision 0050)",
+      "do": "store.create",
+      "store": "ticks",
+      "schedules": true
     },
     {
       "do": "watch.declarations",

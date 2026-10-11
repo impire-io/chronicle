@@ -3,6 +3,8 @@ package contract
 import (
 	"testing"
 	"time"
+
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 func TestUpperLogAndResourceNames(t *testing.T) {
@@ -92,7 +94,7 @@ func TestOpHeaderRoundTrip(t *testing.T) {
 }
 
 func TestLogStreamConfig(t *testing.T) {
-	cfg := StoreStreamConfig("my-log", 0, "")
+	cfg := StoreStreamConfig("my-log", 0, "", false)
 	if cfg.Name != "LOG_MY_LOG" {
 		t.Errorf("stream name %q", cfg.Name)
 	}
@@ -114,19 +116,19 @@ func TestLogStreamConfig(t *testing.T) {
 	if cfg.MaxBytes != 1<<30 {
 		t.Errorf("decided default is 1 GiB, got %d", cfg.MaxBytes)
 	}
-	if over := StoreStreamConfig("my-log", 42, ""); over.MaxBytes != 42 {
+	if over := StoreStreamConfig("my-log", 42, "", false); over.MaxBytes != 42 {
 		t.Errorf("per-log override lost: %d", over.MaxBytes)
 	}
 	// The 0019 declaration reaches the stream: a preserved log refuses
 	// rollup writes outright, and everything else in the table stands.
-	preserved := StoreStreamConfig("my-log", 0, HistoryFull)
+	preserved := StoreStreamConfig("my-log", 0, HistoryFull, false)
 	if preserved.AllowRollup {
 		t.Error("a preserved log's stream must refuse rollup writes (0019)")
 	}
 	if !preserved.DenyDelete {
 		t.Error("DenyDelete stands on a preserved log")
 	}
-	if explicit := StoreStreamConfig("my-log", 0, HistoryCompactable); !explicit.AllowRollup {
+	if explicit := StoreStreamConfig("my-log", 0, HistoryCompactable, false); !explicit.AllowRollup {
 		t.Error("an explicitly compactable log keeps AllowRollup")
 	}
 }
@@ -167,5 +169,27 @@ func TestLogBudget(t *testing.T) {
 		if got := StoreBudget(c.requested, c.accountCap); got != c.want {
 			t.Errorf("StoreBudget(%d, %d) = %d, want %d", c.requested, c.accountCap, got, c.want)
 		}
+	}
+}
+
+// A store that allows schedules turns on exactly the two server features a
+// registered schedule needs — message schedules and per-message TTLs — and
+// nothing else changes; a store that does not keeps both off (decision 0050).
+func TestStoreStreamConfigSchedules(t *testing.T) {
+	off := StoreStreamConfig("ticks", 0, "", false)
+	if off.AllowMsgSchedules || off.AllowMsgTTL {
+		t.Errorf("schedules off: AllowMsgSchedules=%v AllowMsgTTL=%v", off.AllowMsgSchedules, off.AllowMsgTTL)
+	}
+	on := StoreStreamConfig("ticks", 0, "", true)
+	if !on.AllowMsgSchedules || !on.AllowMsgTTL {
+		t.Errorf("schedules on: AllowMsgSchedules=%v AllowMsgTTL=%v", on.AllowMsgSchedules, on.AllowMsgTTL)
+	}
+	if on.AllowRollup != off.AllowRollup || on.DenyDelete != off.DenyDelete || on.MaxBytes != off.MaxBytes {
+		t.Error("schedules changed a setting that is not theirs")
+	}
+	// The one setting that must move: the server refuses schedules with
+	// DiscardNew, so a store of ticks discards its oldest at the cap.
+	if off.Discard != jetstream.DiscardNew || on.Discard != jetstream.DiscardOld {
+		t.Errorf("discard: off=%v on=%v, want DiscardNew / DiscardOld", off.Discard, on.Discard)
 	}
 }
