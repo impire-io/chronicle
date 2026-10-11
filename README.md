@@ -1,14 +1,41 @@
 # chronicle
 
-Chronicle keeps the full history of everything your service does — and
-gives you the current state, search and relationships derived from it,
-without building any of it. You define **types**, each with a schema and
-the **operations** it allows; you create **instances** of those types;
-every change is an operation applied to an instance and kept as its
-**history**; the current **state** is always one read away; the
-**indexes** you declare (search, graph, semantic) are kept current from
-the history. It runs on any NATS you already have, or hosted at
-chronicle.impire.dev — one product, a connection string apart.
+Chronicle is **a datastore as a service where the writes are the record.**
+You define **types** — a schema and the **operations** allowed on it — and
+every change to an **instance** is an operation: kept in its **history**,
+applied to its **state**, and live to anyone watching. **Indexes** — search,
+graph, semantic — are declared, and derived from the same history. Hosted
+at chronicle.impire.dev, or on the NATS you already run — one product, a
+connection string apart.
+
+Because the writes are the record:
+
+- **Any past state is a replay.** Nothing is lost to an update; a
+  post-mortem reads the history instead of reconstructing it.
+- **Every change has an author and a name.** The history says who applied
+  `send` to `invoice/inv-1`, with what, at which sequence — not that a row
+  changed.
+- **Writers converge without a lock.** A write that names the sequence it
+  last saw is refused if anything landed since; two services, or two
+  agents, on the same instance need no coordinator.
+- **Every change is live.** Follow an instance's history, or a store's
+  operations, as they land; nothing to poll, no change-data-capture to
+  run, no webhooks to wire.
+- **The state is derived, not written.** The type declares what each
+  operation does to the state; chronicle keeps it current and checks every
+  write against the schema. You write no aggregate.
+- **A second view is a declaration.** Search, graph, meaning: declared on
+  the store, derived from the history, rebuilt from it on demand. Losing
+  one is a replay, not an incident.
+
+Reach for chronicle when what you store has a lifecycle: it is created,
+operations are applied to it over time by several hands — people,
+services, agents — you will need to know who did what in what order, and
+others must react when it changes. Orders, tickets, devices, workflow
+runs, an agent's steps. Ask it anything you have declared a view for —
+full text, relations, meaning — and the state and history of any instance,
+always. Not for a cache, a blob or a counter: nothing there has a history
+worth keeping.
 
 This repository is the **open account plane** of chronicle (chronicle-hq
 design
@@ -109,9 +136,10 @@ invoice --where status=sent` the instances of a type with a filter, and
 the history before it. `instance apply … --expect SEQ` refuses the write
 if the instance moved past the sequence you read.
 
-**4. Declare indexes.** An index is declared on a store and served by a
-process of its kind; it reads the state (or, with `--source history`,
-every operation) and is kept current:
+**4. Declare indexes.** When a question is not a list of a type, declare
+an index — a second view, derived from the same history. It is declared on
+a store and served by a process of its kind; it reads the state (or, with
+`--source history`, every operation) and is kept current:
 
 ```sh
 chronicle index create rel --kind graph --config '{"edges":[{"field":"customer"}]}'
