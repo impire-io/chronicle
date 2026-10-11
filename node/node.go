@@ -261,6 +261,7 @@ func (n *node) handleStoreCreate(req micro.Request) {
 		Description: r.Description,
 		MaxBytes:    r.MaxBytes,
 		History:     r.History,
+		Schedules:   r.Schedules,
 	})
 	if err != nil {
 		_ = req.Error(contract.CodeInternal, err.Error(), nil)
@@ -275,7 +276,7 @@ func (n *node) handleStoreCreate(req micro.Request) {
 		return
 	}
 
-	if _, err := n.js.CreateStream(ctx, contract.StoreStreamConfig(r.Store, budget, r.History)); err != nil {
+	if _, err := n.js.CreateStream(ctx, contract.StoreStreamConfig(r.Store, budget, r.History, r.Schedules)); err != nil {
 		_ = req.Error(contract.CodeInternal, fmt.Sprintf("create stream: %v", err), nil)
 		return
 	}

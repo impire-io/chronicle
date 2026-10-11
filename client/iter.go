@@ -196,8 +196,9 @@ const (
 type TailOpt func(*tailOpts)
 
 type tailOpts struct {
-	after uint64
-	live  bool
+	after    uint64
+	live     bool
+	children bool
 }
 
 // After starts the tail past a stream sequence — the exactness recipe's
@@ -209,6 +210,14 @@ func After(seq uint64) TailOpt {
 // Live starts the tail at the head: only what lands from now on.
 func Live() TailOpt {
 	return func(o *tailOpts) { o.live = true }
+}
+
+// Children includes what lives under the instance: the consumer filters
+// to the instance's exact subject and everything under it, in one stream
+// order (decision 0049). Ignored on a tail of the whole store, which
+// already includes everything.
+func Children() TailOpt {
+	return func(o *tailOpts) { o.children = true }
 }
 
 // Tail streams a log's ops — every thing's when thing is empty, one
@@ -225,7 +234,11 @@ func (c *Client) tailOps(ctx context.Context, log, thing string, opts ...TailOpt
 	if err != nil {
 		return fail[contract.Op](err)
 	}
-	return c.ops(ctx, log, subject, o.after, o.live, false)
+	subjects := []string{subject}
+	if o.children && thing != "" {
+		subjects = append(subjects, subject+".>")
+	}
+	return c.ops(ctx, log, subjects, o.after, o.live, false)
 }
 
 // History streams a thing's full history in stream order, as of the call.
@@ -233,7 +246,17 @@ func (c *Client) historyTail(ctx context.Context, log, thing string) iter.Seq2[c
 	if err := contract.ValidateInstance(thing); err != nil {
 		return fail[contract.Op](err)
 	}
-	return c.ops(ctx, log, contract.OpsSubject(log, thing), 0, false, true)
+	return c.ops(ctx, log, []string{contract.OpsSubject(log, thing)}, 0, false, true)
+}
+
+// historyUnderTail streams a thing's history and its children's, in one
+// stream order, as of the call (decision 0049).
+func (c *Client) historyUnderTail(ctx context.Context, log, thing string) iter.Seq2[contract.Op, error] {
+	if err := contract.ValidateInstance(thing); err != nil {
+		return fail[contract.Op](err)
+	}
+	subject := contract.OpsSubject(log, thing)
+	return c.ops(ctx, log, []string{subject, subject + ".>"}, 0, false, true)
 }
 
 // FoldTail streams a thing's ops after the given stream sequence, as of
@@ -243,7 +266,7 @@ func (c *Client) foldTailOf(ctx context.Context, log, thing string, after uint64
 	if err := contract.ValidateInstance(thing); err != nil {
 		return fail[contract.Op](err)
 	}
-	return c.ops(ctx, log, contract.OpsSubject(log, thing), after, false, true)
+	return c.ops(ctx, log, []string{contract.OpsSubject(log, thing)}, after, false, true)
 }
 
 func opsSubject(log, thing string) (string, error) {
@@ -262,7 +285,7 @@ func opsSubject(log, thing string) (string, error) {
 // ops delivers a subject's ops through an ordered consumer: from after+1
 // (or the head, live), bounded at the pending count observed at the start
 // or unbounded.
-func (c *Client) ops(ctx context.Context, log, subject string, after uint64, live, bounded bool) iter.Seq2[contract.Op, error] {
+func (c *Client) ops(ctx context.Context, log string, subjects []string, after uint64, live, bounded bool) iter.Seq2[contract.Op, error] {
 	return func(yield func(contract.Op, error) bool) {
 		if err := contract.ValidateStoreName(log); err != nil {
 			yield(contract.Op{}, err)
@@ -273,7 +296,7 @@ func (c *Client) ops(ctx context.Context, log, subject string, after uint64, liv
 			yield(contract.Op{}, fmt.Errorf("cannot read history: %w", err))
 			return
 		}
-		cfg := jetstream.OrderedConsumerConfig{FilterSubjects: []string{subject}}
+		cfg := jetstream.OrderedConsumerConfig{FilterSubjects: subjects}
 		switch {
 		case live:
 			cfg.DeliverPolicy = jetstream.DeliverNewPolicy

@@ -33,7 +33,10 @@ const DuplicateWindow = 2 * time.Minute
 // maxBytes zero means the decided default; history is the log's 0019
 // declaration (empty means compactable) — a preserved log's stream refuses
 // rollup writes outright, so nothing can replace a subject's history.
-func StoreStreamConfig(log string, maxBytes int64, history string) jetstream.StreamConfig {
+// schedules turns on NATS message schedules and per-message TTLs
+// (decision 0050): the server appends a registered schedule's ticks
+// into the store's own stream, whether any reader is running.
+func StoreStreamConfig(log string, maxBytes int64, history string, schedules bool) jetstream.StreamConfig {
 	if maxBytes == 0 {
 		maxBytes = DefaultMaxBytes
 	}
@@ -49,8 +52,23 @@ func StoreStreamConfig(log string, maxBytes int64, history string) jetstream.Str
 		Duplicates:  DuplicateWindow,
 		Storage:     jetstream.FileStorage,
 		MaxBytes:    maxBytes,
-		Discard:     jetstream.DiscardNew,
+		Discard:     discardFor(schedules),
+		// Off by default: a store that allows schedules says so at creation.
+		AllowMsgSchedules: schedules,
+		AllowMsgTTL:       schedules,
 	}
+}
+
+// discardFor is the byte budget's edge: a store refuses new appends at its
+// cap (0008 point 3) — except a store that allows schedules, which the
+// server refuses to create with DiscardNew ("message scheduling cannot
+// use discard new"); it discards its oldest operations instead, which is
+// what a store of ticks wants and what decision 0050 says it accepts.
+func discardFor(schedules bool) jetstream.DiscardPolicy {
+	if schedules {
+		return jetstream.DiscardOld
+	}
+	return jetstream.DiscardNew
 }
 
 // MetaBucketConfig is the per-account META bucket. History depth 64 (the KV

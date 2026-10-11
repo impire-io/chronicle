@@ -258,7 +258,7 @@ func TestArtifactInteractionsMatchTheClient(t *testing.T) {
 	}
 	schema := json.RawMessage(`{"type":"object"}`)
 	requests := map[string]any{
-		"store.create":                client.StoreCreateRequest{Principal: "alice", Store: "orders", Description: "the orders", MaxBytes: 1 << 20, History: contract.HistoryFull},
+		"store.create":                client.StoreCreateRequest{Principal: "alice", Store: "orders", Description: "the orders", MaxBytes: 1 << 20, History: contract.HistoryFull, Schedules: true},
 		"type.define":                 client.TypeDefineRequest{Principal: "alice", Store: "orders", Type: "invoice", Schema: schema, History: contract.HistoryCompactable, Children: map[string]string{"comments": "comment"}, Operations: map[string]contract.OpDef{"send": {Schema: schema, Effect: contract.EffectMerge}}},
 		"instance.snapshot":           client.InstanceSnapshotRequest{Principal: "alice", Store: "orders", Instance: "invoice/inv-1"},
 		"index.declare":               client.IndexDeclareRequest{Principal: "alice", Store: "orders", Index: "text", Kind: contract.IndexKindSearch, Config: json.RawMessage(`{"source":"history"}`)},

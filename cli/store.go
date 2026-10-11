@@ -18,7 +18,7 @@ func (x *runner) storeNoun() *noun {
 		verbs: []command{
 			{"list", "the stores in the account; * marks the selected one", x.storeList},
 			{"get NAME", "one store's settings", x.storeGet},
-			{"create NAME [--history compactable|full] [--description TEXT]", "create a store and select it", x.storeCreate},
+			{"create NAME [--history compactable|full] [--schedules] [--description TEXT]", "create a store and select it", x.storeCreate},
 			{"select NAME", "make a store the one commands speak to", x.storeSelect},
 		},
 	}
@@ -100,7 +100,10 @@ func (x *runner) storeGet(ctx context.Context, args []string, out io.Writer) err
 		if cfg.MaxBytes > 0 {
 			fmt.Fprintf(out, "size limit:   %d bytes\n", cfg.MaxBytes)
 		}
-	}, map[string]any{"name": pos[0], "history": contract.NormalizeHistory(cfg.History), "description": cfg.Description, "max_bytes": cfg.MaxBytes})
+		if cfg.Schedules {
+			fmt.Fprintf(out, "schedules:    allowed (a schedule registered here has its ticks written by the server)\n")
+		}
+	}, map[string]any{"name": pos[0], "history": contract.NormalizeHistory(cfg.History), "description": cfg.Description, "max_bytes": cfg.MaxBytes, "schedules": cfg.Schedules})
 }
 
 // describeHistory says what a history policy means, beside its value.
@@ -114,10 +117,11 @@ func describeHistory(history string) string {
 }
 
 func (x *runner) storeCreate(ctx context.Context, args []string, out io.Writer) error {
-	fs := flags("store create", "create NAME [--history compactable|full] [--description TEXT]", "create a store and select it", out)
+	fs := flags("store create", "create NAME [--history compactable|full] [--schedules] [--description TEXT]", "create a store and select it", out)
 	cf := x.connect(fs)
 	history := fs.String("history", contract.HistoryCompactable, "the history policy: compactable (a snapshot may replace older history) or full (every operation is kept)")
 	desc := fs.String("description", "", "what the store is for")
+	schedules := fs.Bool("schedules", false, "allow NATS message schedules in this store: a schedule registered in it has its ticks written by the server")
 	pos, err := parse(fs, args)
 	if err != nil {
 		return done(err)
@@ -133,10 +137,18 @@ func (x *runner) storeCreate(ctx context.Context, args []string, out io.Writer) 
 		return err
 	}
 	defer c.Close()
-	if _, err := c.CreateStore(ctx, pos[0], *desc, client.WithHistory(*history)); err != nil {
+	opts := []client.StoreOpt{client.WithHistory(*history)}
+	if *schedules {
+		opts = append(opts, client.WithSchedules())
+	}
+	if _, err := c.CreateStore(ctx, pos[0], *desc, opts...); err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "store %s created (history %s)\n", pos[0], contract.NormalizeHistory(*history))
+	created := fmt.Sprintf("store %s created (history %s", pos[0], contract.NormalizeHistory(*history))
+	if *schedules {
+		created += ", schedules allowed"
+	}
+	fmt.Fprintln(out, created+")")
 
 	// The store just made becomes the selected one — on the context that
 	// made it, which `up`, `login` and `context add` make sure exists.

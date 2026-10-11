@@ -23,7 +23,7 @@ func (x *runner) instanceNoun() *noun {
 			{"get PATH", "an instance's current state and the sequence it stands at", x.instanceGet},
 			{"create PATH [--data JSON | -f FILE] [--op OP]", "create an instance by applying its type's create operation", x.instanceCreate},
 			{"apply PATH OP [--data JSON | -f FILE] [--expect SEQ]", "apply an operation to an instance", x.instanceApply},
-			{"history PATH [--from SEQ] [--follow]", "an instance's operations in order", x.instanceHistory},
+			{"history PATH [--from SEQ] [--follow] [--children]", "an instance's operations in order", x.instanceHistory},
 			{"watch PATH", "print an instance's state each time it changes", x.instanceWatch},
 			{"snapshot PATH", "write the current state as a snapshot and compact the history before it", x.instanceSnapshot},
 		},
@@ -339,6 +339,7 @@ func (x *runner) instanceApply(ctx context.Context, args []string, out io.Writer
 // opRow is one operation as history prints it.
 type opRow struct {
 	Seq       uint64          `json:"seq"`
+	Path      string          `json:"path,omitempty"`
 	Operation string          `json:"operation"`
 	Author    string          `json:"author"`
 	Time      string          `json:"time,omitempty"`
@@ -359,11 +360,12 @@ func toOpRow(op contract.Op) opRow {
 }
 
 func (x *runner) instanceHistory(ctx context.Context, args []string, out io.Writer) error {
-	fs := flags("instance history", "history PATH [--from SEQ] [--follow]", "an instance's operations in order", out)
+	fs := flags("instance history", "history PATH [--from SEQ] [--follow] [--children]", "an instance's operations in order", out)
 	cf := x.connect(fs)
 	format := outputFlag(fs)
 	from := fs.Uint64("from", 0, "start after this sequence")
 	follow := fs.Bool("follow", false, "keep printing operations as they land (stop with Ctrl-C)")
+	children := fs.Bool("children", false, "include the operations of the instance's children — what lives under its path")
 	pos, err := parse(fs, args)
 	if err != nil {
 		return done(err)
@@ -386,7 +388,14 @@ func (x *runner) instanceHistory(ctx context.Context, args []string, out io.Writ
 		if *from > 0 {
 			topts = append(topts, client.After(*from))
 		}
+		if *children {
+			topts = append(topts, client.Children())
+		}
 		ops = c.Tail(ctx, store, pos[0], topts...)
+	case *children && *from > 0:
+		return errors.New("--children with --from: add --follow (a bounded read with children starts at the beginning)")
+	case *children:
+		ops = c.HistoryUnder(ctx, store, pos[0])
 	case *from > 0:
 		ops = c.FoldTail(ctx, store, pos[0], *from)
 	default:
@@ -395,7 +404,11 @@ func (x *runner) instanceHistory(ctx context.Context, args []string, out io.Writ
 	// A history streams: each row prints as it arrives, so --follow and a
 	// long history read the same way; a table holds its header only.
 	if *format == formatTable {
-		table(out, []string{"SEQ", "OPERATION", "AUTHOR", "TIME", "DATA"}, nil)
+		header := []string{"SEQ", "OPERATION", "AUTHOR", "TIME", "DATA"}
+		if *children {
+			header = []string{"SEQ", "PATH", "OPERATION", "AUTHOR", "TIME", "DATA"}
+		}
+		table(out, header, nil)
 	}
 	n := 0
 	for op, err := range ops {
@@ -407,9 +420,16 @@ func (x *runner) instanceHistory(ctx context.Context, args []string, out io.Writ
 		}
 		n++
 		row := toOpRow(op)
+		if *children {
+			row.Path = contract.TailPath(contract.InstanceFromSubject(store, op.Subject))
+		}
 		switch *format {
 		case formatTable:
-			fmt.Fprintf(out, "%d  %s  %s  %s  %s\n", row.Seq, row.Operation, row.Author, row.Time, compact(row.Data))
+			if *children {
+				fmt.Fprintf(out, "%d  %s  %s  %s  %s  %s\n", row.Seq, row.Path, row.Operation, row.Author, row.Time, compact(row.Data))
+			} else {
+				fmt.Fprintf(out, "%d  %s  %s  %s  %s\n", row.Seq, row.Operation, row.Author, row.Time, compact(row.Data))
+			}
 		case formatYAML:
 			if err := printYAML(out, []any{row}); err != nil {
 				return err
