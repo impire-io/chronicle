@@ -234,7 +234,7 @@ func (x *runner) sessionVerbs() map[string]Verb {
 }
 
 func (x *runner) rootHelp(out io.Writer) {
-	fmt.Fprint(out, "chronicle — keeps the full history of everything your service does, and the state, search and relationships derived from it\n\n")
+	fmt.Fprint(out, "chronicle — a datastore as a service where the writes are the record: every change to an instance is an operation, kept in its history, applied to its state, and live to anyone watching\n\n")
 	fmt.Fprint(out, "Your account:\n")
 	for _, n := range x.nouns() {
 		fmt.Fprintf(out, "  %-16s %s\n", n.name, n.summary)
