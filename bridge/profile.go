@@ -53,6 +53,20 @@ type Profile struct {
 	// refresh token, for GitHub tokens (decision 0041); absent means the
 	// install has no web-flow sign-in.
 	GithubTokenURL string `json:"github_token_url,omitempty"`
+	// Solutions lists the solutions the environment hosts, each with the
+	// address of its install manifest (decision 0054): the catalogue the
+	// console enables a solution from. Absent when the environment hosts
+	// none; `login` ignores it — nothing in this module reads it.
+	Solutions []Solution `json:"solutions,omitempty"`
+}
+
+// Solution is one entry of the profile's catalogue (decision 0054): a
+// hosted solution's name and where its install manifest is published —
+// what enabling it in an account means, stated by the solution itself
+// (chronicle-hq design 14 § the install manifest).
+type Solution struct {
+	Name     string `json:"name"`
+	Manifest string `json:"manifest"`
 }
 
 // ParseSite accepts an https origin and nothing else — no path, no plain
