@@ -35,7 +35,8 @@ func (x *runner) serviceAccountNoun() *noun {
 		summary: "the machines in your account: a service that connects with a credential",
 		verbs: []command{
 			{"list", "the service accounts and their roles", x.serviceAccountList},
-			{"create NAME [--role admin|writer|reader] [--public-key KEY]", "create a service account", x.serviceAccountCreate},
+			{"create NAME [--role admin|writer|reader] [--public-key KEY] [--out FILE]", "create a service account; hosted, its credential is shown once", x.serviceAccountCreate},
+			{"rotate NAME [--public-key KEY] [--out FILE]", "a new credential for the service account; the old one no longer connects", x.serviceAccountRotate},
 			{"revoke NAME", "revoke a service account; it can act no more", x.serviceAccountRevoke},
 		},
 	}
@@ -91,19 +92,12 @@ func (x *runner) serviceAccountList(ctx context.Context, args []string, out io.W
 	return x.listPrincipals(ctx, args, out, contract.PrincipalKindService, "service-account", "the service accounts and their roles")
 }
 
-func (x *runner) addPrincipal(ctx context.Context, args []string, out io.Writer, kind string) error {
-	name, use, summary := "member add", "add NAME [--role admin|writer|reader] [--public-key KEY] [--github-id N]", "add a person to the account"
-	if kind == contract.PrincipalKindService {
-		name, use, summary = "service-account create", "create NAME [--role admin|writer|reader] [--public-key KEY]", "create a service account"
-	}
-	fs := flags(name, use, summary, out)
+func (x *runner) memberAdd(ctx context.Context, args []string, out io.Writer) error {
+	fs := flags("member add", "add NAME [--role admin|writer|reader] [--public-key KEY] [--github-id N]", "add a person to the account", out)
 	cf := x.connect(fs)
 	role := fs.String("role", contract.RoleWriter, "admin, writer or reader")
 	publicKey := fs.String("public-key", "", "the NATS user public key, where your NATS names users by key (self-hosted)")
-	var githubID *int64
-	if kind == contract.PrincipalKindMember {
-		githubID = fs.Int64("github-id", 0, "the person's GitHub user id, for signing in with GitHub (hosted)")
-	}
+	githubID := fs.Int64("github-id", 0, "the person's GitHub user id, for signing in with GitHub (hosted)")
 	pos, err := parse(fs, args)
 	if err != nil {
 		return done(err)
@@ -119,42 +113,16 @@ func (x *runner) addPrincipal(ctx context.Context, args []string, out io.Writer,
 		return err
 	}
 	defer c.Close()
-	opts := []client.MemberOpt{client.WithPublicKey(*publicKey)}
-	if githubID != nil {
-		opts = append(opts, client.WithGithubID(*githubID))
-	}
-	if kind == contract.PrincipalKindService {
-		opts = append(opts, client.AsServiceAccount())
-	}
-	resp, err := c.AddMember(ctx, pos[0], *role, opts...)
+	resp, err := c.AddMember(ctx, pos[0], *role, client.WithPublicKey(*publicKey), client.WithGithubID(*githubID))
 	if err != nil {
 		return err
-	}
-	if kind == contract.PrincipalKindService {
-		fmt.Fprintf(out, "service account %s created (role %s)\n", resp.Member, resp.Role)
-		if *publicKey == "" {
-			fmt.Fprintf(out, "its credential is your NATS's to issue: a user named %s with the member baseline (see the README); --public-key records the key\n", resp.Member)
-		}
-		return nil
 	}
 	fmt.Fprintf(out, "member %s added (role %s)\n", resp.Member, resp.Role)
 	return nil
 }
 
-func (x *runner) memberAdd(ctx context.Context, args []string, out io.Writer) error {
-	return x.addPrincipal(ctx, args, out, contract.PrincipalKindMember)
-}
-
-func (x *runner) serviceAccountCreate(ctx context.Context, args []string, out io.Writer) error {
-	return x.addPrincipal(ctx, args, out, contract.PrincipalKindService)
-}
-
-func (x *runner) revokePrincipal(ctx context.Context, args []string, out io.Writer, kind string) error {
-	name, use, summary := "member remove", "remove NAME", "remove a person from the account; their history stays attributed to them"
-	if kind == contract.PrincipalKindService {
-		name, use, summary = "service-account revoke", "revoke NAME", "revoke a service account; it can act no more"
-	}
-	fs := flags(name, use, summary, out)
+func (x *runner) memberRemove(ctx context.Context, args []string, out io.Writer) error {
+	fs := flags("member remove", "remove NAME", "remove a person from the account; their history stays attributed to them", out)
 	cf := x.connect(fs)
 	pos, err := parse(fs, args)
 	if err != nil {
@@ -172,24 +140,12 @@ func (x *runner) revokePrincipal(ctx context.Context, args []string, out io.Writ
 	if err != nil {
 		return err
 	}
-	if kind == contract.PrincipalKindService {
-		fmt.Fprintf(out, "service account %s revoked", resp.Member)
-	} else {
-		fmt.Fprintf(out, "member %s removed", resp.Member)
-	}
+	fmt.Fprintf(out, "member %s removed", resp.Member)
 	if resp.PublicKey != "" {
 		fmt.Fprintf(out, "; its credential (%s) is your NATS's to revoke", resp.PublicKey)
 	}
 	fmt.Fprintln(out)
 	return nil
-}
-
-func (x *runner) memberRemove(ctx context.Context, args []string, out io.Writer) error {
-	return x.revokePrincipal(ctx, args, out, contract.PrincipalKindMember)
-}
-
-func (x *runner) serviceAccountRevoke(ctx context.Context, args []string, out io.Writer) error {
-	return x.revokePrincipal(ctx, args, out, contract.PrincipalKindService)
 }
 
 // memberSetRole waits on the role-change verb (design 13 § members, design

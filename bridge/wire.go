@@ -48,6 +48,38 @@ func AccountCreateSubject(githubID int64, login string) string {
 	return fmt.Sprintf("%s.%d.%s", AccountCreateVerb, githubID, login)
 }
 
+// The service-account verbs (decision 0052): an admin of an account asks
+// the install to issue, rotate or revoke a machine's credential there. The
+// identity still rides the subject; the account and the service account's
+// name ride the payload, and the install admits the call only when the
+// identity is an admin of that account.
+const (
+	// ServiceAccountIssueVerb mints a service account's credential and
+	// records it; the subject is <verb>.<github-id>.<login>.
+	ServiceAccountIssueVerb = identityRoot + "SERVICE_ACCOUNT.ISSUE"
+	// ServiceAccountRotateVerb revokes the current credential and issues a
+	// fresh one under the same principal and role.
+	ServiceAccountRotateVerb = identityRoot + "SERVICE_ACCOUNT.ROTATE"
+	// ServiceAccountRevokeVerb kills the credential on the wire and retires
+	// the record.
+	ServiceAccountRevokeVerb = identityRoot + "SERVICE_ACCOUNT.REVOKE"
+)
+
+// ServiceAccountIssueSubject is the issue request for one identity.
+func ServiceAccountIssueSubject(githubID int64, login string) string {
+	return fmt.Sprintf("%s.%d.%s", ServiceAccountIssueVerb, githubID, login)
+}
+
+// ServiceAccountRotateSubject is the rotate request for one identity.
+func ServiceAccountRotateSubject(githubID int64, login string) string {
+	return fmt.Sprintf("%s.%d.%s", ServiceAccountRotateVerb, githubID, login)
+}
+
+// ServiceAccountRevokeSubject is the revoke request for one identity.
+func ServiceAccountRevokeSubject(githubID int64, login string) string {
+	return fmt.Sprintf("%s.%d.%s", ServiceAccountRevokeVerb, githubID, login)
+}
+
 // loginRe bounds a login to one subject token.
 var loginRe = regexp.MustCompile(`^[a-z0-9-]+$`)
 
@@ -103,3 +135,50 @@ type AccountCreateResponse struct {
 	Admin   string `json:"admin"`
 	Plan    string `json:"plan"`
 }
+
+// ServiceAccountIssueRequest asks for a service account's credential in
+// an account the identity administers: a new name, or one registered
+// without a credential.
+type ServiceAccountIssueRequest struct {
+	Account string `json:"account"`
+	Name    string `json:"name"`
+	Role    string `json:"role"`
+}
+
+// ServiceAccountRequest names a service account for rotate and revoke.
+type ServiceAccountRequest struct {
+	Account string `json:"account"`
+	Name    string `json:"name"`
+}
+
+// ServiceAccountCredential is what issue and rotate hand back — once.
+// Creds is the whole credential file.
+type ServiceAccountCredential struct {
+	Account   string `json:"account"`
+	Name      string `json:"name"`
+	Role      string `json:"role"`
+	PublicKey string `json:"public_key"`
+	Creds     string `json:"creds"`
+}
+
+// ServiceAccountRevokeResponse names what revoke killed.
+type ServiceAccountRevokeResponse struct {
+	Account   string `json:"account"`
+	Name      string `json:"name"`
+	PublicKey string `json:"public_key"`
+}
+
+// The codes the install answers the service-account verbs with, beside
+// the identity plane's own.
+const (
+	// CodeForbidden: the identity is not an admin of the named account —
+	// or there is no such account; the install says no more than that.
+	CodeForbidden = "forbidden"
+	// CodeNotAServiceAccount: the name is a person's membership.
+	CodeNotAServiceAccount = "not-a-service-account"
+	// CodeCredentialExists: issue named a service account that already
+	// holds a credential; rotate is the sentence.
+	CodeCredentialExists = "credential-exists"
+	// CodeNotAMember: rotate or revoke named nothing in the registry.
+	CodeNotAMember = "not-a-member"
+)
