@@ -42,6 +42,36 @@ func TestDecodeProfile(t *testing.T) {
 	}
 }
 
+// TestProfileSolutions: the catalogue (decision 0054) is optional — a
+// profile without it decodes to none, one with it keeps each solution's
+// name and manifest address — and round-trips, with the key absent when
+// the environment hosts none.
+func TestProfileSolutions(t *testing.T) {
+	none, err := DecodeProfile([]byte(`{"url":"tls://x:4222","github_client_id":"Iv1.x","sentinel":"S"}`), "test")
+	if err != nil || len(none.Solutions) != 0 {
+		t.Fatalf("without solutions: %+v, %v", none.Solutions, err)
+	}
+	some, err := DecodeProfile([]byte(`{"url":"tls://x:4222","github_client_id":"Iv1.x","sentinel":"S",
+		"solutions":[{"name":"chronicle-agents","manifest":"https://agents.example/install.json"}]}`), "test")
+	want := Solution{Name: "chronicle-agents", Manifest: "https://agents.example/install.json"}
+	if err != nil || len(some.Solutions) != 1 || some.Solutions[0] != want {
+		t.Fatalf("with solutions: %+v, %v", some.Solutions, err)
+	}
+	for _, p := range []Profile{none, some} {
+		data, err := json.Marshal(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if has := strings.Contains(string(data), `"solutions"`); has != (len(p.Solutions) > 0) {
+			t.Errorf("encoded %s: solutions key present=%v for %d solutions", data, has, len(p.Solutions))
+		}
+		back, err := DecodeProfile(data, "test")
+		if err != nil || len(back.Solutions) != len(p.Solutions) || (len(p.Solutions) > 0 && back.Solutions[0] != p.Solutions[0]) {
+			t.Errorf("round trip %s: %+v, %v", data, back.Solutions, err)
+		}
+	}
+}
+
 // TestFetchProfile: the profile is read from the site's well-known path
 // over TLS; a redirect off the site's host, an error status and an
 // oversized body are refused.
