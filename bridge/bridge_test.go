@@ -88,7 +88,10 @@ func TestFetchProfile(t *testing.T) {
 // TestIdentitySubjects: the identity rides the subject — composed and read
 // back — and a subject that is not the identity plane's names none.
 func TestIdentitySubjects(t *testing.T) {
-	for _, s := range []string{MembershipsSubject(4242, "erin"), AccountCreateSubject(4242, "erin")} {
+	for _, s := range []string{
+		MembershipsSubject(4242, "erin"), AccountCreateSubject(4242, "erin"),
+		ServiceAccountIssueSubject(4242, "erin"), ServiceAccountRotateSubject(4242, "erin"), ServiceAccountRevokeSubject(4242, "erin"),
+	} {
 		id, login, ok := IdentityFromSubject(s)
 		if !ok || id != 4242 || login != "erin" {
 			t.Fatalf("%s: %d %q %v", s, id, login, ok)

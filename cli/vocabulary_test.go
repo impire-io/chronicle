@@ -70,7 +70,7 @@ func TestGrammarIsTheDesigns(t *testing.T) {
 		"instance":        {"list", "get", "create", "apply", "history", "watch", "snapshot"},
 		"index":           {"list", "get", "create", "delete", "query"},
 		"member":          {"list", "add", "remove", "set-role"},
-		"service-account": {"list", "create", "revoke"},
+		"service-account": {"list", "create", "rotate", "revoke"},
 		"context":         {"list", "show", "select", "add", "remove"},
 		"account":         {"create"},
 	}

@@ -72,6 +72,29 @@ func (i *Identity) CreateAccount(ctx context.Context, name string) (AccountCreat
 	return client.Request[AccountCreateRequest, AccountCreateResponse](ctx, i.nc, AccountCreateSubject(i.GithubID, i.Login), AccountCreateRequest{Name: name})
 }
 
+// IssueServiceAccount asks for a service account's credential in an
+// account the identity administers (decision 0052): the install mints it,
+// records the service account, and hands the credential back once.
+func (i *Identity) IssueServiceAccount(ctx context.Context, account, name, role string) (ServiceAccountCredential, error) {
+	return client.Request[ServiceAccountIssueRequest, ServiceAccountCredential](ctx, i.nc,
+		ServiceAccountIssueSubject(i.GithubID, i.Login), ServiceAccountIssueRequest{Account: account, Name: name, Role: role})
+}
+
+// RotateServiceAccount revokes the service account's current credential
+// and issues a fresh one under the same principal and role, handed back
+// once; the old one no longer connects.
+func (i *Identity) RotateServiceAccount(ctx context.Context, account, name string) (ServiceAccountCredential, error) {
+	return client.Request[ServiceAccountRequest, ServiceAccountCredential](ctx, i.nc,
+		ServiceAccountRotateSubject(i.GithubID, i.Login), ServiceAccountRequest{Account: account, Name: name})
+}
+
+// RevokeServiceAccount kills the service account's credential on the wire
+// and retires its record.
+func (i *Identity) RevokeServiceAccount(ctx context.Context, account, name string) (ServiceAccountRevokeResponse, error) {
+	return client.Request[ServiceAccountRequest, ServiceAccountRevokeResponse](ctx, i.nc,
+		ServiceAccountRevokeSubject(i.GithubID, i.Login), ServiceAccountRequest{Account: account, Name: name})
+}
+
 // ConnectIdentity dials through the bridge into the identity plane
 // (decision 0035): where a login learns which accounts it holds and
 // creates its first. The identity's id and login come back from the
