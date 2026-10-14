@@ -3,9 +3,12 @@ package node_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/impire-io/chronicle/client"
 	"github.com/impire-io/chronicle/contract"
@@ -14,9 +17,10 @@ import (
 
 // TestPreservedHistory proves 0019's contract: a log declared
 // history-preserved is never compacted by the node, and its stream
-// refuses rollup writes outright — regardless of effect coverage.
+// refuses rollup writes and purges outright — regardless of effect
+// coverage.
 func TestPreservedHistory(t *testing.T) {
-	_, alice := startNode(t, nil)
+	nc, alice := startNode(t, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
@@ -55,6 +59,29 @@ func TestPreservedHistory(t *testing.T) {
 	if _, err := alice.SaveSnapshot(ctx, "audit", "case/case-1", json.RawMessage(`{"n":1}`), nil, last.Seq); err == nil {
 		t.Fatal("save version landed on a preserved log")
 	}
+
+	// The other API path that shrinks history — a purge, of the store's
+	// subjects or of the whole stream — is refused by the stream as well
+	// (0019 as amended): DenyDelete never covered it; DenyPurge does.
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream: %v", err)
+	}
+	stream, err := js.Stream(ctx, contract.StreamName("audit"))
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	refused := func(what string, err error) {
+		t.Helper()
+		// 10110 is the server's "stream purge not permitted"; nats.go
+		// names no constant for it.
+		var apiErr *jetstream.APIError
+		if !errors.As(err, &apiErr) || apiErr.ErrorCode != 10110 {
+			t.Fatalf("%s on a preserved log: want the server's refusal, got %v", what, err)
+		}
+	}
+	refused("subject purge", stream.Purge(ctx, jetstream.WithPurgeSubject(contract.StoreSubjects("audit"))))
+	refused("stream purge", stream.Purge(ctx))
 
 	// Nothing above touched the trail: birth plus the op, intact.
 	ops := replayOf(ctx, t, alice, "audit", "case/case-1")
