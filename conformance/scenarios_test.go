@@ -12,10 +12,19 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
+	"github.com/nats-io/nats.go/micro"
+	"github.com/nats-io/nuid"
+
 	"github.com/impire-io/chronicle/client"
+	"github.com/impire-io/chronicle/contract"
 	"github.com/impire-io/chronicle/devdir"
 	"github.com/impire-io/chronicle/up"
 )
+
+// contractTail is the stored form of a path, for the raw steps.
+func contractTail(path string) (string, error) { return contract.PathTail(path) }
 
 // The scenario runner: boots the quick start, connects its local user,
 // and speaks each step through the Go client. Derived observations are
@@ -42,24 +51,34 @@ type step struct {
 	Live      bool              `json:"live"`
 	Children  bool              `json:"children"`
 	Schedules bool              `json:"schedules"`
-	After     *uint64           `json:"after"`
-	Then      *step             `json:"then"`
-	Expect    *expect           `json:"expect"`
+	// VerifiedAuthors creates a store that requires verified authors;
+	// Verified asks for a verified author on one write; As names the
+	// principal a raw step speaks or signs as (decision 0057).
+	VerifiedAuthors bool    `json:"verifiedAuthors"`
+	Verified        bool    `json:"verified"`
+	As              string  `json:"as"`
+	After           *uint64 `json:"after"`
+	Then            *step   `json:"then"`
+	Expect          *expect `json:"expect"`
 }
 
 type expect struct {
-	State     json.RawMessage `json:"state"`
-	Types     []string        `json:"types"`
-	Items     []string        `json:"items"`
-	Instances []string        `json:"instances"`
-	Total     *uint64         `json:"total"`
-	Count     *uint64         `json:"count"`
-	Error     string          `json:"error"`
-	Taken     *bool           `json:"taken"`
-	Type      string          `json:"type"`
-	First     json.RawMessage `json:"first"`
-	Contains  json.RawMessage `json:"contains"`
-	Arrives   string          `json:"arrives"`
+	State json.RawMessage `json:"state"`
+	Types []string        `json:"types"`
+	// Verified says every operation read is (or is not) verified;
+	// VerifiedEach says it per operation, in order.
+	Verified     *bool           `json:"verified"`
+	VerifiedEach []bool          `json:"verifiedEach"`
+	Items        []string        `json:"items"`
+	Instances    []string        `json:"instances"`
+	Total        *uint64         `json:"total"`
+	Count        *uint64         `json:"count"`
+	Error        string          `json:"error"`
+	Taken        *bool           `json:"taken"`
+	Type         string          `json:"type"`
+	First        json.RawMessage `json:"first"`
+	Contains     json.RawMessage `json:"contains"`
+	Arrives      string          `json:"arrives"`
 }
 
 type scenario struct {
@@ -145,6 +164,13 @@ func matchesError(err error, want string) bool {
 		return errors.Is(err, client.ErrUndefinedOperation)
 	case "no-responder":
 		return errors.Is(err, client.ErrNoResponder)
+	case "no-state":
+		return errors.Is(err, client.ErrNoState)
+	case "refused":
+		// The server dropped a publish the member may not make: nobody
+		// answers, and the request runs out of time or the connection
+		// reports the violation.
+		return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, nats.ErrTimeout) || errors.Is(err, nats.ErrNoResponders) || errors.Is(err, nats.ErrPermissionViolation)
 	case "preflight":
 		return !errors.As(err, &serr) && !errors.Is(err, client.ErrInstanceExists) && !errors.Is(err, client.ErrInstanceMoved)
 	}
@@ -160,8 +186,54 @@ func (r *runner) perform(label string, s step) error {
 		if s.Schedules {
 			opts = append(opts, client.WithSchedules())
 		}
+		if s.VerifiedAuthors {
+			opts = append(opts, client.WithVerifiedAuthors())
+		}
 		_, err := r.c.CreateStore(ctx, s.Store, "", opts...)
 		return err
+	case "verb.as":
+		// A verb spoken under another member's name: the subject is not
+		// this member's to publish on, so the server refuses it (0057).
+		short, cancel := context.WithTimeout(ctx, 3*time.Second)
+		defer cancel()
+		_, err := client.Request[client.StoreCreateRequest, client.StoreCreateResponse](short, r.c.Conn(), client.StoreCreateSubject(s.As), client.StoreCreateRequest{Store: s.Store})
+		return err
+	case "apply.direct":
+		// A bare publish on the instance's subject — the direct route, as
+		// any NATS client could always make it: asserted authorship.
+		tail, err := contractTail(s.Instance)
+		if err != nil {
+			return err
+		}
+		js, err := jetstream.New(r.c.Conn())
+		if err != nil {
+			return err
+		}
+		msg := nats.NewMsg(contract.OpsSubject(s.Store, tail))
+		msg.Header = contract.Op{ID: nuid.Next(), Type: s.Op, Author: r.c.Author(), Ts: time.Now()}.Header()
+		msg.Header.Set(contract.HdrExpectedLastSubjSeq, "0")
+		msg.Data = s.Payload
+		_, err = js.PublishMsg(ctx, msg)
+		return err
+	case "apply.as":
+		// A verified write whose record names another author: the node
+		// reads the caller from the subject and refuses the record.
+		tail, err := contractTail(s.Instance)
+		if err != nil {
+			return err
+		}
+		req := nats.NewMsg(client.ApplySubject(r.c.Author(), s.Store, tail))
+		req.Header = contract.Op{ID: nuid.Next(), Type: s.Op, Author: s.As, Ts: time.Now()}.Header()
+		req.Header.Set(contract.HdrExpectedLastSubjSeq, "0")
+		req.Data = s.Payload
+		resp, err := r.c.Conn().RequestMsgWithContext(ctx, req)
+		if err != nil {
+			return err
+		}
+		if code := resp.Header.Get(micro.ErrorCodeHeader); code != "" {
+			return &client.ServiceError{Code: code, Desc: resp.Header.Get(micro.ErrorHeader)}
+		}
+		return nil
 	case "type.define":
 		var def client.TypeDefinition
 		if err := json.Unmarshal(s.Def, &def); err != nil {
@@ -183,12 +255,19 @@ func (r *runner) perform(label string, s step) error {
 		if op == "" {
 			op = "create"
 		}
-		_, err := r.c.Create(ctx, s.Store, s.Instance, op, s.Payload)
+		var opts []client.ApplyOpt
+		if s.Verified {
+			opts = append(opts, client.Verified())
+		}
+		_, err := r.c.Create(ctx, s.Store, s.Instance, op, s.Payload, opts...)
 		return err
 	case "apply":
 		var opts []client.ApplyOpt
 		if s.ExpectSeq != nil {
 			opts = append(opts, client.WithExpectedSeq(*s.ExpectSeq))
+		}
+		if s.Verified {
+			opts = append(opts, client.Verified())
 		}
 		_, err := r.c.Apply(ctx, s.Store, s.Instance, s.Op, s.Payload, opts...)
 		return err
@@ -222,6 +301,7 @@ func (r *runner) perform(label string, s step) error {
 	case "history":
 		return r.until(label, s, func() error {
 			var types []string
+			var verified []bool
 			hist := r.c.History(ctx, s.Store, s.Instance)
 			if s.Children {
 				hist = r.c.HistoryUnder(ctx, s.Store, s.Instance)
@@ -231,9 +311,20 @@ func (r *runner) perform(label string, s step) error {
 					return err
 				}
 				types = append(types, op.Type)
+				verified = append(verified, op.Verified)
 			}
 			if !reflect.DeepEqual(types, s.Expect.Types) {
 				return fmt.Errorf("history types %v, want %v", types, s.Expect.Types)
+			}
+			if s.Expect.Verified != nil {
+				for i, v := range verified {
+					if v != *s.Expect.Verified {
+						return fmt.Errorf("history op %d verified=%v, want %v", i+1, v, *s.Expect.Verified)
+					}
+				}
+			}
+			if s.Expect.VerifiedEach != nil && !reflect.DeepEqual(verified, s.Expect.VerifiedEach) {
+				return fmt.Errorf("history verified %v, want %v", verified, s.Expect.VerifiedEach)
 			}
 			return nil
 		})

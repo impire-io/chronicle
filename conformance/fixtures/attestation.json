@@ -1,0 +1,268 @@
+{
+  "$comment": "The attestation (design 02 § the operation record, decision 0057): a node signs the record's signed form with its nkey; a reader rebuilds the form from the subject, the headers and the payload and verifies against the attester's public key. Valid cases carry the exact signedForm; the others alter one input and must not verify. The signing key is the user seed SUABQAPEQBGM5PZ5SL5B7LDO7ZNDR2ZZWWJ6U3ACPLEO5FBNJPFCYO2CNY.",
+  "attester": "UCJEPAP77THU53A3F5FE6WHBMYNTDQQ7IGSVJJ7PBIK4BBBFZZNACU6R",
+  "cases": [
+    {
+      "name": "a verified create",
+      "subject": "CHRON.rooms.OPS.room.general.messages.m-1",
+      "op": {
+        "author": "alice",
+        "id": "op-1",
+        "parents": [
+          "op-0"
+        ],
+        "ts": "2026-10-14T12:00:00Z",
+        "type": "create",
+        "version": "1"
+      },
+      "payload": "{\"text\":\"hello\"}",
+      "attester": "UCJEPAP77THU53A3F5FE6WHBMYNTDQQ7IGSVJJ7PBIK4BBBFZZNACU6R",
+      "signature": "QHUHq1cCiRrdVVOAbZnykTVxkERrFCT86Izj3yhFxKcwPueZlDIhw2TJnM3Tu3COh5KkrpeaUEciuzihgn3YCw==",
+      "signedForm": "CHRON.rooms.OPS.room.general.messages.m-1\nop-1\ncreate\nalice\nop-0\n2026-10-14T12:00:00Z\n1\ncbbbdcd27692344de5dbab3abcaba413fb0f45307267de7081401576df1cb176",
+      "valid": true,
+      "headers": {
+        "Nats-Msg-Id": [
+          "op-1"
+        ],
+        "Op-Attester": [
+          "UCJEPAP77THU53A3F5FE6WHBMYNTDQQ7IGSVJJ7PBIK4BBBFZZNACU6R"
+        ],
+        "Op-Author": [
+          "alice"
+        ],
+        "Op-Parents": [
+          "op-0"
+        ],
+        "Op-Signature": [
+          "QHUHq1cCiRrdVVOAbZnykTVxkERrFCT86Izj3yhFxKcwPueZlDIhw2TJnM3Tu3COh5KkrpeaUEciuzihgn3YCw=="
+        ],
+        "Op-Ts": [
+          "2026-10-14T12:00:00Z"
+        ],
+        "Op-Type": [
+          "create"
+        ],
+        "Op-Version": [
+          "1"
+        ]
+      }
+    },
+    {
+      "name": "no parents, no clock, version defaulted",
+      "subject": "CHRON.orders.OPS.widget.w-1",
+      "op": {
+        "author": "svc",
+        "id": "op-2",
+        "parents": [],
+        "ts": "",
+        "type": "snapshot",
+        "version": ""
+      },
+      "payload": "{\"state\":{\"a\":1},\"frontier\":[]}",
+      "attester": "UCJEPAP77THU53A3F5FE6WHBMYNTDQQ7IGSVJJ7PBIK4BBBFZZNACU6R",
+      "signature": "53QpqSCAfPIbU4VwG7FOcj++sOxK2NqRE41ZJuse5k0WUiruxYEA52R2W/0/+HOEhq+DrHdQCnhA+fEzd3/vAw==",
+      "signedForm": "CHRON.orders.OPS.widget.w-1\nop-2\nsnapshot\nsvc\n\n\n1\n39c408ec90adce3b36fc8a6074f9b2e52948196ffa7388756a15e60bf325b4e0",
+      "valid": true,
+      "headers": {
+        "Nats-Msg-Id": [
+          "op-2"
+        ],
+        "Op-Attester": [
+          "UCJEPAP77THU53A3F5FE6WHBMYNTDQQ7IGSVJJ7PBIK4BBBFZZNACU6R"
+        ],
+        "Op-Author": [
+          "svc"
+        ],
+        "Op-Signature": [
+          "53QpqSCAfPIbU4VwG7FOcj++sOxK2NqRE41ZJuse5k0WUiruxYEA52R2W/0/+HOEhq+DrHdQCnhA+fEzd3/vAw=="
+        ],
+        "Op-Type": [
+          "snapshot"
+        ],
+        "Op-Version": [
+          "1"
+        ]
+      }
+    },
+    {
+      "name": "moved to another instance",
+      "subject": "CHRON.rooms.OPS.room.general.messages.m-2",
+      "op": {
+        "author": "alice",
+        "id": "op-1",
+        "parents": [
+          "op-0"
+        ],
+        "ts": "2026-10-14T12:00:00Z",
+        "type": "create",
+        "version": "1"
+      },
+      "payload": "{\"text\":\"hello\"}",
+      "attester": "UCJEPAP77THU53A3F5FE6WHBMYNTDQQ7IGSVJJ7PBIK4BBBFZZNACU6R",
+      "signature": "QHUHq1cCiRrdVVOAbZnykTVxkERrFCT86Izj3yhFxKcwPueZlDIhw2TJnM3Tu3COh5KkrpeaUEciuzihgn3YCw==",
+      "signedForm": "",
+      "valid": false,
+      "headers": {
+        "Nats-Msg-Id": [
+          "op-1"
+        ],
+        "Op-Attester": [
+          "UCJEPAP77THU53A3F5FE6WHBMYNTDQQ7IGSVJJ7PBIK4BBBFZZNACU6R"
+        ],
+        "Op-Author": [
+          "alice"
+        ],
+        "Op-Parents": [
+          "op-0"
+        ],
+        "Op-Signature": [
+          "QHUHq1cCiRrdVVOAbZnykTVxkERrFCT86Izj3yhFxKcwPueZlDIhw2TJnM3Tu3COh5KkrpeaUEciuzihgn3YCw=="
+        ],
+        "Op-Ts": [
+          "2026-10-14T12:00:00Z"
+        ],
+        "Op-Type": [
+          "create"
+        ],
+        "Op-Version": [
+          "1"
+        ]
+      }
+    },
+    {
+      "name": "payload altered",
+      "subject": "CHRON.rooms.OPS.room.general.messages.m-1",
+      "op": {
+        "author": "alice",
+        "id": "op-1",
+        "parents": [
+          "op-0"
+        ],
+        "ts": "2026-10-14T12:00:00Z",
+        "type": "create",
+        "version": "1"
+      },
+      "payload": "{\"text\":\"hullo\"}",
+      "attester": "UCJEPAP77THU53A3F5FE6WHBMYNTDQQ7IGSVJJ7PBIK4BBBFZZNACU6R",
+      "signature": "QHUHq1cCiRrdVVOAbZnykTVxkERrFCT86Izj3yhFxKcwPueZlDIhw2TJnM3Tu3COh5KkrpeaUEciuzihgn3YCw==",
+      "signedForm": "",
+      "valid": false,
+      "headers": {
+        "Nats-Msg-Id": [
+          "op-1"
+        ],
+        "Op-Attester": [
+          "UCJEPAP77THU53A3F5FE6WHBMYNTDQQ7IGSVJJ7PBIK4BBBFZZNACU6R"
+        ],
+        "Op-Author": [
+          "alice"
+        ],
+        "Op-Parents": [
+          "op-0"
+        ],
+        "Op-Signature": [
+          "QHUHq1cCiRrdVVOAbZnykTVxkERrFCT86Izj3yhFxKcwPueZlDIhw2TJnM3Tu3COh5KkrpeaUEciuzihgn3YCw=="
+        ],
+        "Op-Ts": [
+          "2026-10-14T12:00:00Z"
+        ],
+        "Op-Type": [
+          "create"
+        ],
+        "Op-Version": [
+          "1"
+        ]
+      }
+    },
+    {
+      "name": "author altered",
+      "subject": "CHRON.rooms.OPS.room.general.messages.m-1",
+      "op": {
+        "author": "mallory",
+        "id": "op-1",
+        "parents": [
+          "op-0"
+        ],
+        "ts": "2026-10-14T12:00:00Z",
+        "type": "create",
+        "version": "1"
+      },
+      "payload": "{\"text\":\"hello\"}",
+      "attester": "UCJEPAP77THU53A3F5FE6WHBMYNTDQQ7IGSVJJ7PBIK4BBBFZZNACU6R",
+      "signature": "QHUHq1cCiRrdVVOAbZnykTVxkERrFCT86Izj3yhFxKcwPueZlDIhw2TJnM3Tu3COh5KkrpeaUEciuzihgn3YCw==",
+      "signedForm": "",
+      "valid": false,
+      "headers": {
+        "Nats-Msg-Id": [
+          "op-1"
+        ],
+        "Op-Attester": [
+          "UCJEPAP77THU53A3F5FE6WHBMYNTDQQ7IGSVJJ7PBIK4BBBFZZNACU6R"
+        ],
+        "Op-Author": [
+          "mallory"
+        ],
+        "Op-Parents": [
+          "op-0"
+        ],
+        "Op-Signature": [
+          "QHUHq1cCiRrdVVOAbZnykTVxkERrFCT86Izj3yhFxKcwPueZlDIhw2TJnM3Tu3COh5KkrpeaUEciuzihgn3YCw=="
+        ],
+        "Op-Ts": [
+          "2026-10-14T12:00:00Z"
+        ],
+        "Op-Type": [
+          "create"
+        ],
+        "Op-Version": [
+          "1"
+        ]
+      }
+    },
+    {
+      "name": "signature altered",
+      "subject": "CHRON.rooms.OPS.room.general.messages.m-1",
+      "op": {
+        "author": "alice",
+        "id": "op-1",
+        "parents": [
+          "op-0"
+        ],
+        "ts": "2026-10-14T12:00:00Z",
+        "type": "create",
+        "version": "1"
+      },
+      "payload": "{\"text\":\"hello\"}",
+      "attester": "UCJEPAP77THU53A3F5FE6WHBMYNTDQQ7IGSVJJ7PBIK4BBBFZZNACU6R",
+      "signature": "AAAAq1cCiRrdVVOAbZnykTVxkERrFCT86Izj3yhFxKcwPueZlDIhw2TJnM3Tu3COh5KkrpeaUEciuzihgn3YCw==",
+      "signedForm": "",
+      "valid": false,
+      "headers": {
+        "Nats-Msg-Id": [
+          "op-1"
+        ],
+        "Op-Attester": [
+          "UCJEPAP77THU53A3F5FE6WHBMYNTDQQ7IGSVJJ7PBIK4BBBFZZNACU6R"
+        ],
+        "Op-Author": [
+          "alice"
+        ],
+        "Op-Parents": [
+          "op-0"
+        ],
+        "Op-Signature": [
+          "AAAAq1cCiRrdVVOAbZnykTVxkERrFCT86Izj3yhFxKcwPueZlDIhw2TJnM3Tu3COh5KkrpeaUEciuzihgn3YCw=="
+        ],
+        "Op-Ts": [
+          "2026-10-14T12:00:00Z"
+        ],
+        "Op-Type": [
+          "create"
+        ],
+        "Op-Version": [
+          "1"
+        ]
+      }
+    }
+  ]
+}

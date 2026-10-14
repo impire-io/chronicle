@@ -71,10 +71,10 @@ func Seed(ctx context.Context, js jetstream.JetStream, admin, publicKey string, 
 }
 
 // RequireRole checks the caller's registry membership against the roles a
-// verb accepts. The principal is the caller's assertion — the accepted
-// trust tier: outsiders cannot reach the verb at all (the account
-// boundary), and member-vs-member impersonation waits for op signing by
-// demand.
+// verb accepts. The principal is the one the request's subject carries
+// (contract.CallerFromSubject): the member baseline lets a member publish
+// a verb under its own name only, so the name checked here is one the
+// server bound to the connection (decision 0057), never a payload's word.
 func RequireRole(ctx context.Context, meta jetstream.KeyValue, principal string, roles ...string) error {
 	if principal == "" {
 		return errors.New("principal: must not be empty")

@@ -23,6 +23,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
 
+	"github.com/impire-io/chronicle/contract"
 	"github.com/impire-io/chronicle/devdir"
 	"github.com/impire-io/chronicle/index/semantic"
 	"github.com/impire-io/chronicle/internal/version"
@@ -64,11 +65,12 @@ type Local struct {
 	conns []*nats.Conn
 }
 
-// Up boots the quick start: the user's seed born or loaded, the embedded
-// server with that one user on its one account, the registry seeded with
-// the admin, the indexer supervisor listening for the node's reports, and
-// the node — in that order, so a report has a listener from the node's
-// first breath.
+// Up boots the quick start: the two seeds born or loaded — the member's
+// and the node's — the embedded server with those two users on its one
+// account, the member bound by the member baseline and the node
+// unrestricted, the registry seeded with the admin, the indexer supervisor
+// listening for the node's reports, and the node signing with its own key
+// — in that order, so a report has a listener from the node's first breath.
 func Up(ctx context.Context, cfg Config) (*Local, error) {
 	dir := cfg.Dir
 	if dir == "" {
@@ -85,19 +87,28 @@ func Up(ctx context.Context, cfg Config) (*Local, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("create data dir: %w", err)
 	}
-	kp, err := loadOrCreateUser(devdir.UserNkeyPath(dir))
+	userKP, err := loadOrCreateUser(devdir.UserNkeyPath(dir))
 	if err != nil {
 		return nil, err
 	}
-	pub, err := kp.PublicKey()
+	userPub, err := userKP.PublicKey()
 	if err != nil {
 		return nil, fmt.Errorf("user public key: %w", err)
+	}
+	nodeKP, err := loadOrCreateUser(devdir.NodeNkeyPath(dir))
+	if err != nil {
+		return nil, err
+	}
+	nodePub, err := nodeKP.PublicKey()
+	if err != nil {
+		return nil, fmt.Errorf("node public key: %w", err)
 	}
 
 	srv, err := startServer(serverConfig{
 		port:      port,
 		storeDir:  filepath.Join(dir, "jetstream"),
-		userPub:   pub,
+		userPub:   userPub,
+		nodePub:   nodePub,
 		wsPort:    cfg.WebsocketPort,
 		wsOrigins: cfg.WebsocketOrigins,
 	})
@@ -117,8 +128,10 @@ func Up(ctx context.Context, cfg Config) (*Local, error) {
 		return nil, err
 	}
 
+	// Everything the quick start itself runs connects as the node's user:
+	// the member's seed is the CLI's, bound by the baseline.
 	connect := func(name string) (*nats.Conn, error) {
-		nc, err := nats.Connect(l.URL, nats.Name(name), nats.Nkey(pub, kp.Sign), nats.Timeout(5*time.Second))
+		nc, err := nats.Connect(l.URL, nats.Name(name), nats.Nkey(nodePub, nodeKP.Sign), nats.Timeout(5*time.Second))
 		if err != nil {
 			return nil, fmt.Errorf("connect %s: %w", name, err)
 		}
@@ -157,7 +170,7 @@ func Up(ctx context.Context, cfg Config) (*Local, error) {
 		l.Stop()
 		return nil, err
 	}
-	n, err := node.Start(ctx, nodeConn, node.Config{Logger: logger})
+	n, err := node.Start(ctx, nodeConn, node.Config{Logger: logger, Signer: nodeKP})
 	if err != nil {
 		l.Stop()
 		return nil, fmt.Errorf("start node: %w", err)
@@ -185,9 +198,10 @@ func (l *Local) Stop() {
 	}
 }
 
-// loadOrCreateUser reads the quick start's user seed, or births it: the
-// one key the dir holds, mode 0600, stable across boots so the identity
-// a context saved yesterday still speaks today.
+// loadOrCreateUser reads one of the quick start's seeds, or births it:
+// mode 0600, stable across boots so the identity a context saved
+// yesterday still speaks today, and the node's attester key stays the one
+// META recorded.
 func loadOrCreateUser(path string) (nkeys.KeyPair, error) {
 	seed, err := os.ReadFile(path)
 	if err == nil {
@@ -235,16 +249,21 @@ type serverConfig struct {
 	port      int
 	storeDir  string
 	userPub   string
+	nodePub   string
 	wsPort    int // 0: no websocket listener
 	wsOrigins []string
 }
 
 // startServer runs the embedded server: one account — the server's own
-// global account, JetStream on — with one nkey user, and nothing else
-// may connect. Any NATS in any auth mode is the production shape; this
-// is the smallest one that has an account and a user at all. The
-// websocket listener, when asked for, binds loopback in the clear — the
-// one place design 09 allows it — and authenticates the same one user.
+// global account, JetStream on — with two nkey users and nothing else: the
+// node's, unrestricted, and the member's, holding exactly the member
+// baseline rendered for its name (decision 0057), so the quick start binds
+// a caller the way the managed form does and a verb spoken under another
+// name is refused by the server here too. Any NATS in any auth mode is
+// the production shape; this is the smallest one that has an account and
+// a bound member at all. The websocket listener, when asked for, binds
+// loopback in the clear — the one place design 09 allows it — and
+// authenticates the same users.
 func startServer(sc serverConfig) (*server.Server, error) {
 	opts := &server.Options{
 		ServerName: "chronicle-local",
@@ -252,8 +271,14 @@ func startServer(sc serverConfig) (*server.Server, error) {
 		Port:       sc.port,
 		JetStream:  true,
 		StoreDir:   sc.storeDir,
-		Nkeys:      []*server.NkeyUser{{Nkey: sc.userPub}},
-		NoSigs:     true,
+		Nkeys: []*server.NkeyUser{
+			{Nkey: sc.nodePub},
+			{Nkey: sc.userPub, Permissions: &server.Permissions{
+				Publish:   &server.SubjectPermission{Allow: contract.MemberBaselinePublish(devdir.LocalPrincipal)},
+				Subscribe: &server.SubjectPermission{Allow: contract.MemberBaselineSubscribe()},
+			}},
+		},
+		NoSigs: true,
 	}
 	if sc.wsPort != 0 {
 		opts.Websocket = server.WebsocketOpts{
@@ -325,7 +350,7 @@ func RunWith(ctx context.Context, args []string, out io.Writer, ready func(l *Lo
 	}
 	defer l.Stop()
 
-	fmt.Fprintf(out, "chronicle %s is up: one account, one user (%s), the node and its indexes\n", version.Version, devdir.LocalPrincipal)
+	fmt.Fprintf(out, "chronicle %s is up: one account, one member (%s), the node and its indexes\n", version.Version, devdir.LocalPrincipal)
 	fmt.Fprintf(out, "  url:  %s\n", l.URL)
 	if l.WebsocketURL != "" {
 		fmt.Fprintf(out, "  ws:   %s\n", l.WebsocketURL)

@@ -15,7 +15,6 @@ import (
 	"github.com/impire-io/chronicle/contract"
 	"github.com/impire-io/chronicle/index/projection"
 	"github.com/impire-io/chronicle/internal/version"
-	"github.com/impire-io/chronicle/registry"
 )
 
 // Config names the one index this service materializes.
@@ -91,7 +90,7 @@ func Start(ctx context.Context, nc *nats.Conn, cfg Config) (*Service, error) {
 		return nil, fmt.Errorf("register service: %w", err)
 	}
 	if err := m.AddEndpoint("query", micro.HandlerFunc(s.handleQuery),
-		micro.WithEndpointSubject(client.IndexQuerySubject(cfg.Store, cfg.Index))); err != nil {
+		micro.WithEndpointSubject(client.IndexQueryEndpoint(cfg.Store, cfg.Index))); err != nil {
 		_ = m.Stop()
 		proj.Stop()
 		return nil, fmt.Errorf("add query endpoint: %w", err)
@@ -115,9 +114,10 @@ func (s *Service) Stop() {
 	s.proj.Stop()
 }
 
-// handleQuery answers CHRON.API.INDEX.QUERY.<log>.<index>. Any registry
-// role may query — search is a read, and the member baseline already lets
-// a member replay the whole log.
+// handleQuery answers CHRON.API.<principal>.INDEX.QUERY.<log>.<index>.
+// Any registry role may query — search is a read, and the member baseline
+// already lets a member replay the whole log. The caller is the subject's
+// (0057).
 func (s *Service) handleQuery(req micro.Request) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -127,8 +127,7 @@ func (s *Service) handleQuery(req micro.Request) {
 		_ = req.Error(contract.CodeBadRequest, err.Error(), nil)
 		return
 	}
-	if err := registry.RequireRole(ctx, s.proj.Meta(), r.Principal, contract.RoleAdmin, contract.RoleWriter, contract.RoleReader); err != nil {
-		_ = req.Error(contract.CodeForbidden, err.Error(), nil)
+	if err := projection.RequireCaller(ctx, s.proj.Meta(), req); err != nil {
 		return
 	}
 	run, ok := s.proj.Serving().(*searchRun)

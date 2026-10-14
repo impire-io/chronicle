@@ -20,6 +20,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/nats-io/nkeys"
+
 	"github.com/impire-io/chronicle/client"
 	"github.com/impire-io/chronicle/contract"
 	"github.com/impire-io/chronicle/guestnet"
@@ -57,10 +59,21 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	var c *client.Client
+	// A node signs verified authors with the key it connects with
+	// (decision 0057): the service user's nkey, from the creds or the seed.
+	var (
+		c      *client.Client
+		signer nkeys.KeyPair
+	)
 	if *creds != "" {
+		if signer, err = client.KeyPairFromCredsFile(*creds); err != nil {
+			return err
+		}
 		c, err = client.ConnectFile(resolved, *creds, client.TLSServerName(*tlsServerName))
 	} else {
+		if signer, err = client.KeyPairFromSeedFile(*nkey); err != nil {
+			return err
+		}
 		c, err = client.ConnectNkeyFile(resolved, *nkey, "chronicle-workload", client.TLSServerName(*tlsServerName))
 	}
 	if err != nil {
@@ -73,7 +86,7 @@ func run() error {
 	var stopWorkload func()
 	switch *kind {
 	case contract.WorkloadKindNode:
-		n, err := node.Start(startCtx, c.Conn(), node.Config{})
+		n, err := node.Start(startCtx, c.Conn(), node.Config{Signer: signer})
 		if err != nil {
 			return err
 		}

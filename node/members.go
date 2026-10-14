@@ -35,8 +35,7 @@ func (n *node) handleMemberAdd(req micro.Request) {
 		_ = req.Error(contract.CodeBadRequest, err.Error(), nil)
 		return
 	}
-	if err := n.requireRole(ctx, r.Principal, contract.RoleAdmin); err != nil {
-		_ = req.Error(contract.CodeForbidden, err.Error(), nil)
+	if err := n.requireCaller(ctx, req, contract.RoleAdmin); err != nil {
 		return
 	}
 	if err := contract.ValidatePrincipalName(r.Member); err != nil {
@@ -101,8 +100,7 @@ func (n *node) handleMemberRevoke(req micro.Request) {
 		_ = req.Error(contract.CodeBadRequest, err.Error(), nil)
 		return
 	}
-	if err := n.requireRole(ctx, r.Principal, contract.RoleAdmin); err != nil {
-		_ = req.Error(contract.CodeForbidden, err.Error(), nil)
+	if err := n.requireCaller(ctx, req, contract.RoleAdmin); err != nil {
 		return
 	}
 	if err := contract.ValidatePrincipalName(r.Member); err != nil {

@@ -5,15 +5,18 @@ import "time"
 // ContractVersion is the version of the SDK contract this build speaks —
 // the artifact's version, declared by every SDK that implements it
 // (design 12 § the artifact). Additive changes bump minor; a changed
-// meaning bumps major. Unrelated to the envelope's Op-Version.
-const ContractVersion = "2.1.0"
+// meaning bumps major. Unrelated to the envelope's Op-Version. 3.0.0 is
+// decision 0057: every verb's subject carries the caller, the principal
+// leaves every request, and the verified write joins the interactions.
+const ContractVersion = "3.0.0"
 
 // The interaction shapes an SDK may implement (design 12 § the shapes).
 // Every shape is describable in the artifact; an SDK implements the ones
 // the wire uses and refuses, by name, an interaction whose shape it does
 // not.
 const (
-	// ShapeRequestReply — one request, one reply: the control verbs.
+	// ShapeRequestReply — one request, one reply: the control verbs, and
+	// the verified write (0057).
 	ShapeRequestReply = "request-reply"
 	// ShapeStreamedReply — one request, chunks and a trailer from one
 	// responder: the index queries.
@@ -24,7 +27,7 @@ const (
 	// ShapeBatchPublish — many messages, one commit ack: the server's
 	// atomic batch publish, described, unbuilt until a consumer exists.
 	ShapeBatchPublish = "batch-publish"
-	// ShapePublish — a guarded JetStream publish: every append.
+	// ShapePublish — a guarded JetStream publish: every direct append.
 	ShapePublish = "publish"
 	// ShapeSubscribe — a resumable JetStream read, never a core
 	// subscription: history, the fold, the live surface.

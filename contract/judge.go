@@ -43,6 +43,10 @@ const (
 	// MalformedSnapshot — a snapshot whose payload is not a snapshot, or
 	// whose state fails the type's thing schema: marked, takes no effect.
 	MalformedSnapshot
+	// Unverified — the store requires verified authors (0057) and the op
+	// carries no attestation that verifies against an attester key in
+	// META: marked, takes no effect, the history keeps it.
+	Unverified
 )
 
 // String names the decision as the artifact and the fixtures spell it.
@@ -66,6 +70,8 @@ func (d Decision) String() string {
 		return "reset"
 	case MalformedSnapshot:
 		return "malformed-snapshot"
+	case Unverified:
+		return "unverified"
 	}
 	return fmt.Sprintf("decision(%d)", int(d))
 }

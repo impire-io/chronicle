@@ -17,9 +17,14 @@ const (
 	// WebsocketURLFile records the running server's websocket URL, when
 	// `chronicle up` was asked for the listener; absent otherwise.
 	WebsocketURLFile = "websocket.url"
-	// UserNkeyFile is the seed of the one user the quick start's account
-	// has — the operator's own identity on their own machine.
+	// UserNkeyFile is the seed of the quick start's member — the
+	// operator's own identity on their own machine, holding the member
+	// baseline and nothing more.
 	UserNkeyFile = "user.nk"
+	// NodeNkeyFile is the seed of the quick start's service user: the
+	// node and the indexers connect with it, and the node signs verified
+	// authors with it (decision 0057). Never the CLI's.
+	NodeNkeyFile = "node.nk"
 )
 
 // LocalPrincipal is the member ID the quick start's user acts as: the
@@ -41,8 +46,11 @@ func ClientURLPath(dir string) string { return filepath.Join(dir, ClientURLFile)
 // WebsocketURLPath is where the running server records its websocket URL.
 func WebsocketURLPath(dir string) string { return filepath.Join(dir, WebsocketURLFile) }
 
-// UserNkeyPath is where the quick start keeps its user's seed.
+// UserNkeyPath is where the quick start keeps its member's seed.
 func UserNkeyPath(dir string) string { return filepath.Join(dir, UserNkeyFile) }
+
+// NodeNkeyPath is where the quick start keeps its service user's seed.
+func NodeNkeyPath(dir string) string { return filepath.Join(dir, NodeNkeyFile) }
 
 // ReadClientURL reads the recorded client URL — the CLI's way back to a
 // running `chronicle up`.

@@ -30,7 +30,12 @@ func (n *node) handleIndexDeclare(req micro.Request) {
 		_ = req.Error(contract.CodeBadRequest, err.Error(), nil)
 		return
 	}
-	if err := n.requireRole(ctx, r.Principal, contract.RoleAdmin); err != nil {
+	caller, err := contract.CallerFromSubject(req.Subject())
+	if err != nil {
+		_ = req.Error(contract.CodeBadRequest, err.Error(), nil)
+		return
+	}
+	if err := n.requireRole(ctx, caller, contract.RoleAdmin); err != nil {
 		_ = req.Error(contract.CodeForbidden, err.Error(), nil)
 		return
 	}
@@ -104,7 +109,7 @@ func (n *node) handleIndexDeclare(req micro.Request) {
 		}
 	}
 
-	reply, err := json.Marshal(client.IndexDeclareResponse{Query: client.IndexQuerySubject(r.Store, r.Index)})
+	reply, err := json.Marshal(client.IndexDeclareResponse{Query: client.IndexQuerySubject(caller, r.Store, r.Index)})
 	if err != nil {
 		_ = req.Error(contract.CodeInternal, err.Error(), nil)
 		return
@@ -124,8 +129,7 @@ func (n *node) handleIndexDelete(req micro.Request) {
 		_ = req.Error(contract.CodeBadRequest, err.Error(), nil)
 		return
 	}
-	if err := n.requireRole(ctx, r.Principal, contract.RoleAdmin); err != nil {
-		_ = req.Error(contract.CodeForbidden, err.Error(), nil)
+	if err := n.requireCaller(ctx, req, contract.RoleAdmin); err != nil {
 		return
 	}
 	if err := contract.ValidateStoreName(r.Store); err != nil {

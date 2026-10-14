@@ -1,0 +1,212 @@
+{
+  "name": "verified authors",
+  "$comment": "Decision 0057 over the quick start: the member's verbs are its own subjects, a verb spoken under another's name is refused by the server, a write through the node carries a verified author, a store that requires verified authors folds nothing else, and a record naming another author is refused at the node's door.",
+  "steps": [
+    {
+      "do": "verb.as",
+      "as": "mallory",
+      "store": "forged",
+      "expect": {
+        "error": "refused"
+      },
+      "$comment": "the member baseline lets a member publish a verb under its own name only; the server drops the request and nobody answers"
+    },
+    {
+      "do": "store.create",
+      "store": "rooms",
+      "verifiedAuthors": true
+    },
+    {
+      "do": "type.define",
+      "store": "rooms",
+      "type": "message",
+      "def": {
+        "schema": {
+          "type": "object"
+        },
+        "history": "full",
+        "operations": {
+          "create": {
+            "schema": {
+              "type": "object",
+              "required": [
+                "text"
+              ]
+            },
+            "effect": "merge"
+          }
+        }
+      }
+    },
+    {
+      "do": "apply.direct",
+      "store": "rooms",
+      "instance": "message/forged-1",
+      "op": "create",
+      "payload": {
+        "text": "I am not who I say"
+      },
+      "$comment": "a bare publish on the instance's subject: asserted authorship, which the store does not fold"
+    },
+    {
+      "do": "instance.create",
+      "store": "rooms",
+      "instance": "message/m-1",
+      "payload": {
+        "text": "hello"
+      },
+      "$comment": "the SDK routes by the store's declaration: this write went through the node"
+    },
+    {
+      "do": "get",
+      "store": "rooms",
+      "instance": "message/m-1",
+      "expect": {
+        "state": {
+          "text": "hello"
+        }
+      }
+    },
+    {
+      "do": "history",
+      "store": "rooms",
+      "instance": "message/m-1",
+      "expect": {
+        "types": [
+          "create"
+        ],
+        "verified": true
+      }
+    },
+    {
+      "do": "history",
+      "store": "rooms",
+      "instance": "message/forged-1",
+      "expect": {
+        "types": [
+          "create"
+        ],
+        "verified": false
+      },
+      "$comment": "the history keeps the forged operation, unverified"
+    },
+    {
+      "do": "get",
+      "store": "rooms",
+      "instance": "message/forged-1",
+      "expect": {
+        "error": "no-state"
+      },
+      "$comment": "the fold passed it — m-1's state proves the fold is past forged-1's sequence — and gave it no effect"
+    },
+    {
+      "do": "instance.create",
+      "store": "rooms",
+      "instance": "message/m-1",
+      "payload": {
+        "text": "again"
+      },
+      "expect": {
+        "error": "instance-exists"
+      },
+      "$comment": "the node judges the guard refusal as the SDK does"
+    },
+    {
+      "do": "instance.create",
+      "store": "rooms",
+      "instance": "message/m-2",
+      "payload": {},
+      "expect": {
+        "error": "preflight"
+      },
+      "$comment": "the node's pre-flight refuses at the door what the SDK would: nothing invalid enters the log by this route"
+    },
+    {
+      "do": "apply.as",
+      "as": "mallory",
+      "store": "rooms",
+      "instance": "message/m-3",
+      "op": "create",
+      "payload": {
+        "text": "signed by someone else"
+      },
+      "expect": {
+        "error": "not-the-caller"
+      },
+      "$comment": "a record naming an author other than the subject's caller is refused"
+    },
+    {
+      "do": "store.create",
+      "store": "orders"
+    },
+    {
+      "do": "type.define",
+      "store": "orders",
+      "type": "invoice",
+      "def": {
+        "schema": {
+          "type": "object"
+        },
+        "operations": {
+          "create": {
+            "schema": {
+              "type": "object"
+            },
+            "effect": "merge"
+          },
+          "send": {
+            "schema": {
+              "type": "object"
+            },
+            "effect": "merge"
+          }
+        }
+      }
+    },
+    {
+      "do": "instance.create",
+      "store": "orders",
+      "instance": "invoice/inv-1",
+      "payload": {
+        "total": 1
+      }
+    },
+    {
+      "do": "apply",
+      "store": "orders",
+      "instance": "invoice/inv-1",
+      "op": "send",
+      "payload": {
+        "to": "x"
+      },
+      "verified": true,
+      "$comment": "a verified author asked for in a store that does not require one: the opt-in route beside the default"
+    },
+    {
+      "do": "history",
+      "store": "orders",
+      "instance": "invoice/inv-1",
+      "expect": {
+        "types": [
+          "create",
+          "send"
+        ],
+        "verifiedEach": [
+          false,
+          true
+        ]
+      }
+    },
+    {
+      "do": "get",
+      "store": "orders",
+      "instance": "invoice/inv-1",
+      "expect": {
+        "state": {
+          "total": 1,
+          "to": "x"
+        }
+      }
+    }
+  ]
+}

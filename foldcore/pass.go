@@ -27,6 +27,12 @@ type Pass struct {
 	Track func(thing string)
 	// Warn is the pass's logger; the caller's closure carries its label.
 	Warn func(msg string, args ...any)
+	// RequireVerified says the store requires verified authors (decision
+	// 0057): an op Verify does not vouch for is marked unverified and
+	// moves nothing. Verify checks the attestation against the store's
+	// attester keys — a Verifier's; nil with RequireVerified marks every op.
+	RequireVerified bool
+	Verify          func(ctx context.Context, op contract.Op) bool
 
 	mu     sync.Mutex
 	states map[string]*passState
@@ -65,6 +71,14 @@ func (p *Pass) Fold(ctx context.Context, thing string, op contract.Op) {
 	}
 	st.seq = op.Seq
 	p.mu.Unlock()
+
+	// The author gate comes first (0057): in a store that requires
+	// verified authors, what the node did not vouch for takes no effect —
+	// the same tier as an invalid payload, the history keeping it.
+	if p.RequireVerified && (p.Verify == nil || !p.Verify(ctx, op)) {
+		p.Warn("marked unverified author", "thing", thing, "op", op.ID, "author", op.Author, "decision", contract.Unverified.String())
+		return
+	}
 
 	res, err := p.Resolve(ctx, thing)
 	if err != nil {

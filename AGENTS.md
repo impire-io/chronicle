@@ -61,9 +61,17 @@ non-negotiables.
   artifact test in `client/` proves the two agree. Collections are
   iterators, single state is a reply; data at rest is read through
   JetStream, computed results are streamed replies.
-- **Nothing sits in the append path**: appends are direct JetStream
+- **Nothing sits in the direct append path**: appends are direct JetStream
   publishes; dedup and CAS guards are the server's, never proxied or
-  re-implemented.
+  re-implemented. The verified write (chronicle-hq decision 0057) is the
+  one route beside it: a writer that asks for a verified author, or
+  writes to a store that requires one, sends the same record to the node
+  as a request, and the node — reading the caller from the subject the
+  member baseline bound to it — stamps and signs the author and publishes
+  with the caller's id and guard. It is in the path of that writer only.
+- **A request names its caller in its subject** (decision 0057): every
+  verb is `CHRON.API.<principal>.<VERB…>`, the responder reads the caller
+  from the subject, and no request carries a principal in its payload.
 - **Commits are signed and signed off** (`git commit -S -s` — the DCO,
   [CONTRIBUTING.md](CONTRIBUTING.md)). `.claude/settings.local.json` is
   never committed.

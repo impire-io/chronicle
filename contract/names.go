@@ -13,12 +13,93 @@
 // node's and the operator's, and do not change with the words.
 package contract
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 // Root is the one reserved subject root. Every chronicle subject in an
-// account lives under it; the member baseline grants CHRON.> once, at
-// account creation, and no key is ever touched again (0008 point 2).
+// account lives under it; the member baseline grants a member its share
+// of it once, at account creation (MemberBaselinePublish), and creating a
+// store touches no key (0008 point 2, 0057).
 const Root = "CHRON"
+
+// APIRoot is the control plane's root. Every verb is spoken on
+// CHRON.API.<principal>.<VERB…>: the caller's name after API, the
+// caller's alone under the member baseline, so a responder reads the
+// caller from the subject and never from a payload (decision 0057).
+const APIRoot = Root + ".API"
+
+// LiveRoot is the account's ephemeral namespace, CHRON.LIVE.> (decision
+// 0055): the members' own, captured by nothing, answered by nothing.
+const LiveRoot = Root + ".LIVE"
+
+// APISubject is the subject a caller speaks one verb on:
+// CHRON.API.<principal>.<verb>, the verb a dotted protocol token.
+func APISubject(principal, verb string) string {
+	return APIRoot + "." + principal + "." + verb
+}
+
+// APIEndpoint is the subject a responder serves one verb on, whoever
+// calls: CHRON.API.*.<verb>.
+func APIEndpoint(verb string) string {
+	return APIRoot + ".*." + verb
+}
+
+// CallerFromSubject reads the caller a request subject carries — the
+// third token of CHRON.API.<principal>.…, a principal name or the service
+// principal — and refuses anything else. The permission is the identity:
+// a member may publish there under its own name only.
+func CallerFromSubject(subject string) (string, error) {
+	toks := strings.Split(subject, ".")
+	if len(toks) < 4 || toks[0] != Root || toks[1] != "API" {
+		return "", fmt.Errorf("subject %q is not CHRON.API.<principal>.<verb>", subject)
+	}
+	caller := toks[2]
+	if caller == ServicePrincipal {
+		return caller, nil
+	}
+	if err := ValidatePrincipalName(caller); err != nil {
+		return "", fmt.Errorf("caller in subject %q: %w", subject, err)
+	}
+	return caller, nil
+}
+
+// MemberBaselinePublish is what every member may publish (design 01
+// § creating an account, decision 0057): every store's operations, the
+// ephemeral namespace, the control verbs under the member's own name,
+// the whoami request, and the read half of the JetStream API — account
+// information included, which is the account's own limits and usage (the
+// console's "used of allowed") and what the JavaScript client asks for
+// before it manages anything. The principal is the member's name — or a
+// server-side template such as "{{name()}}" where one scope serves every
+// member. No member writes a bucket, creates or deletes a stream, or
+// speaks a verb as another.
+func MemberBaselinePublish(principal string) []string {
+	return []string{
+		Root + ".*.OPS.>",
+		LiveRoot + ".>",
+		APIRoot + "." + principal + ".>",
+		"$SYS.REQ.USER.INFO",
+		"$JS.API.INFO",
+		"$JS.API.CONSUMER.>",
+		"$JS.API.STREAM.INFO.>",
+		"$JS.API.STREAM.NAMES",
+		"$JS.API.STREAM.MSG.GET.>",
+		"$JS.API.DIRECT.GET.>",
+	}
+}
+
+// MemberBaselineSubscribe is what every member may subscribe to: every
+// store's operations, the ephemeral namespace, and reply inboxes — never
+// the verbs, so no member answers a request in the node's place.
+func MemberBaselineSubscribe() []string {
+	return []string{
+		Root + ".*.OPS.>",
+		LiveRoot + ".>",
+		"_INBOX.>",
+	}
+}
 
 // The subject grammar's case rule (wire contract § subject grammar):
 // protocol tokens UPPERCASE, identifiers lowercase. Resource names —

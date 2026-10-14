@@ -17,9 +17,11 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/nats-io/nats.go/micro"
+	"github.com/nats-io/nkeys"
 
 	"github.com/impire-io/chronicle/client"
 	"github.com/impire-io/chronicle/contract"
+	"github.com/impire-io/chronicle/foldcore"
 	"github.com/impire-io/chronicle/internal/version"
 )
 
@@ -28,6 +30,13 @@ type Config struct {
 	// Logger receives the fold's warnings — unknown op types, marked
 	// payloads. Nil means slog.Default.
 	Logger *slog.Logger
+	// Signer is the key the node attests verified authors with (decision
+	// 0057): its own credential's nkey, the one it connects with. Its
+	// public key is recorded in META at boot as the account's attester,
+	// and the verified write is served. Nil serves no verified write and
+	// records no key — a node that can bind a caller but vouch for nothing,
+	// which the log says at boot.
+	Signer nkeys.KeyPair
 	// RollupEvery is the timer trigger's period: every period the node
 	// sweeps the subjects the fold saw ops on and compacts the ones the
 	// effect gate allows (04-fleet.md § the node's duties). Zero means
@@ -81,6 +90,15 @@ type node struct {
 	rollupEvery time.Duration
 	indexes     IndexReporter
 
+	// signer and attester are the verified write's (0057): the key the
+	// node signs with and its public form; preflight is the client's own
+	// pre-flight, run at the door; verifier judges attestations on the
+	// fold against the attester keys META lists.
+	signer    nkeys.KeyPair
+	attester  string
+	preflight *client.Client
+	verifier  *foldcore.Verifier
+
 	foldCtx context.Context
 	wg      *sync.WaitGroup
 
@@ -133,6 +151,11 @@ func Start(ctx context.Context, nc *nats.Conn, cfg Config) (*Node, error) {
 	if indexes == nil {
 		indexes = &bridgeReporter{nc: nc}
 	}
+	preflight, err := client.Wrap(nc, contract.ServicePrincipal)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
 	n := &node{
 		nc:          nc,
 		js:          js,
@@ -140,10 +163,24 @@ func Start(ctx context.Context, nc *nats.Conn, cfg Config) (*Node, error) {
 		logger:      logger,
 		rollupEvery: rollupEvery,
 		indexes:     indexes,
+		signer:      cfg.Signer,
+		preflight:   preflight,
+		verifier:    foldcore.NewVerifier(meta),
 		foldCtx:     foldCtx,
 		wg:          &sync.WaitGroup{},
 		folds:       map[string]*foldRun{},
 		rolls:       map[string]*sync.Mutex{},
+	}
+
+	// The attester key (0057): the node's own, recorded create-if-absent
+	// before any fold runs, so the first operation it signs verifies.
+	if cfg.Signer != nil {
+		if err := n.recordAttester(ctx); err != nil {
+			cancel()
+			return nil, err
+		}
+	} else {
+		logger.Warn("no signer: the node serves no verified write and records no attester key")
 	}
 
 	// The logs live in META: log.<log>.config is the authoritative
@@ -178,19 +215,29 @@ func Start(ctx context.Context, nc *nats.Conn, cfg Config) (*Node, error) {
 		cancel()
 		return nil, fmt.Errorf("register service: %w", err)
 	}
+	// Every verb is served on CHRON.API.*.<VERB>: the caller's name is in
+	// the subject, where the member baseline put it (0057), and each
+	// handler reads it from there.
 	endpoints := []struct {
 		name    string
 		subject string
 		handler micro.HandlerFunc
 	}{
-		{"ping", client.PingSubject, n.handlePing},
-		{"log-create", client.StoreCreateSubject, n.handleStoreCreate},
-		{"type-define", client.TypeDefineSubject, n.handleTypeDefine},
-		{"instance-snapshot", client.InstanceSnapshotSubject, n.handleInstanceSnapshot},
-		{"index-declare", client.IndexDeclareSubject, n.handleIndexDeclare},
-		{"index-delete", client.IndexDeleteSubject, n.handleIndexDelete},
-		{"member-add", client.MemberAddSubject, n.handleMemberAdd},
-		{"member-revoke", client.MemberRevokeSubject, n.handleMemberRevoke},
+		{"ping", client.PingEndpoint, n.handlePing},
+		{"log-create", client.StoreCreateEndpoint, n.handleStoreCreate},
+		{"type-define", client.TypeDefineEndpoint, n.handleTypeDefine},
+		{"instance-snapshot", client.InstanceSnapshotEndpoint, n.handleInstanceSnapshot},
+		{"index-declare", client.IndexDeclareEndpoint, n.handleIndexDeclare},
+		{"index-delete", client.IndexDeleteEndpoint, n.handleIndexDelete},
+		{"member-add", client.MemberAddEndpoint, n.handleMemberAdd},
+		{"member-revoke", client.MemberRevokeEndpoint, n.handleMemberRevoke},
+	}
+	if n.signer != nil {
+		endpoints = append(endpoints, struct {
+			name    string
+			subject string
+			handler micro.HandlerFunc
+		}{"apply", client.ApplyEndpoint, n.handleApply})
 	}
 	for _, e := range endpoints {
 		if err := svc.AddEndpoint(e.name, e.handler, micro.WithEndpointSubject(e.subject)); err != nil {
@@ -227,8 +274,7 @@ func (n *node) handleStoreCreate(req micro.Request) {
 		_ = req.Error(contract.CodeBadRequest, err.Error(), nil)
 		return
 	}
-	if err := n.requireRole(ctx, r.Principal, contract.RoleAdmin); err != nil {
-		_ = req.Error(contract.CodeForbidden, err.Error(), nil)
+	if err := n.requireCaller(ctx, req, contract.RoleAdmin); err != nil {
 		return
 	}
 	if err := contract.ValidateStoreName(r.Store); err != nil {
@@ -257,11 +303,12 @@ func (n *node) handleStoreCreate(req micro.Request) {
 	// The META key is the claim: create-if-absent, so two racing creates
 	// settle without a lock.
 	cfg, err := json.Marshal(contract.StoreConfig{
-		Status:      contract.StoreStatusActive,
-		Description: r.Description,
-		MaxBytes:    r.MaxBytes,
-		History:     r.History,
-		Schedules:   r.Schedules,
+		Status:          contract.StoreStatusActive,
+		Description:     r.Description,
+		MaxBytes:        r.MaxBytes,
+		History:         r.History,
+		Schedules:       r.Schedules,
+		VerifiedAuthors: r.VerifiedAuthors,
 	})
 	if err != nil {
 		_ = req.Error(contract.CodeInternal, err.Error(), nil)
@@ -337,8 +384,7 @@ func (n *node) handleTypeDefine(req micro.Request) {
 		_ = req.Error(contract.CodeBadRequest, err.Error(), nil)
 		return
 	}
-	if err := n.requireRole(ctx, r.Principal, contract.RoleAdmin); err != nil {
-		_ = req.Error(contract.CodeForbidden, err.Error(), nil)
+	if err := n.requireCaller(ctx, req, contract.RoleAdmin); err != nil {
 		return
 	}
 	if err := contract.ValidateStoreName(r.Store); err != nil {
@@ -428,8 +474,7 @@ func (n *node) handleInstanceSnapshot(req micro.Request) {
 		_ = req.Error(contract.CodeBadRequest, err.Error(), nil)
 		return
 	}
-	if err := n.requireRole(ctx, r.Principal, contract.RoleAdmin, contract.RoleWriter); err != nil {
-		_ = req.Error(contract.CodeForbidden, err.Error(), nil)
+	if err := n.requireCaller(ctx, req, contract.RoleAdmin, contract.RoleWriter); err != nil {
 		return
 	}
 	if err := contract.ValidateStoreName(r.Store); err != nil {

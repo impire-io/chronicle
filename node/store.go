@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/nats-io/nats.go/jetstream"
+	"github.com/nats-io/nats.go/micro"
 
 	"github.com/impire-io/chronicle/client"
 	"github.com/impire-io/chronicle/contract"
@@ -44,6 +45,41 @@ func (n *node) listStores(ctx context.Context) ([]string, error) {
 // verb accepts — the shared check every API-serving component runs.
 func (n *node) requireRole(ctx context.Context, principal string, roles ...string) error {
 	return registry.RequireRole(ctx, n.meta, principal, roles...)
+}
+
+// requireCaller reads the caller from the request's subject — the name
+// the server bound to the connection (0057) — and checks its role,
+// answering the refusal itself; the handler returns on a non-nil error.
+func (n *node) requireCaller(ctx context.Context, req micro.Request, roles ...string) error {
+	caller, err := contract.CallerFromSubject(req.Subject())
+	if err != nil {
+		_ = req.Error(contract.CodeBadRequest, err.Error(), nil)
+		return err
+	}
+	if err := n.requireRole(ctx, caller, roles...); err != nil {
+		_ = req.Error(contract.CodeForbidden, err.Error(), nil)
+		return err
+	}
+	return nil
+}
+
+// recordAttester writes the node's public key to META, create-if-absent:
+// the account's attester (0057), which no member can write and every
+// verifier reads. A second replica with the same credential finds it there.
+func (n *node) recordAttester(ctx context.Context) error {
+	pub, err := n.signer.PublicKey()
+	if err != nil {
+		return fmt.Errorf("attester public key: %w", err)
+	}
+	value, err := json.Marshal(contract.Attester{PublicKey: pub})
+	if err != nil {
+		return err
+	}
+	if _, err := n.meta.Create(ctx, contract.MetaAttester(pub), value); err != nil && !errors.Is(err, jetstream.ErrKeyExists) {
+		return fmt.Errorf("record attester key: %w", err)
+	}
+	n.attester = pub
+	return nil
 }
 
 // recordType appends a type revision: read the current record, write

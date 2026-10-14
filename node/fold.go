@@ -41,6 +41,13 @@ func (n *node) startFold(ctx context.Context, log string) error {
 		return fmt.Errorf("open state bucket: %w", err)
 	}
 
+	// A store that requires verified authors (0057) folds only what the
+	// node attested; the declaration is set at creation, read once here.
+	requireVerified, err := foldcore.StoreRequiresVerified(ctx, n.meta, log)
+	if err != nil {
+		return fmt.Errorf("read store configuration: %w", err)
+	}
+
 	f := &fold{node: n, log: log, states: states, active: map[string]struct{}{}}
 	f.pass = &foldcore.Pass{
 		Resolve: func(ctx context.Context, thing string) (contract.Resolution, error) {
@@ -51,6 +58,8 @@ func (n *node) startFold(ctx context.Context, log string) error {
 		Warn: func(msg string, args ...any) {
 			n.logger.Warn("fold: "+msg, append([]any{"log", log}, args...)...)
 		},
+		RequireVerified: requireVerified,
+		Verify:          n.verifier.Verify,
 	}
 
 	// The fold watermark names the declarations this bucket is derived

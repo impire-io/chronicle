@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/micro"
@@ -12,36 +13,133 @@ import (
 	"github.com/impire-io/chronicle/contract"
 )
 
-// The API verb subjects. The designs fix only the CHRON.API.> root; the
-// concrete verbs are protocol tokens, uppercase per the case rule. They
-// are served in-account by chronicle-node with registry role checks. The
-// managed service's CHRON.CTRL.> surface is not tenant wire contract and
-// lives with the service (chronicle-service).
+// The API verbs. Every verb is spoken on CHRON.API.<principal>.<VERB…>
+// (decision 0057): the caller's name after API, which the member baseline
+// lets that member alone publish on, so the responder reads the caller
+// from the subject and no request carries a principal in its payload.
+// The concrete verbs are protocol tokens, uppercase per the case rule,
+// served in-account by chronicle-node and the indexers with registry role
+// checks on that caller. The managed service's CHRON.CTRL.> surface is not
+// tenant wire contract and lives with the service (chronicle-service).
 const (
-	StoreCreateSubject      = "CHRON.API.LOG.CREATE"
-	TypeDefineSubject       = "CHRON.API.TYPE.DEFINE"
-	InstanceSnapshotSubject = "CHRON.API.THING.ROLLUP"
-	IndexDeclareSubject     = "CHRON.API.INDEX.DECLARE"
-	IndexDeleteSubject      = "CHRON.API.INDEX.DELETE"
-	MemberAddSubject        = "CHRON.API.MEMBER.ADD"
-	MemberRevokeSubject     = "CHRON.API.MEMBER.REVOKE"
-	PingSubject             = "CHRON.API.PING"
+	verbStoreCreate      = "LOG.CREATE"
+	verbTypeDefine       = "TYPE.DEFINE"
+	verbInstanceSnapshot = "THING.ROLLUP"
+	verbIndexDeclare     = "INDEX.DECLARE"
+	verbIndexDelete      = "INDEX.DELETE"
+	verbMemberAdd        = "MEMBER.ADD"
+	verbMemberRevoke     = "MEMBER.REVOKE"
+	verbPing             = "PING"
+	verbIndexQuery       = "INDEX.QUERY"
+	verbApply            = "APPLY"
 )
 
-// IndexQuerySubject is the endpoint one index serves, in-account —
-// CHRON.API.INDEX.QUERY.<log>.<index> (05-indexes.md § the query surface).
-// It is answered by that index's own chronicle-index-* service, not the
-// node, and only once the index has caught up with the log: no responder
-// means the indexer is not running or still replaying.
-func IndexQuerySubject(log, index string) string {
-	return "CHRON.API.INDEX.QUERY." + log + "." + index
+// StoreCreateSubject is the subject a caller creates a store on.
+func StoreCreateSubject(principal string) string {
+	return contract.APISubject(principal, verbStoreCreate)
+}
+
+// TypeDefineSubject is the subject a caller defines a type on.
+func TypeDefineSubject(principal string) string {
+	return contract.APISubject(principal, verbTypeDefine)
+}
+
+// InstanceSnapshotSubject is the subject a caller asks for a snapshot on.
+func InstanceSnapshotSubject(principal string) string {
+	return contract.APISubject(principal, verbInstanceSnapshot)
+}
+
+// IndexDeclareSubject is the subject a caller declares an index on.
+func IndexDeclareSubject(principal string) string {
+	return contract.APISubject(principal, verbIndexDeclare)
+}
+
+// IndexDeleteSubject is the subject a caller deletes an index on.
+func IndexDeleteSubject(principal string) string {
+	return contract.APISubject(principal, verbIndexDelete)
+}
+
+// MemberAddSubject is the subject a caller adds a member on.
+func MemberAddSubject(principal string) string {
+	return contract.APISubject(principal, verbMemberAdd)
+}
+
+// MemberRevokeSubject is the subject a caller revokes a member on.
+func MemberRevokeSubject(principal string) string {
+	return contract.APISubject(principal, verbMemberRevoke)
+}
+
+// PingSubject is the subject a caller pings the node on.
+func PingSubject(principal string) string { return contract.APISubject(principal, verbPing) }
+
+// The endpoints a responder serves each verb on, whoever calls.
+var (
+	StoreCreateEndpoint      = contract.APIEndpoint(verbStoreCreate)
+	TypeDefineEndpoint       = contract.APIEndpoint(verbTypeDefine)
+	InstanceSnapshotEndpoint = contract.APIEndpoint(verbInstanceSnapshot)
+	IndexDeclareEndpoint     = contract.APIEndpoint(verbIndexDeclare)
+	IndexDeleteEndpoint      = contract.APIEndpoint(verbIndexDelete)
+	MemberAddEndpoint        = contract.APIEndpoint(verbMemberAdd)
+	MemberRevokeEndpoint     = contract.APIEndpoint(verbMemberRevoke)
+	PingEndpoint             = contract.APIEndpoint(verbPing)
+	// ApplyEndpoint is the verified write's: CHRON.API.*.APPLY.>, the
+	// store and the instance's tail after the verb.
+	ApplyEndpoint = contract.APIEndpoint(verbApply + ".>")
+)
+
+// IndexQuerySubject is the endpoint one index serves, in-account, as a
+// caller speaks it — CHRON.API.<principal>.INDEX.QUERY.<store>.<index>
+// (05-indexes.md § the query surface). It is answered by that index's own
+// chronicle-index-* service, not the node, and only once the index has
+// caught up with the log: no responder means the indexer is not running
+// or still replaying.
+func IndexQuerySubject(principal, store, index string) string {
+	return contract.APISubject(principal, verbIndexQuery+"."+store+"."+index)
+}
+
+// IndexQueryEndpoint is the subject one index's service serves, whoever
+// calls: CHRON.API.*.INDEX.QUERY.<store>.<index>.
+func IndexQueryEndpoint(store, index string) string {
+	return contract.APIEndpoint(verbIndexQuery + "." + store + "." + index)
+}
+
+// ApplySubject is the verified write (decision 0057): the caller asks the
+// node to write one operation on CHRON.API.<principal>.APPLY.<store>.<tail>,
+// carrying the record exactly as a direct publish would — the headers and
+// the payload — and the node, reading the caller from the subject, stamps
+// and attests the author, publishes on the instance's exact subject with
+// the caller's id and guard, and answers with the sequence.
+func ApplySubject(principal, store, tail string) string {
+	return contract.APISubject(principal, verbApply+"."+store+"."+tail)
+}
+
+// ParseApplySubject reads the caller, the store and the instance's tail
+// out of a verified write's subject.
+func ParseApplySubject(subject string) (principal, store, tail string, err error) {
+	principal, err = contract.CallerFromSubject(subject)
+	if err != nil {
+		return "", "", "", err
+	}
+	rest := strings.TrimPrefix(subject, contract.APISubject(principal, verbApply)+".")
+	if rest == subject {
+		return "", "", "", fmt.Errorf("subject %q is not a verified write", subject)
+	}
+	store, tail, ok := strings.Cut(rest, ".")
+	if !ok || store == "" || tail == "" {
+		return "", "", "", fmt.Errorf("subject %q names no store and instance", subject)
+	}
+	return principal, store, tail, nil
+}
+
+// ApplyResponse is the verified write's answer: where the operation landed.
+type ApplyResponse struct {
+	Seq uint64 `json:"seq"`
 }
 
 // StoreCreateRequest creates a log: a stream and META entries — no key
-// operations, no JWT pushes. Principal is the caller's assertion, checked
-// against the registry (role admin), the same trust tier as Op-Author.
+// operations, no JWT pushes. The caller is the subject's; the request
+// names none.
 type StoreCreateRequest struct {
-	Principal   string `json:"principal"`
 	Store       string `json:"store"`
 	Description string `json:"description,omitempty"`
 	// MaxBytes overrides the stream's default byte budget; zero means the
@@ -54,6 +152,10 @@ type StoreCreateRequest struct {
 	// schedules and per-message TTLs (decision 0050), so a schedule
 	// registered in it has its ticks written by the server.
 	Schedules bool `json:"schedules,omitempty"`
+	// VerifiedAuthors asks for a store that requires verified authors
+	// (decision 0057): the fold marks every operation the node did not
+	// attest, and the SDKs write to it through the node.
+	VerifiedAuthors bool `json:"verified_authors,omitempty"`
 }
 
 // StoreCreateResponse names the created stream.
@@ -67,7 +169,6 @@ type StoreCreateResponse struct {
 // place. Operations carry each op's payload schema and its effect on
 // state (decision 0011, unchanged in substance).
 type TypeDefineRequest struct {
-	Principal  string                    `json:"principal"`
 	Store      string                    `json:"store"`
 	Type       string                    `json:"type"`
 	Schema     json.RawMessage           `json:"schema"`
@@ -87,9 +188,8 @@ type TypeDefineResponse struct {
 // fold has not fully captured into state is refused with the reason, and
 // compaction stays the application's call (SaveSnapshot).
 type InstanceSnapshotRequest struct {
-	Principal string `json:"principal"`
-	Store     string `json:"store"`
-	Instance  string `json:"instance"`
+	Store    string `json:"store"`
+	Instance string `json:"instance"`
 }
 
 // InstanceSnapshotResponse says what happened: Taken with the new snapshot's
@@ -107,15 +207,14 @@ type InstanceSnapshotResponse struct {
 // config belongs to the kind (0015): graph requires edge rules, search
 // refuses config.
 type IndexDeclareRequest struct {
-	Principal string          `json:"principal"`
-	Store     string          `json:"store"`
-	Index     string          `json:"index"`
-	Kind      string          `json:"kind"`
-	Config    json.RawMessage `json:"config,omitempty"`
+	Store  string          `json:"store"`
+	Index  string          `json:"index"`
+	Kind   string          `json:"kind"`
+	Config json.RawMessage `json:"config,omitempty"`
 }
 
 // IndexDeclareResponse names the query subject the index will serve once
-// caught up.
+// caught up, as the caller speaks it.
 type IndexDeclareResponse struct {
 	Query string `json:"query"`
 }
@@ -124,9 +223,8 @@ type IndexDeclareResponse struct {
 // supervisor stops the workload. The index was derived — nothing of
 // record is lost. Changing a declaration is delete + declare.
 type IndexDeleteRequest struct {
-	Principal string `json:"principal"`
-	Store     string `json:"store"`
-	Index     string `json:"index"`
+	Store string `json:"store"`
+	Index string `json:"index"`
 }
 
 // IndexDeleteResponse acknowledges the retirement.
@@ -140,9 +238,8 @@ type IndexDeleteResponse struct {
 // the caller wants — zero or absent streams every match — and there is
 // no offset: a lost stream is re-requested.
 type IndexQueryRequest struct {
-	Principal string `json:"principal"`
-	Query     string `json:"query"`
-	Limit     int    `json:"limit,omitempty"`
+	Query string `json:"query"`
+	Limit int    `json:"limit,omitempty"`
 }
 
 // IndexHit names a thing and its relevance. The index is never authority:
@@ -160,13 +257,13 @@ type QueryTrailer struct {
 
 // MemberAddRequest registers a principal as a member of the tenant with
 // a role — the registry write of 11-the-two-forms.md § membership,
-// without custody: one place writes the registry in both forms. Principal
-// is the caller (role admin); Member is who joins. The credential is not
-// this verb's: in the open form it is the operator's NATS's business, and
-// the managed service issues one and records its public key here.
+// without custody: one place writes the registry in both forms. The
+// caller (role admin) is the subject's; Member is who joins. The
+// credential is not this verb's: in the open form it is the operator's
+// NATS's business, and the managed service issues one and records its
+// public key here.
 type MemberAddRequest struct {
-	Principal string `json:"principal"`
-	Member    string `json:"member"`
+	Member string `json:"member"`
 	// Role is one of admin, writer, reader; "writer" when empty.
 	Role string `json:"role,omitempty"`
 	// Kind is what the principal is to the user: "member" (a person, the
@@ -191,8 +288,7 @@ type MemberAddResponse struct {
 // member is the same principal. Killing the credential on the wire is the
 // issuer's job, after this.
 type MemberRevokeRequest struct {
-	Principal string `json:"principal"`
-	Member    string `json:"member"`
+	Member string `json:"member"`
 }
 
 // MemberRevokeResponse names the retired membership and the public key it
@@ -261,17 +357,24 @@ func WithSchedules() StoreOpt {
 	return func(r *StoreCreateRequest) { r.Schedules = true }
 }
 
+// WithVerifiedAuthors asks for a store that requires verified authors
+// (decision 0057): every write to it goes through the node, which vouches
+// for the author, and an operation written any other way is kept in the
+// history and marked out of the state.
+func WithVerifiedAuthors() StoreOpt {
+	return func(r *StoreCreateRequest) { r.VerifiedAuthors = true }
+}
+
 // CreateStore creates a log through the node's control verb.
 func (c *Client) CreateStore(ctx context.Context, log, description string, opts ...StoreOpt) (StoreCreateResponse, error) {
 	r := StoreCreateRequest{
-		Principal:   c.author,
 		Store:       log,
 		Description: description,
 	}
 	for _, apply := range opts {
 		apply(&r)
 	}
-	return Request[StoreCreateRequest, StoreCreateResponse](ctx, c.nc, StoreCreateSubject, r)
+	return Request[StoreCreateRequest, StoreCreateResponse](ctx, c.nc, StoreCreateSubject(c.author), r)
 }
 
 // TypeDefinition is the caller's side of a type record: every facet but
@@ -293,8 +396,7 @@ type TypeDefinition struct {
 // DefineType records a type definition — one act, all facets; a repeat
 // bumps the revision (0021).
 func (c *Client) DefineType(ctx context.Context, log, name string, def TypeDefinition) (TypeDefineResponse, error) {
-	return Request[TypeDefineRequest, TypeDefineResponse](ctx, c.nc, TypeDefineSubject, TypeDefineRequest{
-		Principal:  c.author,
+	return Request[TypeDefineRequest, TypeDefineResponse](ctx, c.nc, TypeDefineSubject(c.author), TypeDefineRequest{
 		Store:      log,
 		Type:       name,
 		Schema:     def.Schema,
@@ -308,22 +410,20 @@ func (c *Client) DefineType(ctx context.Context, log, name string, def TypeDefin
 // it will serve once caught up. Config belongs to the kind: nil for
 // search, edge rules for graph.
 func (c *Client) DeclareIndex(ctx context.Context, log, index, kind string, config json.RawMessage) (IndexDeclareResponse, error) {
-	return Request[IndexDeclareRequest, IndexDeclareResponse](ctx, c.nc, IndexDeclareSubject, IndexDeclareRequest{
-		Principal: c.author,
-		Store:     log,
-		Index:     index,
-		Kind:      kind,
-		Config:    config,
+	return Request[IndexDeclareRequest, IndexDeclareResponse](ctx, c.nc, IndexDeclareSubject(c.author), IndexDeclareRequest{
+		Store:  log,
+		Index:  index,
+		Kind:   kind,
+		Config: config,
 	})
 }
 
 // DeleteIndex retires an index; its workload stops and its derived index
 // is discarded.
 func (c *Client) DeleteIndex(ctx context.Context, log, index string) (IndexDeleteResponse, error) {
-	return Request[IndexDeleteRequest, IndexDeleteResponse](ctx, c.nc, IndexDeleteSubject, IndexDeleteRequest{
-		Principal: c.author,
-		Store:     log,
-		Index:     index,
+	return Request[IndexDeleteRequest, IndexDeleteResponse](ctx, c.nc, IndexDeleteSubject(c.author), IndexDeleteRequest{
+		Store: log,
+		Index: index,
 	})
 }
 
@@ -331,10 +431,9 @@ func (c *Client) DeleteIndex(ctx context.Context, log, index string) (IndexDelet
 // running or still replaying — the honest signal of an index that is not
 // current yet.
 func (c *Client) QueryIndex(ctx context.Context, log, index, query string, limit int) *Streamed[IndexHit, QueryTrailer] {
-	return RequestStream[IndexQueryRequest, IndexHit, QueryTrailer](ctx, c.nc, IndexQuerySubject(log, index), IndexQueryRequest{
-		Principal: c.author,
-		Query:     query,
-		Limit:     limit,
+	return RequestStream[IndexQueryRequest, IndexHit, QueryTrailer](ctx, c.nc, IndexQuerySubject(c.author, log, index), IndexQueryRequest{
+		Query: query,
+		Limit: limit,
 	})
 }
 
@@ -343,10 +442,9 @@ func (c *Client) QueryIndex(ctx context.Context, log, index, query string, limit
 // empty tail, or a lost race — with the reason; only transport and
 // refusal failures are errors.
 func (c *Client) snapshotTail(ctx context.Context, log, thing string) (InstanceSnapshotResponse, error) {
-	return Request[InstanceSnapshotRequest, InstanceSnapshotResponse](ctx, c.nc, InstanceSnapshotSubject, InstanceSnapshotRequest{
-		Principal: c.author,
-		Store:     log,
-		Instance:  thing,
+	return Request[InstanceSnapshotRequest, InstanceSnapshotResponse](ctx, c.nc, InstanceSnapshotSubject(c.author), InstanceSnapshotRequest{
+		Store:    log,
+		Instance: thing,
 	})
 }
 
@@ -372,27 +470,25 @@ func AsServiceAccount() MemberOpt {
 // AddMember registers a principal as a member with a role (admin only).
 // Role "" means writer.
 func (c *Client) AddMember(ctx context.Context, member, role string, opts ...MemberOpt) (MemberAddResponse, error) {
-	r := MemberAddRequest{Principal: c.author, Member: member, Role: role}
+	r := MemberAddRequest{Member: member, Role: role}
 	for _, o := range opts {
 		o(&r)
 	}
-	return Request[MemberAddRequest, MemberAddResponse](ctx, c.nc, MemberAddSubject, r)
+	return Request[MemberAddRequest, MemberAddResponse](ctx, c.nc, MemberAddSubject(c.author), r)
 }
 
 // RevokeMember retires a membership (admin only).
 func (c *Client) RevokeMember(ctx context.Context, member string) (MemberRevokeResponse, error) {
-	return Request[MemberRevokeRequest, MemberRevokeResponse](ctx, c.nc, MemberRevokeSubject, MemberRevokeRequest{
-		Principal: c.author,
-		Member:    member,
+	return Request[MemberRevokeRequest, MemberRevokeResponse](ctx, c.nc, MemberRevokeSubject(c.author), MemberRevokeRequest{
+		Member: member,
 	})
 }
 
 // GraphQueryRequest is the graph kind's payload on the standard query
 // subject (05-indexes.md § the graph kind): Op names the verb.
 type GraphQueryRequest struct {
-	Principal string `json:"principal"`
-	Op        string `json:"op"`
-	Instance  string `json:"instance"`
+	Op       string `json:"op"`
+	Instance string `json:"instance"`
 	// Direction: out (default), in, or both. In-edges cover this log's
 	// things pointing at the target.
 	Direction string `json:"direction,omitempty"`
@@ -420,24 +516,21 @@ type GraphTrailer struct {
 // stable order. A target may be dangling — data, not corruption;
 // resolution is the caller's state read.
 func (c *Client) GraphNeighbors(ctx context.Context, log, index string, q GraphQueryRequest) *Streamed[contract.GraphEdge, GraphTrailer] {
-	q.Principal = c.author
 	q.Op = contract.GraphOpNeighbors
-	return RequestStream[GraphQueryRequest, contract.GraphEdge, GraphTrailer](ctx, c.nc, IndexQuerySubject(log, index), q)
+	return RequestStream[GraphQueryRequest, contract.GraphEdge, GraphTrailer](ctx, c.nc, IndexQuerySubject(c.author, log, index), q)
 }
 
 // GraphWalk streams one graph index's things breadth-first from a thing,
 // each with the depth and label it was first reached through.
 func (c *Client) GraphWalk(ctx context.Context, log, index string, q GraphQueryRequest) *Streamed[contract.GraphVisit, GraphTrailer] {
-	q.Principal = c.author
 	q.Op = contract.GraphOpWalk
-	return RequestStream[GraphQueryRequest, contract.GraphVisit, GraphTrailer](ctx, c.nc, IndexQuerySubject(log, index), q)
+	return RequestStream[GraphQueryRequest, contract.GraphVisit, GraphTrailer](ctx, c.nc, IndexQuerySubject(c.author, log, index), q)
 }
 
 // SemanticQueryRequest is the semantic kind's payload on the standard
 // query subject (05-indexes.md § the semantic kind).
 type SemanticQueryRequest struct {
-	Principal string `json:"principal"`
-	Text      string `json:"text"`
+	Text string `json:"text"`
 	// Limit caps the hits the caller wants; zero streams them all.
 	Limit int `json:"limit,omitempty"`
 }
@@ -460,9 +553,8 @@ type SemanticTrailer struct {
 
 // QuerySemantic streams one semantic index's hits by meaning, best first.
 func (c *Client) QuerySemantic(ctx context.Context, log, index, text string, limit int) *Streamed[SemanticHit, SemanticTrailer] {
-	return RequestStream[SemanticQueryRequest, SemanticHit, SemanticTrailer](ctx, c.nc, IndexQuerySubject(log, index), SemanticQueryRequest{
-		Principal: c.author,
-		Text:      text,
-		Limit:     limit,
+	return RequestStream[SemanticQueryRequest, SemanticHit, SemanticTrailer](ctx, c.nc, IndexQuerySubject(c.author, log, index), SemanticQueryRequest{
+		Text:  text,
+		Limit: limit,
 	})
 }

@@ -39,10 +39,10 @@ func TestIndexVerbs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("declare: %v", err)
 	}
-	if want := client.IndexQuerySubject("orders", "text"); resp.Query != want {
+	if want := client.IndexQuerySubject("alice", "orders", "text"); resp.Query != want {
 		t.Fatalf("query subject = %q, want %q", resp.Query, want)
 	}
-	if resp.Query != "CHRON.API.INDEX.QUERY.orders.text" {
+	if resp.Query != "CHRON.API.alice.INDEX.QUERY.orders.text" {
 		t.Fatalf("query subject grammar drifted: %q", resp.Query)
 	}
 

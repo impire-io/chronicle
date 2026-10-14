@@ -359,6 +359,7 @@ func (c *Client) bounded(ctx context.Context, cons jetstream.Consumer, yield fun
 			yield(contract.Op{}, err)
 			return
 		}
+		c.types.verify(ctx, &op)
 		if !yield(op, nil) {
 			return
 		}
@@ -399,6 +400,7 @@ func (c *Client) unbounded(ctx context.Context, cons jetstream.Consumer, yield f
 			yield(contract.Op{}, err)
 			return
 		}
+		c.types.verify(ctx, &op)
 		if !yield(op, nil) {
 			return
 		}
