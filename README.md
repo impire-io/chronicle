@@ -204,7 +204,7 @@ things: **one account**, **JetStream** on it, and users in it. Then:
 
   | | Allow |
   |---|---|
-  | publish | `CHRON.*.OPS.>`, `CHRON.LIVE.>`, `CHRON.API.<principal>.>`, `$SYS.REQ.USER.INFO`, `$JS.API.CONSUMER.>`, `$JS.API.STREAM.INFO.>`, `$JS.API.STREAM.NAMES`, `$JS.API.STREAM.MSG.GET.>`, `$JS.API.DIRECT.GET.>` |
+  | publish | `CHRON.*.OPS.>`, `CHRON.LIVE.>`, `CHRON.API.<principal>.>`, `$SYS.REQ.USER.INFO`, `$JS.API.INFO`, `$JS.API.CONSUMER.>`, `$JS.API.STREAM.INFO.>`, `$JS.API.STREAM.NAMES`, `$JS.API.STREAM.MSG.GET.>`, `$JS.API.DIRECT.GET.>` |
   | subscribe | `CHRON.*.OPS.>`, `CHRON.LIVE.>`, `_INBOX.>` |
 
   A write may go through the node instead of straight to the stream —

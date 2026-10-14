@@ -68,16 +68,20 @@ func CallerFromSubject(subject string) (string, error) {
 // MemberBaselinePublish is what every member may publish (design 01
 // § creating an account, decision 0057): every store's operations, the
 // ephemeral namespace, the control verbs under the member's own name,
-// the whoami request, and the read half of the JetStream API. The
-// principal is the member's name — or a server-side template such as
-// "{{name()}}" where one scope serves every member. No member writes a
-// bucket, creates or deletes a stream, or speaks a verb as another.
+// the whoami request, and the read half of the JetStream API — account
+// information included, which is the account's own limits and usage (the
+// console's "used of allowed") and what the JavaScript client asks for
+// before it manages anything. The principal is the member's name — or a
+// server-side template such as "{{name()}}" where one scope serves every
+// member. No member writes a bucket, creates or deletes a stream, or
+// speaks a verb as another.
 func MemberBaselinePublish(principal string) []string {
 	return []string{
 		Root + ".*.OPS.>",
 		LiveRoot + ".>",
 		APIRoot + "." + principal + ".>",
 		"$SYS.REQ.USER.INFO",
+		"$JS.API.INFO",
 		"$JS.API.CONSUMER.>",
 		"$JS.API.STREAM.INFO.>",
 		"$JS.API.STREAM.NAMES",

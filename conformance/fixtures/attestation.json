@@ -53,7 +53,7 @@
       "op": {
         "author": "svc",
         "id": "op-2",
-        "parents": null,
+        "parents": [],
         "ts": "",
         "type": "snapshot",
         "version": ""
