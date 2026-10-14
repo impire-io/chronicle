@@ -197,12 +197,22 @@ things: **one account**, **JetStream** on it, and users in it. Then:
   process stays honestly unserved.
 - **A member is a user with the baseline's rights**, which you grant
   however your server takes permissions — a `permissions` block in a
-  config file, a scoped signing key in `nsc`, a Synadia team policy:
+  config file, a scoped signing key in `nsc` (where `{{name()}}` stands
+  for the member's name), a Synadia team policy. The user's name is the
+  member's principal, and the control verbs are spoken under it, so a
+  member can speak them as nobody else:
 
   | | Allow |
   |---|---|
-  | publish | `CHRON.>`, `$SYS.REQ.USER.INFO`, `$JS.API.CONSUMER.>`, `$JS.API.STREAM.INFO.>`, `$JS.API.STREAM.NAMES`, `$JS.API.STREAM.MSG.GET.>`, `$JS.API.DIRECT.GET.>` |
-  | subscribe | `CHRON.>`, `_INBOX.>` |
+  | publish | `CHRON.*.OPS.>`, `CHRON.LIVE.>`, `CHRON.API.<principal>.>`, `$SYS.REQ.USER.INFO`, `$JS.API.CONSUMER.>`, `$JS.API.STREAM.INFO.>`, `$JS.API.STREAM.NAMES`, `$JS.API.STREAM.MSG.GET.>`, `$JS.API.DIRECT.GET.>` |
+  | subscribe | `CHRON.*.OPS.>`, `CHRON.LIVE.>`, `_INBOX.>` |
+
+  A write may go through the node instead of straight to the stream —
+  `instance apply … --verified`, or always in a store created with
+  `--verified-authors` — and the node vouches for who wrote it: the
+  operation carries the node's signature, every reader can check it, and
+  a store that requires verified authors folds nothing else into its
+  state. The node signs with the key it connects with.
 
   Members and service accounts, with their roles, live in the account
   and the node enforces them (`chronicle member add`, `chronicle

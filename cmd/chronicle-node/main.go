@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
+	"github.com/nats-io/nkeys"
 
 	"github.com/impire-io/chronicle/client"
 	"github.com/impire-io/chronicle/internal/version"
@@ -39,13 +40,22 @@ func run() error {
 		return fmt.Errorf("exactly one of --creds and --nkey is required")
 	}
 
+	// The node signs verified authors with the key it connects with
+	// (decision 0057): the service user's nkey, from the creds or the seed.
 	var (
-		c   *client.Client
-		err error
+		c      *client.Client
+		signer nkeys.KeyPair
+		err    error
 	)
 	if *creds != "" {
+		if signer, err = client.KeyPairFromCredsFile(*creds); err != nil {
+			return err
+		}
 		c, err = client.ConnectFile(*url, *creds)
 	} else {
+		if signer, err = client.KeyPairFromSeedFile(*nkey); err != nil {
+			return err
+		}
 		c, err = client.ConnectNkeyFile(*url, *nkey, "chronicle-node")
 	}
 	if err != nil {
@@ -64,7 +74,7 @@ func run() error {
 			return err
 		}
 	}
-	n, err := node.Start(startCtx, c.Conn(), node.Config{})
+	n, err := node.Start(startCtx, c.Conn(), node.Config{Signer: signer})
 	if err != nil {
 		return err
 	}

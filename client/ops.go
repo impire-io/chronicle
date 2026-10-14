@@ -11,6 +11,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"github.com/nats-io/nats.go/micro"
 	"github.com/nats-io/nuid"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 
@@ -45,6 +46,86 @@ type appendOpts struct {
 	parents     []string
 	opID        string
 	expectedSeq *uint64
+	verified    bool
+}
+
+// Verified asks for a verified author (decision 0057): the write goes
+// through the node as one request instead of a direct publish, the node
+// binds the author to this connection's name and signs the operation,
+// and every reader can check it. A store that requires verified authors
+// is written this way without asking; everywhere else the direct publish
+// stays the default, as the unguarded append does beside the guard.
+func Verified() ApplyOpt {
+	return func(o *appendOpts) { o.verified = true }
+}
+
+// writeMode names which write a refusal is read for: a guard miss is
+// instance-exists on a create, stale-version on a save, instance-moved on
+// a guarded apply.
+type writeMode int
+
+const (
+	modeCreate writeMode = iota
+	modeSave
+	modeApply
+)
+
+// viaNode says whether this write takes the verified route: asked for, or
+// required by the store's declaration.
+func (c *Client) viaNode(ctx context.Context, log string, o appendOpts) (bool, error) {
+	if o.verified {
+		return true, nil
+	}
+	return c.types.requiresVerified(ctx, log)
+}
+
+// applyThroughNode is the verified write: the record as built for a direct
+// publish, sent to the node on the caller's own APPLY subject; the node
+// stamps and attests the author, publishes with this id and guard, and
+// answers with the sequence or with a catalogued refusal, which maps back
+// to the same sentinels the direct route yields.
+func (c *Client) applyThroughNode(ctx context.Context, log, thing string, msg *nats.Msg, mode writeMode) (Ack, error) {
+	req := nats.NewMsg(ApplySubject(c.author, log, thing))
+	req.Header = msg.Header
+	req.Data = msg.Data
+	opID := msg.Header.Get(contract.HdrMsgID)
+	resp, err := c.nc.RequestMsgWithContext(ctx, req)
+	if err != nil {
+		if errors.Is(err, nats.ErrNoResponders) {
+			return Ack{}, fmt.Errorf("%w: a verified write needs chronicle running for this account", ErrNoResponder)
+		}
+		return Ack{}, fmt.Errorf("verified write %s: %w", thing, err)
+	}
+	if code := resp.Header.Get(micro.ErrorCodeHeader); code != "" {
+		return Ack{}, applyRefusal(code, resp.Header.Get(micro.ErrorHeader), log, thing, mode)
+	}
+	var r ApplyResponse
+	if err := json.Unmarshal(resp.Data, &r); err != nil {
+		return Ack{}, fmt.Errorf("verified write %s: decode response: %w", thing, err)
+	}
+	return Ack{OpID: opID, Seq: r.Seq}, nil
+}
+
+// applyRefusal reads the node's refusal as the direct route's error: the
+// pre-flight codes become the pre-flight sentinels, a guard miss the
+// conflict the write mode names, anything else the service error itself.
+func applyRefusal(code, desc, log, thing string, mode writeMode) error {
+	switch code {
+	case contract.CodeUndefinedOperation:
+		return fmt.Errorf("%w: %s", ErrUndefinedOperation, desc)
+	case contract.CodeUndeclaredChild:
+		return fmt.Errorf("%w: %s", ErrUndeclaredChild, desc)
+	case contract.CodeSchemaViolation:
+		return fmt.Errorf("%w: %s", ErrSchemaViolation, desc)
+	case contract.CodeInstanceExists:
+		return fmt.Errorf("%w: %s in %s", ErrInstanceExists, thing, log)
+	case contract.CodeInstanceMoved:
+		if mode == modeSave {
+			return fmt.Errorf("%w: %s in %s", ErrStaleVersion, thing, log)
+		}
+		return fmt.Errorf("%w: %s in %s", ErrInstanceMoved, thing, log)
+	}
+	return &ServiceError{Code: code, Desc: desc}
 }
 
 // WithParents records the op IDs the writer had seen — the DAG edges.
@@ -106,6 +187,11 @@ func (c *Client) createFromSnapshotTail(ctx context.Context, log, thing string, 
 	}.Header()
 	msg.Header.Set(contract.HdrExpectedLastSubjSeq, "0")
 	msg.Data = payload
+	if via, verr := c.viaNode(ctx, log, o); verr != nil {
+		return Ack{}, verr
+	} else if via {
+		return c.applyThroughNode(ctx, log, thing, msg, modeCreate)
+	}
 
 	lock := c.subjectLock(subject)
 	lock.Lock()
@@ -120,7 +206,7 @@ func (c *Client) createFromSnapshotTail(ctx context.Context, log, thing string, 
 	// subject's last op and compare IDs to tell "my birth landed" from
 	// "someone else was first".
 	if guardRefused(err) {
-		landed, ok, lerr := c.ownOpLanded(ctx, log, subject, o.opID)
+		landed, ok, lerr := c.OpLanded(ctx, log, subject, o.opID)
 		if lerr != nil {
 			return Ack{}, fmt.Errorf("create refused and %w", errors.Join(lerr, err))
 		}
@@ -174,6 +260,11 @@ func (c *Client) createTail(ctx context.Context, log, thing, opType string, payl
 	}.Header()
 	msg.Header.Set(contract.HdrExpectedLastSubjSeq, "0")
 	msg.Data = payload
+	if via, verr := c.viaNode(ctx, log, o); verr != nil {
+		return Ack{}, verr
+	} else if via {
+		return c.applyThroughNode(ctx, log, thing, msg, modeCreate)
+	}
 
 	lock := c.subjectLock(subject)
 	lock.Lock()
@@ -183,7 +274,7 @@ func (c *Client) createTail(ctx context.Context, log, thing, opType string, payl
 		return Ack{OpID: o.opID, Seq: ack.Sequence}, nil
 	}
 	if guardRefused(err) {
-		landed, ok, lerr := c.ownOpLanded(ctx, log, subject, o.opID)
+		landed, ok, lerr := c.OpLanded(ctx, log, subject, o.opID)
 		if lerr != nil {
 			return Ack{}, fmt.Errorf("create refused and %w", errors.Join(lerr, err))
 		}
@@ -246,6 +337,11 @@ func (c *Client) saveSnapshotTail(ctx context.Context, log, thing string, state 
 	msg.Header.Set(contract.HdrRollup, contract.RollupSubject)
 	msg.Header.Set(contract.HdrExpectedLastSubjSeq, strconv.FormatUint(upTo, 10))
 	msg.Data = payload
+	if via, verr := c.viaNode(ctx, log, o); verr != nil {
+		return Ack{}, verr
+	} else if via {
+		return c.applyThroughNode(ctx, log, thing, msg, modeSave)
+	}
 
 	lock := c.subjectLock(subject)
 	lock.Lock()
@@ -259,7 +355,7 @@ func (c *Client) saveSnapshotTail(ctx context.Context, log, thing string, state 
 	// wrong-last-sequence: read the subject's last op and compare IDs to
 	// tell "my save landed" from "the log moved".
 	if guardRefused(err) {
-		landed, ok, lerr := c.ownOpLanded(ctx, log, subject, o.opID)
+		landed, ok, lerr := c.OpLanded(ctx, log, subject, o.opID)
 		if lerr != nil {
 			return Ack{}, fmt.Errorf("save refused and %w", errors.Join(lerr, err))
 		}
@@ -306,6 +402,11 @@ func (c *Client) applyTail(ctx context.Context, log, thing, opType string, paylo
 		msg.Header.Set(contract.HdrExpectedLastSubjSeq, strconv.FormatUint(*o.expectedSeq, 10))
 	}
 	msg.Data = payload
+	if via, verr := c.viaNode(ctx, log, o); verr != nil {
+		return Ack{}, verr
+	} else if via {
+		return c.applyThroughNode(ctx, log, thing, msg, modeApply)
+	}
 
 	lock := c.subjectLock(subject)
 	lock.Lock()
@@ -319,7 +420,7 @@ func (c *Client) applyTail(ctx context.Context, log, thing, opType string, paylo
 	// surfaces wrong-last-sequence: read the subject's last op and compare
 	// IDs to tell "my op landed" from "the thing moved".
 	if o.expectedSeq != nil && guardRefused(err) {
-		landed, ok, lerr := c.ownOpLanded(ctx, log, subject, o.opID)
+		landed, ok, lerr := c.OpLanded(ctx, log, subject, o.opID)
 		if lerr != nil {
 			return Ack{}, fmt.Errorf("append refused and %w", errors.Join(lerr, err))
 		}
@@ -331,18 +432,23 @@ func (c *Client) applyTail(ctx context.Context, log, thing, opType string, paylo
 	return Ack{}, fmt.Errorf("append %s: %w", subject, err)
 }
 
-// guardRefused reports whether err is the server's wrong-last-sequence
-// refusal — the expected-sequence guard firing.
-func guardRefused(err error) bool {
+// GuardRefused reports whether err is the server's wrong-last-sequence
+// refusal — the expected-sequence guard firing. Exported for the node,
+// which publishes the verified write with the caller's guard and judges
+// the refusal the same way.
+func GuardRefused(err error) bool {
 	var apiErr *jetstream.APIError
 	return errors.As(err, &apiErr) && apiErr.ErrorCode == jetstream.JSErrCodeStreamWrongLastSequence
 }
 
-// ownOpLanded tells a retry from a conflict after a guard refusal: the
-// guard fires before dedup, so a retried guarded publish surfaces
+func guardRefused(err error) bool { return GuardRefused(err) }
+
+// OpLanded tells a retry from a conflict after a guard refusal: the guard
+// fires before dedup, so a retried guarded publish surfaces
 // wrong-last-sequence too. If the subject's last op carries opID, the
-// earlier attempt landed and the refusal was dedup's echo.
-func (c *Client) ownOpLanded(ctx context.Context, log, subject, opID string) (Ack, bool, error) {
+// earlier attempt landed and the refusal was dedup's echo. One judgement
+// on both routes: the node runs it for a verified write.
+func (c *Client) OpLanded(ctx context.Context, log, subject, opID string) (Ack, bool, error) {
 	stream, err := c.js.Stream(ctx, contract.StreamName(log))
 	if err != nil {
 		return Ack{}, false, fmt.Errorf("stream unreadable: %w", err)
@@ -381,20 +487,91 @@ var ErrUndeclaredChild = errors.New("undeclared child")
 // no such operation (0021 § 2).
 var ErrUndefinedOperation = errors.New("operation not defined on the type")
 
+// Preflight runs the writer-side checks on an operation without sending
+// it: the type is declared, the operation defined, the data valid under
+// its schema, a create's type among its parent's children — the SDK's own
+// pre-flight, exported so the node runs the same checks at the door of a
+// verified write (decision 0057) and refuses what the SDK would.
+func (c *Client) Preflight(ctx context.Context, store, tail, opType string, payload []byte) error {
+	return c.types.preflightAppend(ctx, store, tail, opType, payload)
+}
+
 // typeCache serves pre-flight: type records are read fresh from META —
 // latest declaration wins — and their compiled schemas kept per
 // (log, type, revision, op). It reads through the KV bucket — the member
-// baseline's read side — and never writes.
+// baseline's read side — and never writes. It also remembers which stores
+// require verified authors (set at creation, immutable) and which
+// attester keys META lists (0057), for routing and for verifying on read.
 type typeCache struct {
 	js jetstream.JetStream
 
-	mu       sync.Mutex
-	meta     jetstream.KeyValue
-	compiled map[string]*jsonschema.Schema
+	mu        sync.Mutex
+	meta      jetstream.KeyValue
+	compiled  map[string]*jsonschema.Schema
+	verified  map[string]bool
+	attesters map[string]bool
 }
 
 func newTypeCache(js jetstream.JetStream) *typeCache {
-	return &typeCache{js: js, compiled: map[string]*jsonschema.Schema{}}
+	return &typeCache{js: js, compiled: map[string]*jsonschema.Schema{}, verified: map[string]bool{}, attesters: map[string]bool{}}
+}
+
+// requiresVerified reads whether the store requires verified authors —
+// once per store, the declaration being set at creation. A store with no
+// configuration requires nothing; the write then fails where it would
+// have anyway.
+func (t *typeCache) requiresVerified(ctx context.Context, log string) (bool, error) {
+	t.mu.Lock()
+	v, ok := t.verified[log]
+	t.mu.Unlock()
+	if ok {
+		return v, nil
+	}
+	meta, err := t.bucket(ctx)
+	if err != nil {
+		return false, err
+	}
+	entry, err := meta.Get(ctx, contract.MetaStoreConfig(log))
+	if errors.Is(err, jetstream.ErrKeyNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read store %s: %w", log, err)
+	}
+	var cfg contract.StoreConfig
+	if err := json.Unmarshal(entry.Value(), &cfg); err != nil {
+		return false, fmt.Errorf("decode store %s: %w", log, err)
+	}
+	t.mu.Lock()
+	t.verified[log] = cfg.VerifiedAuthors
+	t.mu.Unlock()
+	return cfg.VerifiedAuthors, nil
+}
+
+// verify sets op.Verified: the attestation present, its key one META
+// lists, and the signature valid over the record. A key not seen before
+// is read from META once; a key META does not hold verifies nothing.
+func (t *typeCache) verify(ctx context.Context, op *contract.Op) {
+	op.Verified = false
+	if op.Attester == "" || op.Signature == "" {
+		return
+	}
+	t.mu.Lock()
+	known := t.attesters[op.Attester]
+	t.mu.Unlock()
+	if !known {
+		meta, err := t.bucket(ctx)
+		if err != nil {
+			return
+		}
+		if _, err := meta.Get(ctx, contract.MetaAttester(op.Attester)); err != nil {
+			return
+		}
+		t.mu.Lock()
+		t.attesters[op.Attester] = true
+		t.mu.Unlock()
+	}
+	op.Verified = op.VerifyAttestation()
 }
 
 func (t *typeCache) bucket(ctx context.Context) (jetstream.KeyValue, error) {

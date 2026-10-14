@@ -18,7 +18,7 @@ func (x *runner) storeNoun() *noun {
 		verbs: []command{
 			{"list", "the stores in the account; * marks the selected one", x.storeList},
 			{"get NAME", "one store's settings", x.storeGet},
-			{"create NAME [--history compactable|full] [--schedules] [--description TEXT]", "create a store and select it", x.storeCreate},
+			{"create NAME [--history compactable|full] [--schedules] [--verified-authors] [--description TEXT]", "create a store and select it", x.storeCreate},
 			{"select NAME", "make a store the one commands speak to", x.storeSelect},
 		},
 	}
@@ -103,7 +103,10 @@ func (x *runner) storeGet(ctx context.Context, args []string, out io.Writer) err
 		if cfg.Schedules {
 			fmt.Fprintf(out, "schedules:    allowed (a schedule registered here has its ticks written by the server)\n")
 		}
-	}, map[string]any{"name": pos[0], "history": contract.NormalizeHistory(cfg.History), "description": cfg.Description, "max_bytes": cfg.MaxBytes, "schedules": cfg.Schedules})
+		if cfg.VerifiedAuthors {
+			fmt.Fprintf(out, "authors:      verified required (writes go through chronicle; an unverified operation is kept but takes no effect)\n")
+		}
+	}, map[string]any{"name": pos[0], "history": contract.NormalizeHistory(cfg.History), "description": cfg.Description, "max_bytes": cfg.MaxBytes, "schedules": cfg.Schedules, "verified_authors": cfg.VerifiedAuthors})
 }
 
 // describeHistory says what a history policy means, beside its value.
@@ -117,11 +120,12 @@ func describeHistory(history string) string {
 }
 
 func (x *runner) storeCreate(ctx context.Context, args []string, out io.Writer) error {
-	fs := flags("store create", "create NAME [--history compactable|full] [--schedules] [--description TEXT]", "create a store and select it", out)
+	fs := flags("store create", "create NAME [--history compactable|full] [--schedules] [--verified-authors] [--description TEXT]", "create a store and select it", out)
 	cf := x.connect(fs)
 	history := fs.String("history", contract.HistoryCompactable, "the history policy: compactable (a snapshot may replace older history) or full (every operation is kept)")
 	desc := fs.String("description", "", "what the store is for")
 	schedules := fs.Bool("schedules", false, "allow NATS message schedules in this store: a schedule registered in it has its ticks written by the server")
+	verified := fs.Bool("verified-authors", false, "require verified authors: every write goes through chronicle, which vouches for who wrote it; an operation written any other way is kept but takes no effect")
 	pos, err := parse(fs, args)
 	if err != nil {
 		return done(err)
@@ -141,12 +145,18 @@ func (x *runner) storeCreate(ctx context.Context, args []string, out io.Writer) 
 	if *schedules {
 		opts = append(opts, client.WithSchedules())
 	}
+	if *verified {
+		opts = append(opts, client.WithVerifiedAuthors())
+	}
 	if _, err := c.CreateStore(ctx, pos[0], *desc, opts...); err != nil {
 		return err
 	}
 	created := fmt.Sprintf("store %s created (history %s", pos[0], contract.NormalizeHistory(*history))
 	if *schedules {
 		created += ", schedules allowed"
+	}
+	if *verified {
+		created += ", verified authors required"
 	}
 	fmt.Fprintln(out, created+")")
 

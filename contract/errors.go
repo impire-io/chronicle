@@ -34,6 +34,16 @@ const (
 	CodeNoSuchInstance      = "no-such-instance"
 	CodeReservedStateIndex  = "reserved-state-index"
 	CodeProviderUnavailable = "provider-unavailable"
+	// The verified write's refusals (decision 0057): the node reads the
+	// caller from the subject and refuses a record naming another; its
+	// pre-flight refuses with the codes the SDK's own pre-flight names;
+	// a guard miss is judged at the node and returned as the conflict.
+	CodeNotTheCaller       = "not-the-caller"
+	CodeUndefinedOperation = "undefined-operation"
+	CodeUndeclaredChild    = "undeclared-child"
+	CodeSchemaViolation    = "schema-violation"
+	CodeInstanceExists     = "instance-exists"
+	CodeInstanceMoved      = "instance-moved"
 )
 
 // ErrorCode is one catalogued code and what it means.
@@ -72,6 +82,12 @@ var ErrorCatalog = []ErrorCode{
 	{CodeNoSuchInstance, "the instance has no history in the store"},
 	{CodeReservedStateIndex, "state is not an index a caller declares or deletes; it is read as the instance's state"},
 	{CodeProviderUnavailable, "the semantic kind's embedding provider did not answer"},
+	{CodeNotTheCaller, "the record names an author other than the caller the subject carries"},
+	{CodeUndefinedOperation, "the type defines no such operation"},
+	{CodeUndeclaredChild, "the created type is not among its parent type's children"},
+	{CodeSchemaViolation, "the data fails the operation's schema, or the state fails the type's"},
+	{CodeInstanceExists, "the instance already exists"},
+	{CodeInstanceMoved, "the instance moved past the expected sequence"},
 }
 
 // KnownErrorCode says whether a code is catalogued.

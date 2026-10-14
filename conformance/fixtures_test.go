@@ -146,6 +146,55 @@ func TestFixtureHeaders(t *testing.T) {
 	}
 }
 
+// TestFixtureAttestation is the verified author's golden rule (decision
+// 0057): the signed form an SDK rebuilds from the subject, the headers and
+// the payload, and the verdict over the attester's key — valid as signed,
+// and not after any input moved.
+func TestFixtureAttestation(t *testing.T) {
+	var f struct {
+		Attester string
+		Cases    []struct {
+			Name, Subject string
+			Op            struct {
+				ID, Type, Author, Ts, Version string
+				Parents                       []string
+			}
+			Payload, Attester, Signature, SignedForm string
+			Valid                                    bool
+			Headers                                  map[string][]string
+		}
+	}
+	load(t, "attestation.json", &f)
+	for _, c := range f.Cases {
+		op := contract.Op{ID: c.Op.ID, Type: c.Op.Type, Author: c.Op.Author, Parents: c.Op.Parents, Version: c.Op.Version, Subject: c.Subject, Payload: []byte(c.Payload), Attester: c.Attester, Signature: c.Signature}
+		if c.Op.Ts != "" {
+			ts, err := time.Parse(time.RFC3339Nano, c.Op.Ts)
+			if err != nil {
+				t.Fatalf("%s: fixture ts: %v", c.Name, err)
+			}
+			op.Ts = ts
+		}
+		if c.Valid && string(op.SignedForm()) != c.SignedForm {
+			t.Errorf("%s: signed form\n%q\nwant\n%q", c.Name, op.SignedForm(), c.SignedForm)
+		}
+		if got := op.VerifyAttestation(); got != c.Valid {
+			t.Errorf("%s: verifies=%v, want %v", c.Name, got, c.Valid)
+		}
+		if c.Attester != f.Attester {
+			t.Errorf("%s: attester %q, the fixture's is %q", c.Name, c.Attester, f.Attester)
+		}
+		// The two headers ride the record exactly as the fixture shows.
+		got := map[string][]string(op.Header())
+		if !reflect.DeepEqual(got, c.Headers) {
+			t.Errorf("%s: headers %v, want %v", c.Name, got, c.Headers)
+		}
+		back := contract.ParseOp(c.Subject, 1, nats.Header(c.Headers), []byte(c.Payload))
+		if back.Attester != c.Attester || back.Signature != c.Signature {
+			t.Errorf("%s: attestation parsed back %q %q", c.Name, back.Attester, back.Signature)
+		}
+	}
+}
+
 func lookupOf(types map[string]json.RawMessage) contract.TypeLookup {
 	return func(name string) (*contract.TypeRecord, bool, error) {
 		raw, ok := types[name]

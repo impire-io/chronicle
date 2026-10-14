@@ -1,10 +1,12 @@
 // Package client is the Go client of the tenant plane: the wire contract
 // of decision 0008, spoken directly. Appends are direct JetStream
-// publishes with the correctness machinery the server's; the API verbs
-// are NATS micro requests on CHRON.API.>. The package speaks only the
-// contract package — never a service's internals — and it works against
-// any NATS in any auth mode: a member is whoever the credential says, or
-// whoever the caller states when the credential carries no name.
+// publishes with the correctness machinery the server's — or, for a
+// verified author, one request to the node (decision 0057); the API verbs
+// are NATS micro requests on CHRON.API.<principal>.>, the caller's own
+// subjects. The package speaks only the contract package — never a
+// service's internals — and it works against any NATS in any auth mode: a
+// member is whoever the credential says, or whoever the caller states
+// when the credential carries no name.
 package client
 
 import (
@@ -123,6 +125,31 @@ func NkeyFromSeed(seed []byte) (nkeys.KeyPair, error) {
 	kp, err := nkeys.FromSeed(seed)
 	if err != nil {
 		return nil, fmt.Errorf("parse nkey seed: %w", err)
+	}
+	return kp, nil
+}
+
+// KeyPairFromSeedFile reads an nkey seed file into a key pair — the
+// node's signer when it connects as an nkey user (decision 0057).
+func KeyPairFromSeedFile(path string) (nkeys.KeyPair, error) {
+	seed, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read nkey seed: %w", err)
+	}
+	return NkeyFromSeed(seed)
+}
+
+// KeyPairFromCredsFile reads the user nkey out of a decorated .creds file
+// — the node's signer when it connects with the account's service
+// credentials (decision 0057): the key it already authenticates with.
+func KeyPairFromCredsFile(path string) (nkeys.KeyPair, error) {
+	creds, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read creds: %w", err)
+	}
+	kp, err := jwt.ParseDecoratedUserNKey(creds)
+	if err != nil {
+		return nil, fmt.Errorf("parse creds nkey: %w", err)
 	}
 	return kp, nil
 }

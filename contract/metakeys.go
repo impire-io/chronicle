@@ -100,6 +100,24 @@ func MetaMember(id string) string { return "identity.member." + id }
 // MetaInvite is identity.invite.<digest>.
 func MetaInvite(digest string) string { return "identity.invite." + digest }
 
+// MetaAttester is identity.attester.<pub> — an attester key of the
+// account (decision 0057): the public key the node signs verified authors
+// with, recorded by the node at boot. No member writes META, so no member
+// can list a key here. A key the node no longer holds stays, retired, and
+// still verifies what it signed.
+func MetaAttester(pub string) string { return MetaAttesterPrefix + pub }
+
+// MetaAttesterPrefix lists every attester key — a verifier's read.
+const MetaAttesterPrefix = "identity.attester."
+
+// Attester is the value at identity.attester.<pub>.
+type Attester struct {
+	PublicKey string `json:"public_key"`
+	// Retired says the node no longer signs with this key; operations it
+	// signed while current still verify.
+	Retired bool `json:"retired,omitempty"`
+}
+
 // StoreConfig is the value at log.<log>.config.
 type StoreConfig struct {
 	Status      string `json:"status"`
@@ -115,6 +133,12 @@ type StoreConfig struct {
 	// per-message TTLs (decision 0050): a schedule registered in the store
 	// has the server write its ticks into the store, whether anyone reads.
 	Schedules bool `json:"schedules,omitempty"`
+	// VerifiedAuthors says the store requires verified authors (decision
+	// 0057): the fold marks every operation whose author the node did not
+	// vouch for, so the store's state holds only what the node attested.
+	// The SDKs route a write to such a store through the node. Set at
+	// creation, immutable like the history policy.
+	VerifiedAuthors bool `json:"verified_authors,omitempty"`
 }
 
 // StoreStatusActive is the one status the skeleton knows.
@@ -278,6 +302,6 @@ func KnownRole(role string) bool {
 // the managed service composing a member verb with the credential it
 // issued, on the connection the node itself holds. It is never a member
 // and never in the registry: the registry's role check accepts it as the
-// operator, at the same trust tier as every other asserted principal
-// (0007: op signing by demand).
+// operator. It speaks on CHRON.API.chronicle.>, a name no member can be
+// issued, so the subject binds it as it binds every caller (0057).
 const ServicePrincipal = "chronicle"

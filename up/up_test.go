@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/nats.go"
+
 	"github.com/impire-io/chronicle/client"
 	"github.com/impire-io/chronicle/contract"
 	"github.com/impire-io/chronicle/devdir"
@@ -55,15 +57,32 @@ func TestUpServesOneTenant(t *testing.T) {
 	waitState(ctx, t, admin, "orders", "note-1", "quantum")
 	waitHit(ctx, t, admin, "orders", "text", "widgets", "note-1")
 
-	// The principal is checked at the node: a non-member's assertion is
-	// refused even on the same key.
+	// The caller is the subject's (0057): the member's key may speak the
+	// verbs under its own name only, so a verb spoken as mallory never
+	// reaches the node — the server refuses the publish and nobody answers.
 	stranger, err := client.ConnectNkeyFile(l.URL, devdir.UserNkeyPath(dir), "mallory")
 	if err != nil {
 		t.Fatalf("connect as mallory: %v", err)
 	}
 	defer stranger.Close()
-	if _, err := stranger.CreateStore(ctx, "theirs", ""); err == nil || !strings.Contains(err.Error(), "not a member") {
+	short, cancelShort := context.WithTimeout(ctx, 3*time.Second)
+	_, err = stranger.CreateStore(short, "theirs", "")
+	cancelShort()
+	if err == nil {
+		t.Fatal("a verb spoken under another member's name was served")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, nats.ErrPermissionViolation) && !errors.Is(err, nats.ErrNoResponders) {
 		t.Fatalf("non-member create log: %v", err)
+	}
+	// And the registry still gates a caller the server did let through:
+	// the node's own user may speak any name, and an unknown one is refused.
+	nodeUser, err := client.ConnectNkeyFile(l.URL, devdir.NodeNkeyPath(dir), "mallory")
+	if err != nil {
+		t.Fatalf("connect as the node user: %v", err)
+	}
+	defer nodeUser.Close()
+	if _, err := nodeUser.CreateStore(ctx, "theirs", ""); err == nil || !strings.Contains(err.Error(), "not a member") {
+		t.Fatalf("non-member create log through the node's user: %v", err)
 	}
 
 	// Deleting the index retires its process: the query has no responder.

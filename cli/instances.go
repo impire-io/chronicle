@@ -21,8 +21,8 @@ func (x *runner) instanceNoun() *noun {
 		verbs: []command{
 			{"list [--type TYPE] [--in PATH] [--where FIELD=VALUE]... [--sort FIELD] [--limit N]", "the instances in the store, as a table", x.instanceList},
 			{"get PATH", "an instance's current state and the sequence it stands at", x.instanceGet},
-			{"create PATH [--data JSON | -f FILE] [--op OP]", "create an instance by applying its type's create operation", x.instanceCreate},
-			{"apply PATH OP [--data JSON | -f FILE] [--expect SEQ]", "apply an operation to an instance", x.instanceApply},
+			{"create PATH [--data JSON | -f FILE] [--op OP] [--verified]", "create an instance by applying its type's create operation", x.instanceCreate},
+			{"apply PATH OP [--data JSON | -f FILE] [--expect SEQ] [--verified]", "apply an operation to an instance", x.instanceApply},
 			{"history PATH [--from SEQ] [--follow] [--children]", "an instance's operations in order", x.instanceHistory},
 			{"watch PATH", "print an instance's state each time it changes", x.instanceWatch},
 			{"snapshot PATH", "write the current state as a snapshot and compact the history before it", x.instanceSnapshot},
@@ -232,11 +232,12 @@ func (x *runner) instanceGet(ctx context.Context, args []string, out io.Writer) 
 }
 
 func (x *runner) instanceCreate(ctx context.Context, args []string, out io.Writer) error {
-	fs := flags("instance create", "create PATH [--data JSON | -f FILE] [--op OP]", "create an instance by applying its type's create operation", out)
+	fs := flags("instance create", "create PATH [--data JSON | -f FILE] [--op OP] [--verified]", "create an instance by applying its type's create operation", out)
 	cf := x.connect(fs)
 	data := fs.String("data", "", "the operation's data, inline (JSON)")
 	file := fs.String("f", "", "the operation's data, from a YAML or JSON file")
 	opName := fs.String("op", "create", "the operation that creates")
+	verified := fs.Bool("verified", false, "write through chronicle so the author is verified (a store that requires verified authors is written this way regardless)")
 	pos, err := parse(fs, args)
 	if err != nil {
 		return done(err)
@@ -259,7 +260,11 @@ func (x *runner) instanceCreate(ctx context.Context, args []string, out io.Write
 	}
 	switch res.Kind {
 	case contract.ResolvedTyped:
-		ack, err := c.Create(ctx, store, pos[0], *opName, payload)
+		var opts []client.ApplyOpt
+		if *verified {
+			opts = append(opts, client.Verified())
+		}
+		ack, err := c.Create(ctx, store, pos[0], *opName, payload, opts...)
 		if err != nil {
 			if errors.Is(err, client.ErrUndefinedOperation) {
 				return fmt.Errorf("%s defines no operation %q to create with. It defines: %s (--op picks another)", res.TypeName, *opName, strings.Join(sortedKeys(res.Record.Operations), ", "))
@@ -298,11 +303,12 @@ func teachWrite(err error, path, store string) error {
 }
 
 func (x *runner) instanceApply(ctx context.Context, args []string, out io.Writer) error {
-	fs := flags("instance apply", "apply PATH OP [--data JSON | -f FILE] [--expect SEQ]", "apply an operation to an instance", out)
+	fs := flags("instance apply", "apply PATH OP [--data JSON | -f FILE] [--expect SEQ] [--verified]", "apply an operation to an instance", out)
 	cf := x.connect(fs)
 	data := fs.String("data", "", "the operation's data, inline (JSON)")
 	file := fs.String("f", "", "the operation's data, from a YAML or JSON file")
 	expect := fs.Int64("expect", -1, "the sequence of the instance's last operation (instance apply prints it, instance history shows it); refused if anything landed since")
+	verified := fs.Bool("verified", false, "write through chronicle so the author is verified (a store that requires verified authors is written this way regardless)")
 	pos, err := parse(fs, args)
 	if err != nil {
 		return done(err)
@@ -323,6 +329,9 @@ func (x *runner) instanceApply(ctx context.Context, args []string, out io.Writer
 	if *expect >= 0 {
 		opts = append(opts, client.WithExpectedSeq(uint64(*expect)))
 	}
+	if *verified {
+		opts = append(opts, client.Verified())
+	}
 	ack, err := c.Apply(ctx, store, pos[0], pos[1], payload, opts...)
 	if err != nil {
 		if errors.Is(err, client.ErrUndefinedOperation) {
@@ -342,6 +351,7 @@ type opRow struct {
 	Path      string          `json:"path,omitempty"`
 	Operation string          `json:"operation"`
 	Author    string          `json:"author"`
+	Verified  bool            `json:"verified"`
 	Time      string          `json:"time,omitempty"`
 	ID        string          `json:"id"`
 	Parents   []string        `json:"parents,omitempty"`
@@ -349,7 +359,7 @@ type opRow struct {
 }
 
 func toOpRow(op contract.Op) opRow {
-	row := opRow{Seq: op.Seq, Operation: op.Type, Author: op.Author, ID: op.ID, Parents: op.Parents, Data: op.Payload}
+	row := opRow{Seq: op.Seq, Operation: op.Type, Author: op.Author, Verified: op.Verified, ID: op.ID, Parents: op.Parents, Data: op.Payload}
 	if !op.Ts.IsZero() {
 		row.Time = op.Ts.UTC().Format(time.RFC3339)
 	}
@@ -404,9 +414,9 @@ func (x *runner) instanceHistory(ctx context.Context, args []string, out io.Writ
 	// A history streams: each row prints as it arrives, so --follow and a
 	// long history read the same way; a table holds its header only.
 	if *format == formatTable {
-		header := []string{"SEQ", "OPERATION", "AUTHOR", "TIME", "DATA"}
+		header := []string{"SEQ", "OPERATION", "AUTHOR", "VERIFIED", "TIME", "DATA"}
 		if *children {
-			header = []string{"SEQ", "PATH", "OPERATION", "AUTHOR", "TIME", "DATA"}
+			header = []string{"SEQ", "PATH", "OPERATION", "AUTHOR", "VERIFIED", "TIME", "DATA"}
 		}
 		table(out, header, nil)
 	}
@@ -423,12 +433,18 @@ func (x *runner) instanceHistory(ctx context.Context, args []string, out io.Writ
 		if *children {
 			row.Path = contract.TailPath(contract.InstanceFromSubject(store, op.Subject))
 		}
+		// The author is the writer's word unless chronicle vouched for it:
+		// the row says verified when it did, nothing when it did not.
+		verified := ""
+		if row.Verified {
+			verified = "verified"
+		}
 		switch *format {
 		case formatTable:
 			if *children {
-				fmt.Fprintf(out, "%d  %s  %s  %s  %s  %s\n", row.Seq, row.Path, row.Operation, row.Author, row.Time, compact(row.Data))
+				fmt.Fprintf(out, "%d  %s  %s  %s  %s  %s  %s\n", row.Seq, row.Path, row.Operation, row.Author, verified, row.Time, compact(row.Data))
 			} else {
-				fmt.Fprintf(out, "%d  %s  %s  %s  %s\n", row.Seq, row.Operation, row.Author, row.Time, compact(row.Data))
+				fmt.Fprintf(out, "%d  %s  %s  %s  %s  %s\n", row.Seq, row.Operation, row.Author, verified, row.Time, compact(row.Data))
 			}
 		case formatYAML:
 			if err := printYAML(out, []any{row}); err != nil {

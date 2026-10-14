@@ -21,10 +21,29 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"github.com/nats-io/nats.go/micro"
 
 	"github.com/impire-io/chronicle/contract"
 	"github.com/impire-io/chronicle/foldcore"
+	"github.com/impire-io/chronicle/registry"
 )
+
+// RequireCaller reads the caller from a query's subject — the name the
+// server bound to the connection (decision 0057) — and checks it holds a
+// registry role: any role may query. It answers the refusal itself; the
+// handler returns on a non-nil error.
+func RequireCaller(ctx context.Context, meta jetstream.KeyValue, req micro.Request) error {
+	caller, err := contract.CallerFromSubject(req.Subject())
+	if err != nil {
+		_ = req.Error(contract.CodeBadRequest, err.Error(), nil)
+		return err
+	}
+	if err := registry.RequireRole(ctx, meta, caller, contract.RoleAdmin, contract.RoleWriter, contract.RoleReader); err != nil {
+		_ = req.Error(contract.CodeForbidden, err.Error(), nil)
+		return err
+	}
+	return nil
+}
 
 // Run is one fold pass's materialization target. Upsert receives a
 // thing's freshly folded state — latest state wins, and the engine owns
@@ -97,6 +116,10 @@ type Projection struct {
 
 	serving   serving
 	rebuildCh chan struct{}
+	// requireVerified and verifier are the author gate (0057): a store
+	// that requires verified authors folds only what the node attested.
+	requireVerified bool
+	verifier        *foldcore.Verifier
 
 	runCtx context.Context
 	cancel context.CancelFunc
@@ -131,18 +154,25 @@ func Start(ctx context.Context, nc *nats.Conn, cfg Config) (*Projection, error) 
 		logger = slog.Default()
 	}
 
+	requireVerified, err := foldcore.StoreRequiresVerified(ctx, meta, cfg.Store)
+	if err != nil {
+		return nil, fmt.Errorf("read store %q configuration: %w", cfg.Store, err)
+	}
+
 	runCtx, cancel := context.WithCancel(context.Background())
 	p := &Projection{
-		cfg:       cfg,
-		opsSource: contract.NormalizeSource(cfg.Source) == contract.SourceHistory,
-		logger:    logger,
-		nc:        nc,
-		js:        js,
-		meta:      meta,
-		stream:    stream,
-		rebuildCh: make(chan struct{}, 1),
-		runCtx:    runCtx,
-		cancel:    cancel,
+		cfg:             cfg,
+		opsSource:       contract.NormalizeSource(cfg.Source) == contract.SourceHistory,
+		logger:          logger,
+		nc:              nc,
+		js:              js,
+		meta:            meta,
+		stream:          stream,
+		rebuildCh:       make(chan struct{}, 1),
+		requireVerified: requireVerified,
+		verifier:        foldcore.NewVerifier(meta),
+		runCtx:          runCtx,
+		cancel:          cancel,
 	}
 	if len(cfg.Types) > 0 {
 		p.types = make(map[string]struct{}, len(cfg.Types))
@@ -290,6 +320,8 @@ func (p *Projection) startRun(ctx context.Context) (jetstream.ConsumeContext, ch
 			Warn: func(msg string, args ...any) {
 				p.logger.Warn(p.cfg.Kind+": "+msg, append([]any{"log", p.cfg.Store}, args...)...)
 			},
+			RequireVerified: p.requireVerified,
+			Verify:          p.verifier.Verify,
 		}
 		if from, seeded := p.seedFromCheckpoint(ctx, ps.fold, run); seeded > 0 {
 			consCfg.DeliverPolicy = jetstream.DeliverByStartSequencePolicy
