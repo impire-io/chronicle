@@ -51,7 +51,7 @@ func (x *runner) instanceList(ctx context.Context, args []string, out io.Writer)
 	under := fs.String("in", "", "only the direct children of this instance")
 	var where whereFlag
 	fs.Var(&where, "where", "only instances whose state field equals the value (repeatable; filtered on this side — an index is the answer for large stores)")
-	sortBy := fs.String("sort", "", "sort by a state field, or path, type, seq")
+	sortBy := fs.String("sort", "", "sort by a state field, or path, type, seq (path by default; seq under --in, a parent's children in the order they were written)")
 	limit := fs.Int("limit", 0, "stop after this many rows (0: all)")
 	pos, err := parse(fs, args)
 	if err != nil {
@@ -90,6 +90,9 @@ func (x *runner) instanceList(ctx context.Context, args []string, out io.Writer)
 	states := make([]map[string]any, len(infos))
 	for i, info := range infos {
 		_ = json.Unmarshal(info.State, &states[i])
+	}
+	if *sortBy == "" && *under != "" {
+		*sortBy = "seq"
 	}
 	if err := sortInstances(infos, states, *sortBy); err != nil {
 		return err

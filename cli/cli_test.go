@@ -113,6 +113,10 @@ func TestCLISpine(t *testing.T) {
 	if !strings.Contains(out, "NAME") || !strings.Contains(out, "*  orders") || !strings.Contains(out, "compactable") {
 		t.Fatalf("store list: %s", out)
 	}
+	out = run(ctx, t, "store", "get", "orders")
+	if !strings.Contains(out, "store:        orders") || !strings.Contains(out, "size:         0 of 1073741824 bytes used (the default budget)") {
+		t.Fatalf("store get: %s", out)
+	}
 	out = run(ctx, t, "context", "show")
 	if !strings.Contains(out, "context:   local") || !strings.Contains(out, "store:     orders") {
 		t.Fatalf("context show: %s", out)
@@ -203,9 +207,19 @@ func TestCLISpine(t *testing.T) {
 	if !strings.Contains(out, "invoice/inv-1") || strings.Contains(out, "invoice/inv-2") {
 		t.Fatalf("instance list --where: %s", out)
 	}
+	run(ctx, t, "instance", "create", "invoice/inv-1/comments/c-0", "--data", `{"body":"second"}`)
 	out = run(ctx, t, "instance", "list", "--in", "invoice/inv-1")
 	if !strings.Contains(out, "invoice/inv-1/comments/c-1") || strings.Contains(out, "invoice/inv-2") {
 		t.Fatalf("instance list --in: %s", out)
+	}
+	// A parent's children read in the order they were written, and the
+	// TYPE column names the child's type, not the child's name.
+	if strings.Index(out, "comments/c-1") > strings.Index(out, "comments/c-0") || strings.Contains(out, "  comments  ") {
+		t.Fatalf("instance list --in must order by seq and name the child's type: %s", out)
+	}
+	out = run(ctx, t, "instance", "list", "--in", "invoice/inv-1", "--output", "jsonl")
+	if !strings.Contains(out, `"path":"invoice/inv-1/comments/c-1","type":"comment"`) {
+		t.Fatalf("instance list --in --output jsonl: %s", out)
 	}
 	out = run(ctx, t, "instance", "list", "--output", "jsonl")
 	if !strings.Contains(out, `"path":"invoice/inv-1"`) || !strings.Contains(out, `"type":"invoice"`) {

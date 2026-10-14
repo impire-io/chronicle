@@ -210,17 +210,22 @@ func (c *Client) ListInstances(ctx context.Context, store string, opts ...ListOp
 			return fail[InstanceInfo](err)
 		}
 	}
-	// Under a parent, a type narrows by the parent's children map: the
-	// child names whose declared type is the one asked for.
+	// Under a parent, the parent's children map names each child's type —
+	// what the listing shows — and, when a type is asked for, which child
+	// names carry it.
+	var childTypes map[string]string
 	var childNames map[string]bool
-	if o.under != "" && o.typeName != "" {
+	if o.under != "" {
 		res, err := c.resolveTail(ctx, store, underTail)
 		if err != nil {
 			return fail[InstanceInfo](err)
 		}
-		childNames = map[string]bool{}
 		if res.Kind == contract.ResolvedTyped {
-			for name, t := range res.Record.Children {
+			childTypes = res.Record.Children
+		}
+		if o.typeName != "" {
+			childNames = map[string]bool{}
+			for name, t := range childTypes {
 				if t == o.typeName {
 					childNames[name] = true
 				}
@@ -260,7 +265,7 @@ func (c *Client) ListInstances(ctx context.Context, store string, opts ...ListOp
 			}
 			info := InstanceInfo{Path: contract.TailPath(tail), Type: toks[0]}
 			if o.under != "" {
-				info.Type = childTypeOf(childNames, toks, o.typeName)
+				info.Type = childTypeOf(childTypes, toks[len(toks)-2])
 			}
 			var sv contract.StateValue
 			if err := json.Unmarshal(entry.Value(), &sv); err != nil {
@@ -279,13 +284,14 @@ func (c *Client) ListInstances(ctx context.Context, store string, opts ...ListOp
 }
 
 // childTypeOf names a child's type in a listing under a parent: the type
-// asked for when one was, else the child's name — the grammar's own
-// answer when the parent's record was not consulted.
-func childTypeOf(childNames map[string]bool, toks []string, asked string) string {
-	if asked != "" && childNames != nil {
-		return asked
+// the parent's children map declares for the child's name, else the name
+// itself — the grammar's own answer when the parent is untyped or the
+// name is undeclared.
+func childTypeOf(childTypes map[string]string, name string) string {
+	if t, declared := childTypes[name]; declared {
+		return t
 	}
-	return toks[len(toks)-2]
+	return name
 }
 
 // matches applies Where clauses to a state document: every named field

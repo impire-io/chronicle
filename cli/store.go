@@ -91,22 +91,33 @@ func (x *runner) storeGet(ctx context.Context, args []string, out io.Writer) err
 	if err != nil {
 		return err
 	}
+	usage, err := c.StoreUsage(ctx, pos[0])
+	if err != nil {
+		return err
+	}
 	return printValue(out, *format, func() {
 		fmt.Fprintf(out, "store:        %s\n", pos[0])
 		fmt.Fprintf(out, "history:      %s\n", describeHistory(cfg.History))
 		if cfg.Description != "" {
 			fmt.Fprintf(out, "description:  %s\n", cfg.Description)
 		}
-		if cfg.MaxBytes > 0 {
-			fmt.Fprintf(out, "size limit:   %d bytes\n", cfg.MaxBytes)
-		}
+		fmt.Fprintf(out, "size:         %d of %d bytes used%s\n", usage.Bytes, usage.MaxBytes, describeBudget(cfg.MaxBytes))
 		if cfg.Schedules {
 			fmt.Fprintf(out, "schedules:    allowed (a schedule registered here has its ticks written by the server)\n")
 		}
 		if cfg.VerifiedAuthors {
 			fmt.Fprintf(out, "authors:      verified required (writes go through chronicle; an unverified operation is kept but takes no effect)\n")
 		}
-	}, map[string]any{"name": pos[0], "history": contract.NormalizeHistory(cfg.History), "description": cfg.Description, "max_bytes": cfg.MaxBytes, "schedules": cfg.Schedules, "verified_authors": cfg.VerifiedAuthors})
+	}, map[string]any{"name": pos[0], "history": contract.NormalizeHistory(cfg.History), "description": cfg.Description, "max_bytes": usage.MaxBytes, "bytes": usage.Bytes, "schedules": cfg.Schedules, "verified_authors": cfg.VerifiedAuthors})
+}
+
+// describeBudget says where a store's byte budget comes from: its own
+// setting, or the default every store is held to.
+func describeBudget(maxBytes int64) string {
+	if maxBytes > 0 {
+		return ""
+	}
+	return " (the default budget)"
 }
 
 // describeHistory says what a history policy means, beside its value.

@@ -117,6 +117,34 @@ func (c *Client) resolveTail(ctx context.Context, log, thing string) (contract.R
 // ErrNoStore is a store read for a name the account does not hold.
 var ErrNoStore = errors.New("store does not exist")
 
+// StoreUsage is what a store holds against its budget: the bytes its
+// history occupies and the limit the stream is held to — the budget in
+// effect, the default included where the store's settings name none.
+type StoreUsage struct {
+	Bytes    uint64 `json:"bytes"`
+	MaxBytes int64  `json:"max_bytes"`
+}
+
+// StoreUsage reads a store's size and budget from its stream — data at
+// rest read through JetStream, beside GetStore's settings.
+func (c *Client) StoreUsage(ctx context.Context, store string) (StoreUsage, error) {
+	if err := contract.ValidateStoreName(store); err != nil {
+		return StoreUsage{}, err
+	}
+	stream, err := c.js.Stream(ctx, contract.StreamName(store))
+	if errors.Is(err, jetstream.ErrStreamNotFound) {
+		return StoreUsage{}, fmt.Errorf("%w: %s", ErrNoStore, store)
+	}
+	if err != nil {
+		return StoreUsage{}, fmt.Errorf("read the size of store %s: %w", store, err)
+	}
+	info, err := stream.Info(ctx)
+	if err != nil {
+		return StoreUsage{}, fmt.Errorf("read the size of store %s: %w", store, err)
+	}
+	return StoreUsage{Bytes: info.State.Bytes, MaxBytes: info.Config.MaxBytes}, nil
+}
+
 // GetStore reads one store's settings — its history policy, description
 // and size limit — a KV read of data at rest.
 func (c *Client) GetStore(ctx context.Context, store string) (contract.StoreConfig, error) {
