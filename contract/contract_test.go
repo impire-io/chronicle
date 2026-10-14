@@ -107,6 +107,9 @@ func TestLogStreamConfig(t *testing.T) {
 	if !cfg.AllowRollup || !cfg.DenyDelete {
 		t.Error("AllowRollup and DenyDelete are the 0008 table")
 	}
+	if cfg.DenyPurge {
+		t.Error("a compactable log cannot deny purge: the server refuses DenyPurge beside AllowRollup")
+	}
 	if cfg.Duplicates != DuplicateWindow {
 		t.Errorf("dedup window %v", cfg.Duplicates)
 	}
@@ -127,6 +130,9 @@ func TestLogStreamConfig(t *testing.T) {
 	}
 	if !preserved.DenyDelete {
 		t.Error("DenyDelete stands on a preserved log")
+	}
+	if !preserved.DenyPurge {
+		t.Error("a preserved log's stream must refuse purges too (0019 as amended)")
 	}
 	if explicit := StoreStreamConfig("my-log", 0, HistoryCompactable, false); !explicit.AllowRollup {
 		t.Error("an explicitly compactable log keeps AllowRollup")

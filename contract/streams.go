@@ -32,7 +32,8 @@ const DuplicateWindow = 2 * time.Minute
 // chronicle at log creation — the customer never hand-configures a stream.
 // maxBytes zero means the decided default; history is the log's 0019
 // declaration (empty means compactable) — a preserved log's stream refuses
-// rollup writes outright, so nothing can replace a subject's history.
+// rollup writes and purges outright, so nothing can replace or remove a
+// subject's history.
 // schedules turns on NATS message schedules and per-message TTLs
 // (decision 0050): the server appends a registered schedule's ticks
 // into the store's own stream, whether any reader is running.
@@ -48,11 +49,15 @@ func StoreStreamConfig(log string, maxBytes int64, history string, schedules boo
 		// MaxAge stays unset: rollup keeps the stream small; age-based
 		// expiry would delete independently of the state referencing it.
 		AllowRollup: NormalizeHistory(history) != HistoryFull,
-		DenyDelete:  true,
-		Duplicates:  DuplicateWindow,
-		Storage:     jetstream.FileStorage,
-		MaxBytes:    maxBytes,
-		Discard:     discardFor(schedules),
+		// DenyDelete refuses a single message's delete only; a purge is
+		// its own API call, refused by DenyPurge — which the server
+		// allows only where rollup is refused (0019 as amended).
+		DenyDelete: true,
+		DenyPurge:  NormalizeHistory(history) == HistoryFull,
+		Duplicates: DuplicateWindow,
+		Storage:    jetstream.FileStorage,
+		MaxBytes:   maxBytes,
+		Discard:    discardFor(schedules),
 		// Off by default: a store that allows schedules says so at creation.
 		AllowMsgSchedules: schedules,
 		AllowMsgTTL:       schedules,
