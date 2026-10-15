@@ -18,6 +18,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/impire-io/chronicle/client"
 	"github.com/impire-io/chronicle/devdir"
 )
 
@@ -227,6 +228,33 @@ func LoadContext(name string) (Context, bool, error) {
 		return Context{}, false, err
 	}
 	return Context(sc), true, nil
+}
+
+// Dial connects as the context, the way every account sentence does —
+// a credential file, an nkey with its principal, or the GitHub sign-in
+// through the install's bridge into the context's account, the stored
+// token refreshed when it is stale. A solution's own CLI speaks the
+// account the chronicle CLI does with it: LoadContext, then Dial; the
+// store the context selected is the Context's to read. A context that
+// names no way of being someone, or no url to be it at, is refused.
+func (c Context) Dial() (*client.Client, error) {
+	switch {
+	case c.Bridge != "":
+		if c.Account == "" {
+			return nil, fmt.Errorf("the context names a bridge but no account to land in: chronicle login saves both")
+		}
+		return dialThroughBridge(c.Bridge, c.Account)
+	case c.URL == "":
+		return nil, fmt.Errorf("the context names no url")
+	case c.Nkey != "":
+		if c.Principal == "" {
+			return nil, errNoPrincipal
+		}
+		return client.ConnectNkeyFile(c.URL, c.Nkey, c.Principal)
+	case c.Creds != "":
+		return client.ConnectFile(c.URL, c.Creds)
+	}
+	return nil, errNoCreds
 }
 
 // SelectContext makes a saved context the selection.

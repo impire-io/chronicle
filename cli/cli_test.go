@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/impire-io/chronicle/cli"
+	"github.com/impire-io/chronicle/client"
 	"github.com/impire-io/chronicle/devdir"
 	"github.com/impire-io/chronicle/internal/version"
 	"github.com/impire-io/chronicle/up"
@@ -432,5 +433,49 @@ func waitFor(t *testing.T, cond func() bool) {
 			t.Fatal("condition did not hold in time")
 		}
 		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// TestContextDial: a saved context dials the way an account sentence does
+// — the local context's nkey reaches the quick start, a sign-in context
+// dials through its bridge into its account, and a context that is nobody
+// is refused — so a solution's own CLI speaks the account chronicle's does
+// (chronicle-66).
+func TestContextDial(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	startLocal(ctx, t)
+	sc, ok, err := cli.LoadContext("")
+	if err != nil || !ok {
+		t.Fatalf("load the selected context: ok=%v err=%v", ok, err)
+	}
+	c, err := sc.Dial()
+	if err != nil {
+		t.Fatalf("dial the local context: %v", err)
+	}
+	defer c.Close()
+	for _, err := range c.ListStores(ctx) {
+		if err != nil {
+			t.Fatalf("list stores through the dialed context: %v", err)
+		}
+	}
+
+	var dialed [2]string
+	restore := cli.SetBridgeDial(func(profile, account string) (*client.Client, error) {
+		dialed = [2]string{profile, account}
+		return nil, errors.New("observed")
+	})
+	defer restore()
+	if _, err := (cli.Context{Bridge: "/p/install.json", Account: "acme"}).Dial(); err == nil || err.Error() != "observed" || dialed != [2]string{"/p/install.json", "acme"} {
+		t.Fatalf("a sign-in context must dial through its bridge into its account: err=%v dialed=%v", err, dialed)
+	}
+	if _, err := (cli.Context{Bridge: "/p/install.json"}).Dial(); err == nil || !strings.Contains(err.Error(), "no account") {
+		t.Fatalf("a bridge without an account must be refused: %v", err)
+	}
+	if _, err := (cli.Context{URL: "nats://x"}).Dial(); err == nil || !strings.Contains(err.Error(), "no credential") {
+		t.Fatalf("a context that is nobody must be refused: %v", err)
+	}
+	if _, err := (cli.Context{Nkey: "/k.nk", Principal: "p"}).Dial(); err == nil || !strings.Contains(err.Error(), "no url") {
+		t.Fatalf("a context without a url must be refused: %v", err)
 	}
 }
