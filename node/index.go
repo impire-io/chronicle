@@ -14,6 +14,7 @@ import (
 
 	"github.com/impire-io/chronicle/client"
 	"github.com/impire-io/chronicle/contract"
+	"github.com/impire-io/chronicle/registry"
 )
 
 // handleIndexDeclare declares an index (05-indexes.md): one META key,
@@ -36,7 +37,7 @@ func (n *node) handleIndexDeclare(req micro.Request) {
 		return
 	}
 	if err := n.requireRole(ctx, caller, contract.RoleAdmin); err != nil {
-		_ = req.Error(contract.CodeForbidden, err.Error(), nil)
+		_ = req.Error(registry.Code(err), err.Error(), nil)
 		return
 	}
 	if err := contract.ValidateStoreName(r.Store); err != nil {

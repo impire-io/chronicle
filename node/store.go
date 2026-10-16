@@ -41,10 +41,11 @@ func (n *node) listStores(ctx context.Context) ([]string, error) {
 	return logs, nil
 }
 
-// requireRole checks the caller's registry membership against the roles a
-// verb accepts — the shared check every API-serving component runs.
+// requireRole asks the node's resolver for the caller's role (decision
+// 0061) and checks it against the roles a verb accepts — the shared check
+// every API-serving component runs.
 func (n *node) requireRole(ctx context.Context, principal string, roles ...string) error {
-	return registry.RequireRole(ctx, n.meta, principal, roles...)
+	return registry.Require(ctx, n.roles, principal, roles...)
 }
 
 // requireCaller reads the caller from the request's subject — the name
@@ -57,7 +58,7 @@ func (n *node) requireCaller(ctx context.Context, req micro.Request, roles ...st
 		return err
 	}
 	if err := n.requireRole(ctx, caller, roles...); err != nil {
-		_ = req.Error(contract.CodeForbidden, err.Error(), nil)
+		_ = req.Error(registry.Code(err), err.Error(), nil)
 		return err
 	}
 	return nil

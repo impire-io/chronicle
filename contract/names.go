@@ -34,6 +34,29 @@ const APIRoot = Root + ".API"
 // 0055): the members' own, captured by nothing, answered by nothing.
 const LiveRoot = Root + ".LIVE"
 
+// RoleRoot is the role callout's root, CHRON.ROLE.<principal> (decision
+// 0061): the one request a chronicle component makes of the environment
+// on the account wire — asked by the node and the index kinds where the
+// operator selected the callout resolver, answered by the environment's
+// own responder with a RoleReply. The member baseline grants no member
+// the subject; the responder subscribes to RoleCalloutFilter under a
+// credential the operator gives it.
+const RoleRoot = Root + ".ROLE"
+
+// RoleCalloutFilter is what the environment's responder subscribes to.
+const RoleCalloutFilter = RoleRoot + ".>"
+
+// RoleSubject is the subject a component asks one principal's role on —
+// the principal in the last token, as every request that names a caller
+// carries it (0057); the payload is empty.
+func RoleSubject(principal string) string { return RoleRoot + "." + principal }
+
+// RoleReply is the responder's answer: the principal's role, one of
+// Roles, or no role at all — {} — for anyone who is not a member.
+type RoleReply struct {
+	Role string `json:"role,omitempty"`
+}
+
 // APISubject is the subject a caller speaks one verb on:
 // CHRON.API.<principal>.<verb>, the verb a dotted protocol token.
 func APISubject(principal, verb string) string {

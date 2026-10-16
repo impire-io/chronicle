@@ -44,6 +44,11 @@ const (
 	CodeSchemaViolation    = "schema-violation"
 	CodeInstanceExists     = "instance-exists"
 	CodeInstanceMoved      = "instance-moved"
+	// The role resolver's refusals (decision 0061): a callout the
+	// environment's responder did not answer, and a member verb spoken
+	// where membership is managed elsewhere.
+	CodeRoleSourceUnavailable = "role-source-unavailable"
+	CodeMembershipElsewhere   = "membership-elsewhere"
 )
 
 // ErrorCode is one catalogued code and what it means.
@@ -88,6 +93,8 @@ var ErrorCatalog = []ErrorCode{
 	{CodeSchemaViolation, "the data fails the operation's schema, or the state fails the type's"},
 	{CodeInstanceExists, "the instance already exists"},
 	{CodeInstanceMoved, "the instance moved past the expected sequence"},
+	{CodeRoleSourceUnavailable, "the environment's role responder did not answer, or answered outside the vocabulary; the request is refused, never answered from the registry"},
+	{CodeMembershipElsewhere, "membership is managed where the roles live: the roles come from the environment's responder, and the member verbs have nothing to record"},
 }
 
 // KnownErrorCode says whether a code is catalogued.

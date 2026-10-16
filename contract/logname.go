@@ -29,7 +29,7 @@ const (
 
 // ReservedStoreNames is the short reserved list refused at store creation
 // (wire contract § subject grammar), sorted.
-var ReservedStoreNames = []string{"api", "live", "meta", "sys"}
+var ReservedStoreNames = []string{"api", "live", "meta", "role", "sys"}
 
 var nameToken = regexp.MustCompile(NamePattern)
 

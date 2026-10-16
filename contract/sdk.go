@@ -8,7 +8,9 @@ import "time"
 // meaning bumps major. Unrelated to the envelope's Op-Version. 3.0.0 is
 // decision 0057: every verb's subject carries the caller, the principal
 // leaves every request, and the verified write joins the interactions.
-const ContractVersion = "3.0.0"
+// 3.1.0 is decision 0061: role joins the reserved store names, and the
+// role resolver's two refusals join the catalog.
+const ContractVersion = "3.1.0"
 
 // The interaction shapes an SDK may implement (design 12 § the shapes).
 // Every shape is describable in the artifact; an SDK implements the ones

@@ -3,6 +3,7 @@ package search_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"strings"
 	"sync"
@@ -17,6 +18,7 @@ import (
 	"github.com/impire-io/chronicle/index/search"
 	"github.com/impire-io/chronicle/internal/natstest"
 	"github.com/impire-io/chronicle/node"
+	"github.com/impire-io/chronicle/registry"
 )
 
 // setup provisions META the way control does — bucket plus identity
@@ -460,4 +462,72 @@ func queryAll(ctx context.Context, c *client.Client, log, index, query string) (
 	t, _ := s.Trailer()
 	r.Total = t.Total
 	return r, nil
+}
+
+// fakeRoles is an in-process resolver — the embedder's seam of decision
+// 0061 point 5 — answering from a map; a nil map is a source that does
+// not answer.
+type fakeRoles map[string]string
+
+func (f fakeRoles) Role(_ context.Context, principal string) (string, error) {
+	if f == nil {
+		return "", registry.ErrRoleSourceUnavailable
+	}
+	role, ok := f[principal]
+	if !ok {
+		return "", registry.ErrNotAMember
+	}
+	return role, nil
+}
+
+// TestSearchAsksTheResolver: the query endpoint asks the resolver the kind
+// was started with (decision 0061), not the registry — alice, the
+// registry's admin, is a stranger to this resolver and is refused; zoe,
+// whom the registry never heard of, is its reader and queries; a source
+// that does not answer refuses with its own code.
+func TestSearchAsksTheResolver(t *testing.T) {
+	nc, alice := setup(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	if _, err := alice.CreateStore(ctx, "orders", ""); err != nil {
+		t.Fatalf("create log: %v", err)
+	}
+	if _, err := alice.CreateFromSnapshot(ctx, "orders", "invoice/invoice-1", json.RawMessage(`{"title":"quantum widgets"}`)); err != nil {
+		t.Fatalf("create thing: %v", err)
+	}
+	if _, err := alice.DeclareIndex(ctx, "orders", "text", "search", nil); err != nil {
+		t.Fatalf("declare index: %v", err)
+	}
+	svc, err := search.Start(ctx, nc, search.Config{Store: "orders", Index: "text", Roles: fakeRoles{"zoe": contract.RoleReader}})
+	if err != nil {
+		t.Fatalf("start indexer: %v", err)
+	}
+
+	zoe, err := client.Wrap(alice.Conn(), "zoe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := queryAll(ctx, zoe, "orders", "text", "widgets")
+	if err != nil {
+		t.Fatalf("zoe's query: %v", err)
+	}
+	if len(resp.Hits) != 1 {
+		t.Fatalf("zoe's hits: %+v", resp)
+	}
+	_, err = queryAll(ctx, alice, "orders", "text", "widgets")
+	var serr *client.ServiceError
+	if !errors.As(err, &serr) || serr.Code != contract.CodeForbidden {
+		t.Fatalf("alice, unknown to the resolver: want forbidden, got %v", err)
+	}
+	svc.Stop()
+
+	silent, err := search.Start(ctx, nc, search.Config{Store: "orders", Index: "text", Roles: fakeRoles(nil)})
+	if err != nil {
+		t.Fatalf("start indexer: %v", err)
+	}
+	defer silent.Stop()
+	_, err = queryAll(ctx, zoe, "orders", "text", "widgets")
+	if !errors.As(err, &serr) || serr.Code != contract.CodeRoleSourceUnavailable {
+		t.Fatalf("a silent source: want role-source-unavailable, got %v", err)
+	}
 }

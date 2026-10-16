@@ -22,6 +22,11 @@ import (
 // composes its issuance with these same verbs, acting as the tenant's
 // service principal.
 
+// membershipElsewhere is the refusal every member verb answers under any
+// resolver but the registry (decision 0061 point 4): the roles come from
+// the environment, and the registry has nothing to record.
+const membershipElsewhere = "membership is managed where the roles live: this node asks the environment's role responder, and the registry has nothing to record"
+
 // handleMemberAdd records a membership: the principal record
 // create-if-absent (the durable identity may survive from a since-revoked
 // membership), the membership Create as the dedup gate — two adds of one
@@ -33,6 +38,10 @@ func (n *node) handleMemberAdd(req micro.Request) {
 	var r client.MemberAddRequest
 	if err := json.Unmarshal(req.Data(), &r); err != nil {
 		_ = req.Error(contract.CodeBadRequest, err.Error(), nil)
+		return
+	}
+	if !n.membershipHere {
+		_ = req.Error(contract.CodeMembershipElsewhere, membershipElsewhere, nil)
 		return
 	}
 	if err := n.requireCaller(ctx, req, contract.RoleAdmin); err != nil {
@@ -98,6 +107,10 @@ func (n *node) handleMemberRevoke(req micro.Request) {
 	var r client.MemberRevokeRequest
 	if err := json.Unmarshal(req.Data(), &r); err != nil {
 		_ = req.Error(contract.CodeBadRequest, err.Error(), nil)
+		return
+	}
+	if !n.membershipHere {
+		_ = req.Error(contract.CodeMembershipElsewhere, membershipElsewhere, nil)
 		return
 	}
 	if err := n.requireCaller(ctx, req, contract.RoleAdmin); err != nil {

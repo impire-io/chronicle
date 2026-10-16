@@ -226,6 +226,19 @@ things: **one account**, **JetStream** on it, and users in it. Then:
   chronicle context select prod
   ```
 
+- **Roles from your own platform.** Where your platform already keeps who
+  is a member and in which role, start the node and every indexer with
+  `--roles callout` and run one responder in the account: it subscribes to
+  `CHRON.ROLE.>`, reads the principal from the subject's last token, and
+  replies `{"role":"admin"}` (`writer`, `reader`) for a member and `{}`
+  for anyone else — in any language, under a user you grant that
+  subscription to. Chronicle then asks it on every verb and query and
+  never reads the registry: `member add`, `member remove` and the
+  `service-account` sentences are refused, membership is yours to manage
+  where it already lives, and a responder that does not answer within two
+  seconds refuses the request rather than guessing. The default, `--roles
+  meta`, is the registry the first run seeded.
+
 What this form cannot do, by construction: create a second account, place
 a workload on another host, run anything in a microVM, run the bridge that
 signs a human in with GitHub, invite anyone. Those are the managed service.

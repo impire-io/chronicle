@@ -15,6 +15,7 @@ import (
 	"github.com/impire-io/chronicle/contract"
 	"github.com/impire-io/chronicle/index/projection"
 	"github.com/impire-io/chronicle/internal/version"
+	"github.com/impire-io/chronicle/registry"
 )
 
 // Config names the one index this service materializes.
@@ -23,6 +24,9 @@ type Config struct {
 	Index string
 	// Logger receives the fold's warnings; nil means slog.Default.
 	Logger *slog.Logger
+	// Roles answers the role question for queries (decision 0061); nil
+	// means the registry in META. The binary sets it from --roles.
+	Roles registry.Resolver
 }
 
 // Service is one running chronicle-index-search instance.
@@ -71,6 +75,7 @@ func Start(ctx context.Context, nc *nats.Conn, cfg Config) (*Service, error) {
 		Kind:   "search index",
 		Source: scfg.Source,
 		Types:  scfg.Types,
+		Roles:  cfg.Roles,
 		Logger: logger,
 		NewRun: func() (projection.Run, error) { return newSearchRun(cfg.Store, ops, logger) },
 	})
@@ -127,7 +132,7 @@ func (s *Service) handleQuery(req micro.Request) {
 		_ = req.Error(contract.CodeBadRequest, err.Error(), nil)
 		return
 	}
-	if err := projection.RequireCaller(ctx, s.proj.Meta(), req); err != nil {
+	if err := s.proj.RequireCaller(ctx, req); err != nil {
 		return
 	}
 	run, ok := s.proj.Serving().(*searchRun)

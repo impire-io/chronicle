@@ -12,6 +12,7 @@ import (
 
 	"github.com/impire-io/chronicle/client"
 	"github.com/impire-io/chronicle/contract"
+	"github.com/impire-io/chronicle/registry"
 )
 
 // handleApply is the verified write (decision 0057): one operation,
@@ -35,7 +36,7 @@ func (n *node) handleApply(req micro.Request) {
 		return
 	}
 	if err := n.requireRole(ctx, caller, contract.RoleAdmin, contract.RoleWriter); err != nil {
-		_ = req.Error(contract.CodeForbidden, err.Error(), nil)
+		_ = req.Error(registry.Code(err), err.Error(), nil)
 		return
 	}
 	if err := contract.ValidateStoreName(store); err != nil {

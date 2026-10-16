@@ -29,17 +29,18 @@ import (
 )
 
 // RequireCaller reads the caller from a query's subject — the name the
-// server bound to the connection (decision 0057) — and checks it holds a
-// registry role: any role may query. It answers the refusal itself; the
-// handler returns on a non-nil error.
-func RequireCaller(ctx context.Context, meta jetstream.KeyValue, req micro.Request) error {
+// server bound to the connection (decision 0057) — and asks the resolver
+// the projection was started with for its role (decision 0061): any role
+// may query. It answers the refusal itself; the handler returns on a
+// non-nil error.
+func (p *Projection) RequireCaller(ctx context.Context, req micro.Request) error {
 	caller, err := contract.CallerFromSubject(req.Subject())
 	if err != nil {
 		_ = req.Error(contract.CodeBadRequest, err.Error(), nil)
 		return err
 	}
-	if err := registry.RequireRole(ctx, meta, caller, contract.RoleAdmin, contract.RoleWriter, contract.RoleReader); err != nil {
-		_ = req.Error(contract.CodeForbidden, err.Error(), nil)
+	if err := registry.Require(ctx, p.roles, caller, contract.RoleAdmin, contract.RoleWriter, contract.RoleReader); err != nil {
+		_ = req.Error(registry.Code(err), err.Error(), nil)
 		return err
 	}
 	return nil
@@ -100,6 +101,11 @@ type Config struct {
 	NewRun func() (Run, error)
 	// Logger; nil means slog.Default.
 	Logger *slog.Logger
+	// Roles answers the role question for queries (decision 0061): nil
+	// means the registry in META, which the projection opens itself; a
+	// composition sets the callout resolver where the environment keeps
+	// the roles, and every kind passes it through.
+	Roles registry.Resolver
 }
 
 // Projection is one running spine.
@@ -112,6 +118,7 @@ type Projection struct {
 	nc     *nats.Conn
 	js     jetstream.JetStream
 	meta   jetstream.KeyValue
+	roles  registry.Resolver
 	stream jetstream.Stream
 
 	serving   serving
@@ -154,6 +161,11 @@ func Start(ctx context.Context, nc *nats.Conn, cfg Config) (*Projection, error) 
 		logger = slog.Default()
 	}
 
+	roles := cfg.Roles
+	if roles == nil {
+		roles = registry.Meta(meta)
+	}
+
 	requireVerified, err := foldcore.StoreRequiresVerified(ctx, meta, cfg.Store)
 	if err != nil {
 		return nil, fmt.Errorf("read store %q configuration: %w", cfg.Store, err)
@@ -167,6 +179,7 @@ func Start(ctx context.Context, nc *nats.Conn, cfg Config) (*Projection, error) 
 		nc:              nc,
 		js:              js,
 		meta:            meta,
+		roles:           roles,
 		stream:          stream,
 		rebuildCh:       make(chan struct{}, 1),
 		requireVerified: requireVerified,
