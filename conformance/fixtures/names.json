@@ -47,6 +47,11 @@
       "valid": false
     },
     {
+      "kind": "store",
+      "input": "role",
+      "valid": false
+    },
+    {
       "kind": "index",
       "input": "text",
       "valid": true

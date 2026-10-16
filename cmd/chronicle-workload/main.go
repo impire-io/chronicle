@@ -30,6 +30,7 @@ import (
 	"github.com/impire-io/chronicle/index/semantic"
 	"github.com/impire-io/chronicle/internal/version"
 	"github.com/impire-io/chronicle/node"
+	"github.com/impire-io/chronicle/registry"
 )
 
 func main() {
@@ -50,6 +51,7 @@ func run() error {
 	embedURL := flag.String("embedding-url", "", "OpenAI-compatible embedding endpoint (semantic kind)")
 	embedModel := flag.String("embedding-model", "", "embedding model (semantic kind)")
 	embedKeyFile := flag.String("embedding-key-file", "", "file carrying the provider key (semantic kind)")
+	roles := flag.String("roles", registry.SourceMeta, "where a caller's role is answered from: meta, the account's own registry, or callout, the environment's own responder on CHRON.ROLE.<principal> (decision 0061)")
 	flag.Parse()
 	if (*creds == "") == (*nkey == "") {
 		return fmt.Errorf("exactly one of --creds and --nkey is required")
@@ -81,12 +83,17 @@ func run() error {
 	}
 	defer c.Close()
 
+	resolver, err := registry.ForSource(*roles, c.Conn())
+	if err != nil {
+		return err
+	}
+
 	startCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	var stopWorkload func()
 	switch *kind {
 	case contract.WorkloadKindNode:
-		n, err := node.Start(startCtx, c.Conn(), node.Config{Signer: signer})
+		n, err := node.Start(startCtx, c.Conn(), node.Config{Signer: signer, Roles: resolver})
 		if err != nil {
 			return err
 		}
@@ -95,7 +102,7 @@ func run() error {
 		if *logName == "" || *index == "" {
 			return fmt.Errorf("kind %s needs --log and --index", *kind)
 		}
-		svc, err := search.Start(startCtx, c.Conn(), search.Config{Store: *logName, Index: *index})
+		svc, err := search.Start(startCtx, c.Conn(), search.Config{Store: *logName, Index: *index, Roles: resolver})
 		if err != nil {
 			return err
 		}
@@ -104,7 +111,7 @@ func run() error {
 		if *logName == "" || *index == "" {
 			return fmt.Errorf("kind %s needs --log and --index", *kind)
 		}
-		svc, err := graph.Start(startCtx, c.Conn(), graph.Config{Store: *logName, Index: *index})
+		svc, err := graph.Start(startCtx, c.Conn(), graph.Config{Store: *logName, Index: *index, Roles: resolver})
 		if err != nil {
 			return err
 		}
@@ -121,7 +128,7 @@ func run() error {
 			}
 			provider.APIKey = strings.TrimSpace(string(key))
 		}
-		svc, err := semantic.Start(startCtx, c.Conn(), semantic.Config{Store: *logName, Index: *index, Provider: provider})
+		svc, err := semantic.Start(startCtx, c.Conn(), semantic.Config{Store: *logName, Index: *index, Provider: provider, Roles: resolver})
 		if err != nil {
 			return err
 		}

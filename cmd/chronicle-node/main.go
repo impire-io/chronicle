@@ -2,7 +2,9 @@
 // the CHRON.API.> verbs, connected to that account on the
 // operator's own NATS — with a creds file, or an nkey seed. The first
 // run of a fresh account seeds the registry with its admin (--admin);
-// after that, membership is the registry's.
+// after that, membership is the registry's — unless the environment keeps
+// the roles itself, in which case --roles callout asks its responder for
+// every caller's role (decision 0061) and the registry is never read.
 package main
 
 import (
@@ -35,6 +37,7 @@ func run() error {
 	creds := flag.String("creds", "", "the account's service-user credentials (.creds)")
 	nkey := flag.String("nkey", "", "the account's service user as an nkey seed file (instead of --creds)")
 	admin := flag.String("admin", "", "seed the registry with this admin principal when the account has none yet")
+	roles := flag.String("roles", registry.SourceMeta, "where a caller's role is answered from: meta, the account's own registry, or callout, the environment's own responder on CHRON.ROLE.<principal> (decision 0061)")
 	flag.Parse()
 	if (*creds == "") == (*nkey == "") {
 		return fmt.Errorf("exactly one of --creds and --nkey is required")
@@ -63,6 +66,14 @@ func run() error {
 	}
 	defer c.Close()
 
+	resolver, err := registry.ForSource(*roles, c.Conn())
+	if err != nil {
+		return err
+	}
+	if *admin != "" && resolver != nil {
+		return fmt.Errorf("--admin seeds the registry, which --roles %s never reads", *roles)
+	}
+
 	startCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	if *admin != "" {
@@ -74,7 +85,7 @@ func run() error {
 			return err
 		}
 	}
-	n, err := node.Start(startCtx, c.Conn(), node.Config{Signer: signer})
+	n, err := node.Start(startCtx, c.Conn(), node.Config{Signer: signer, Roles: resolver})
 	if err != nil {
 		return err
 	}

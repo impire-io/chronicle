@@ -23,6 +23,7 @@ import (
 	"github.com/impire-io/chronicle/contract"
 	"github.com/impire-io/chronicle/foldcore"
 	"github.com/impire-io/chronicle/internal/version"
+	"github.com/impire-io/chronicle/registry"
 )
 
 // Config adjusts one node.
@@ -51,6 +52,12 @@ type Config struct {
 	// everywhere — a substrate without the fleet machinery warns and
 	// serves.
 	Indexes IndexReporter
+	// Roles answers the role question for every verb (decision 0061).
+	// Nil means the registry in META, which the node opens itself and
+	// whose member verbs it serves. Any other resolver — the callout to
+	// the environment's responder, or an embedder's own — makes
+	// membership the environment's: the member verbs are refused.
+	Roles registry.Resolver
 }
 
 // IndexReporter is the node's half of the dispatch surface. In the
@@ -83,12 +90,17 @@ func (n *Node) Stop() {
 }
 
 type node struct {
-	nc          *nats.Conn
-	js          jetstream.JetStream
-	meta        jetstream.KeyValue
-	logger      *slog.Logger
-	rollupEvery time.Duration
-	indexes     IndexReporter
+	nc    *nats.Conn
+	js    jetstream.JetStream
+	meta  jetstream.KeyValue
+	roles registry.Resolver
+	// membershipHere is true when the registry is the role source — the
+	// member verbs have something to write. Under any other resolver
+	// membership is managed where the roles live (0061) and they refuse.
+	membershipHere bool
+	logger         *slog.Logger
+	rollupEvery    time.Duration
+	indexes        IndexReporter
 
 	// signer and attester are the verified write's (0057): the key the
 	// node signs with and its public form; preflight is the client's own
@@ -151,25 +163,31 @@ func Start(ctx context.Context, nc *nats.Conn, cfg Config) (*Node, error) {
 	if indexes == nil {
 		indexes = &bridgeReporter{nc: nc}
 	}
+	roles := cfg.Roles
+	if roles == nil {
+		roles = registry.Meta(meta)
+	}
 	preflight, err := client.Wrap(nc, contract.ServicePrincipal)
 	if err != nil {
 		cancel()
 		return nil, err
 	}
 	n := &node{
-		nc:          nc,
-		js:          js,
-		meta:        meta,
-		logger:      logger,
-		rollupEvery: rollupEvery,
-		indexes:     indexes,
-		signer:      cfg.Signer,
-		preflight:   preflight,
-		verifier:    foldcore.NewVerifier(meta),
-		foldCtx:     foldCtx,
-		wg:          &sync.WaitGroup{},
-		folds:       map[string]*foldRun{},
-		rolls:       map[string]*sync.Mutex{},
+		nc:             nc,
+		js:             js,
+		meta:           meta,
+		roles:          roles,
+		membershipHere: cfg.Roles == nil,
+		logger:         logger,
+		rollupEvery:    rollupEvery,
+		indexes:        indexes,
+		signer:         cfg.Signer,
+		preflight:      preflight,
+		verifier:       foldcore.NewVerifier(meta),
+		foldCtx:        foldCtx,
+		wg:             &sync.WaitGroup{},
+		folds:          map[string]*foldRun{},
+		rolls:          map[string]*sync.Mutex{},
 	}
 
 	// The attester key (0057): the node's own, recorded create-if-absent
