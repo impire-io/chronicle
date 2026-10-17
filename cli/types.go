@@ -67,6 +67,7 @@ func (x *runner) typeNoun() *noun {
 			{"get TYPE", "one type in full", x.typeGet},
 			{"create TYPE -f FILE", "define a type from a YAML or JSON file; again to make its next revision", x.typeCreate},
 			{"init TYPE", "write a commented type file to edit", x.typeInit},
+			{"delete TYPE", "delete a type: its instances keep their history and are untyped until the type is defined again", x.typeDelete},
 		},
 	}
 }
@@ -517,4 +518,44 @@ func sortedStrings(s []string) []string {
 		}
 	}
 	return out
+}
+
+// typeDelete narrates what it triggers, then acts (decision 0062): the
+// instances of the type keep their history, are no longer listed and have
+// no state derived for them, until the type is defined again.
+func (x *runner) typeDelete(ctx context.Context, args []string, out io.Writer) error {
+	fs := flags("type delete", "delete TYPE", "delete a type: its instances keep their history and are untyped until the type is defined again", out)
+	cf := x.connect(fs)
+	pos, err := parse(fs, args)
+	if err != nil {
+		return done(err)
+	}
+	if err := positionals(fs, pos, 1, "one type name"); err != nil {
+		return err
+	}
+	c, store, _, err := x.loadType(ctx, cf, out, pos[0])
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	count := 0
+	for _, err := range c.ListInstances(ctx, store, client.ByType(pos[0])) {
+		if err != nil {
+			return err
+		}
+		count++
+	}
+	switch count {
+	case 0:
+		fmt.Fprintf(out, "no instances of %s are listed; any in the history stay there and are untyped until the type is defined again\n", pos[0])
+	case 1:
+		fmt.Fprintf(out, "1 instance of %s becomes untyped: its history is kept, its state is no longer derived, and it leaves the listings until the type is defined again\n", pos[0])
+	default:
+		fmt.Fprintf(out, "%d instances of %s become untyped: their history is kept, their state is no longer derived, and they leave the listings until the type is defined again\n", count, pos[0])
+	}
+	if _, err := c.DeleteType(ctx, store, pos[0]); err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "type %s deleted\n", pos[0])
+	return nil
 }

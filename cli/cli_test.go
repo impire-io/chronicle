@@ -254,11 +254,59 @@ func TestCLISpine(t *testing.T) {
 	if !strings.Contains(out, "billing-svc") || strings.Contains(out, "jordan") {
 		t.Fatalf("service-account list: %s", out)
 	}
-	if _, err := runErr(ctx, "member", "set-role", "jordan", "admin"); err == nil || !strings.Contains(err.Error(), "not available yet") {
-		t.Fatalf("set-role must say it waits on its verb: %v", err)
+	// A role changes in place (decision 0062), on either noun; the only
+	// admin keeps the role.
+	out = run(ctx, t, "member", "set-role", "jordan", "admin")
+	if !strings.Contains(out, "member jordan is now admin") {
+		t.Fatalf("set-role: %s", out)
+	}
+	out = run(ctx, t, "service-account", "set-role", "billing-svc", "reader")
+	if !strings.Contains(out, "service account billing-svc is now reader") {
+		t.Fatalf("service-account set-role: %s", out)
+	}
+	out = run(ctx, t, "member", "list")
+	if !strings.Contains(out, "admin") {
+		t.Fatalf("member list after set-role: %s", out)
+	}
+	run(ctx, t, "member", "set-role", "jordan", "reader")
+	if _, err := runErr(ctx, "member", "set-role", "admin", "reader"); err == nil || !strings.Contains(err.Error(), "only admin") {
+		t.Fatalf("the sole admin must keep the role: %v", err)
+	}
+	if _, err := runErr(ctx, "member", "set-role", "jordan", "owner"); err == nil || !strings.Contains(err.Error(), "admin, writer or reader") {
+		t.Fatalf("a role outside the vocabulary must be refused: %v", err)
 	}
 	run(ctx, t, "member", "remove", "jordan")
 	run(ctx, t, "service-account", "revoke", "billing-svc")
+
+	// A type is deleted with its consequence said first; defining it
+	// again brings its instances back (decision 0062).
+	out = run(ctx, t, "type", "delete", "invoice")
+	if !strings.Contains(out, "become untyped") && !strings.Contains(out, "becomes untyped") || !strings.Contains(out, "type invoice deleted") {
+		t.Fatalf("type delete: %s", out)
+	}
+	if _, err := runErr(ctx, "type", "delete", "invoice"); err == nil || !strings.Contains(err.Error(), "invoice") {
+		t.Fatalf("deleting an undefined type must teach: %v", err)
+	}
+	out = run(ctx, t, "type", "list")
+	if strings.Contains(out, "invoice") {
+		t.Fatalf("type list after delete: %s", out)
+	}
+
+	// A store is deleted, whole, and the name is free again.
+	run(ctx, t, "store", "create", "scratch")
+	out = run(ctx, t, "store", "delete", "scratch")
+	if !strings.Contains(out, "deleting store scratch") || !strings.Contains(out, "store scratch deleted") || !strings.Contains(out, "no store selected now") {
+		t.Fatalf("store delete: %s", out)
+	}
+	out = run(ctx, t, "store", "list")
+	if strings.Contains(out, "scratch") || !strings.Contains(out, "orders") || !strings.Contains(out, "STATUS") {
+		t.Fatalf("store list after delete: %s", out)
+	}
+	if _, err := runErr(ctx, "store", "delete", "scratch"); err == nil || !strings.Contains(err.Error(), "scratch") {
+		t.Fatalf("deleting a store that is gone must say so: %v", err)
+	}
+	run(ctx, t, "store", "create", "scratch")
+	run(ctx, t, "store", "delete", "scratch")
 }
 
 // TestCLIIndexes declares, lists and queries an index in the new words,

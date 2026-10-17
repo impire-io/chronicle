@@ -250,6 +250,17 @@ func (c *Client) createTail(ctx context.Context, log, thing, opType string, payl
 	if payload == nil {
 		payload = []byte(`{}`)
 	}
+	// A create applies one of the type's operations (0021 § 2, 0045): a
+	// path that resolves to no type has none to apply — a type that was
+	// never defined, or one that was deleted (decision 0062). The untyped
+	// form is CreateFromSnapshot.
+	res, err := c.types.resolve(ctx, log, thing)
+	if err != nil {
+		return Ack{}, err
+	}
+	if res.Kind == contract.ResolvedUntyped {
+		return Ack{}, fmt.Errorf("%w: %s resolves to no type in store %s — define the type, or create the instance from a snapshot", ErrNoType, contract.TailPath(thing), log)
+	}
 	if err := c.types.preflightAppend(ctx, log, thing, opType, payload); err != nil {
 		return Ack{}, err
 	}

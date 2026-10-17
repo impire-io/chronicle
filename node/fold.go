@@ -107,13 +107,7 @@ func (n *node) rebuildStore(ctx context.Context, log string) error {
 	mu.Lock()
 	defer mu.Unlock()
 
-	n.mu.Lock()
-	run := n.folds[log]
-	delete(n.folds, log)
-	n.mu.Unlock()
-	if run != nil {
-		run.stop()
-	}
+	n.stopFold(log)
 	states, err := n.js.KeyValue(ctx, contract.StateBucket(log))
 	if err != nil {
 		return fmt.Errorf("open state bucket: %w", err)

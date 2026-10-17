@@ -83,8 +83,7 @@ func (n *node) handleIndexDeclare(req micro.Request) {
 			return
 		}
 	}
-	if _, err := n.meta.Get(ctx, contract.MetaStoreConfig(r.Store)); err != nil {
-		_ = req.Error(contract.CodeNoSuchStore, fmt.Sprintf("store %q does not exist", r.Store), nil)
+	if !n.requireStore(ctx, req, r.Store) {
 		return
 	}
 

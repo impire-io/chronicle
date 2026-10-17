@@ -117,7 +117,10 @@ chronicle index query text x
 The grammar is one shape, noun then verb: `store`, `type`, `op`,
 `instance`, `index`, `member`, `service-account`, `context`, `account`,
 and every noun has `list`, `get`, `create` and `delete` where they mean
-something. `--help` works on every command, `chronicle help <noun>` lists
+something — `store delete` takes the store's history, state and indexes
+with it, whatever the history policy, and `type delete` leaves the type's
+instances in the history, untyped until the type is defined again.
+`--help` works on every command, `chronicle help <noun>` lists
 a noun's verbs, and every list is a table (`--output json|jsonl|yaml` for
 tools).
 
@@ -221,7 +224,8 @@ things: **one account**, **JetStream** on it, and users in it. Then:
 
   Members and service accounts, with their roles, live in the account
   and the node enforces them (`chronicle member add`, `chronicle
-  service-account create`); the principal a client acts as is the
+  service-account create`; `set-role` changes a role in place, from the
+  next request on, and the only admin keeps theirs); the principal a client acts as is the
   credential file's name, or stated beside an nkey. Save the connection
   once and speak through it:
 
@@ -238,8 +242,8 @@ things: **one account**, **JetStream** on it, and users in it. Then:
   replies `{"role":"admin"}` (`writer`, `reader`) for a member and `{}`
   for anyone else — in any language, under a user you grant that
   subscription to. Chronicle then asks it on every verb and query and
-  never reads the registry: `member add`, `member remove` and the
-  `service-account` sentences are refused, membership is yours to manage
+  never reads the registry: `member add`, `member remove`, `set-role` and
+  the `service-account` sentences are refused, membership is yours to manage
   where it already lives, and a responder that does not answer within two
   seconds refuses the request rather than guessing. The default, `--roles
   meta`, is the registry the first run seeded.

@@ -47,8 +47,7 @@ func (n *node) handleApply(req micro.Request) {
 		_ = req.Error(contract.CodeBadInstance, err.Error(), nil)
 		return
 	}
-	if _, err := n.meta.Get(ctx, contract.MetaStoreConfig(store)); err != nil {
-		_ = req.Error(contract.CodeNoSuchStore, fmt.Sprintf("store %q does not exist", store), nil)
+	if !n.requireStore(ctx, req, store) {
 		return
 	}
 

@@ -9,8 +9,10 @@ import "time"
 // decision 0057: every verb's subject carries the caller, the principal
 // leaves every request, and the verified write joins the interactions.
 // 3.1.0 is decision 0061: role joins the reserved store names, and the
-// role resolver's two refusals join the catalog.
-const ContractVersion = "3.2.0"
+// role resolver's two refusals join the catalog. 3.3.0 is decision 0062:
+// a store and a type may be deleted and a role changed — three
+// interactions and three codes.
+const ContractVersion = "3.3.0"
 
 // The interaction shapes an SDK may implement (design 12 § the shapes).
 // Every shape is describable in the artifact; an SDK implements the ones

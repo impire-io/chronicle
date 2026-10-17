@@ -57,6 +57,8 @@ type step struct {
 	VerifiedAuthors bool    `json:"verifiedAuthors"`
 	Verified        bool    `json:"verified"`
 	As              string  `json:"as"`
+	Member          string  `json:"member"`
+	Role            string  `json:"role"`
 	After           *uint64 `json:"after"`
 	Then            *step   `json:"then"`
 	Expect          *expect `json:"expect"`
@@ -67,18 +69,20 @@ type expect struct {
 	Types []string        `json:"types"`
 	// Verified says every operation read is (or is not) verified;
 	// VerifiedEach says it per operation, in order.
-	Verified     *bool           `json:"verified"`
-	VerifiedEach []bool          `json:"verifiedEach"`
-	Items        []string        `json:"items"`
-	Instances    []string        `json:"instances"`
-	Total        *uint64         `json:"total"`
-	Count        *uint64         `json:"count"`
-	Error        string          `json:"error"`
-	Taken        *bool           `json:"taken"`
-	Type         string          `json:"type"`
-	First        json.RawMessage `json:"first"`
-	Contains     json.RawMessage `json:"contains"`
-	Arrives      string          `json:"arrives"`
+	Verified     *bool    `json:"verified"`
+	VerifiedEach []bool   `json:"verifiedEach"`
+	Items        []string `json:"items"`
+	// Roles names the role expected per member in a list.members step.
+	Roles     map[string]string `json:"roles"`
+	Instances []string          `json:"instances"`
+	Total     *uint64           `json:"total"`
+	Count     *uint64           `json:"count"`
+	Error     string            `json:"error"`
+	Taken     *bool             `json:"taken"`
+	Type      string            `json:"type"`
+	First     json.RawMessage   `json:"first"`
+	Contains  json.RawMessage   `json:"contains"`
+	Arrives   string            `json:"arrives"`
 }
 
 type scenario struct {
@@ -257,6 +261,21 @@ func (r *runner) perform(label string, s step) error {
 	case "index.delete":
 		_, err := r.c.DeleteIndex(ctx, s.Store, s.Index)
 		return err
+	case "store.delete":
+		_, err := r.c.DeleteStore(ctx, s.Store)
+		return err
+	case "type.delete":
+		_, err := r.c.DeleteType(ctx, s.Store, s.Type)
+		return err
+	case "member.add":
+		_, err := r.c.AddMember(ctx, s.Member, s.Role)
+		return err
+	case "member.set-role":
+		_, err := r.c.SetRole(ctx, s.Member, s.Role)
+		return err
+	case "member.revoke":
+		_, err := r.c.RevokeMember(ctx, s.Member)
+		return err
 	case "instance.create.snapshot":
 		_, err := r.c.CreateFromSnapshot(ctx, s.Store, s.Instance, s.Payload)
 		return err
@@ -400,11 +419,18 @@ func (r *runner) perform(label string, s step) error {
 					items = append(items, info.Name)
 				}
 			case "list.members":
+				roles := map[string]string{}
 				for m, merr := range r.c.ListMembers(ctx) {
 					if merr != nil {
 						return merr
 					}
 					items = append(items, m.Name)
+					roles[m.Name] = m.Role
+				}
+				for name, want := range s.Expect.Roles {
+					if roles[name] != want {
+						return fmt.Errorf("member %s has role %q, want %q", name, roles[name], want)
+					}
 				}
 			}
 			if err != nil {

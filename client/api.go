@@ -29,6 +29,9 @@ const (
 	verbIndexDelete      = "INDEX.DELETE"
 	verbMemberAdd        = "MEMBER.ADD"
 	verbMemberRevoke     = "MEMBER.REVOKE"
+	verbStoreDelete      = "LOG.DELETE"
+	verbTypeDelete       = "TYPE.DELETE"
+	verbMemberSetRole    = "MEMBER.SET_ROLE"
 	verbPing             = "PING"
 	verbIndexQuery       = "INDEX.QUERY"
 	verbApply            = "APPLY"
@@ -69,6 +72,24 @@ func MemberRevokeSubject(principal string) string {
 	return contract.APISubject(principal, verbMemberRevoke)
 }
 
+// StoreDeleteSubject is the subject a caller deletes a store on
+// (decision 0062).
+func StoreDeleteSubject(principal string) string {
+	return contract.APISubject(principal, verbStoreDelete)
+}
+
+// TypeDeleteSubject is the subject a caller deletes a type on (decision
+// 0062).
+func TypeDeleteSubject(principal string) string {
+	return contract.APISubject(principal, verbTypeDelete)
+}
+
+// MemberSetRoleSubject is the subject a caller changes a member's role on
+// (decision 0062).
+func MemberSetRoleSubject(principal string) string {
+	return contract.APISubject(principal, verbMemberSetRole)
+}
+
 // PingSubject is the subject a caller pings the node on.
 func PingSubject(principal string) string { return contract.APISubject(principal, verbPing) }
 
@@ -81,6 +102,9 @@ var (
 	IndexDeleteEndpoint      = contract.APIEndpoint(verbIndexDelete)
 	MemberAddEndpoint        = contract.APIEndpoint(verbMemberAdd)
 	MemberRevokeEndpoint     = contract.APIEndpoint(verbMemberRevoke)
+	StoreDeleteEndpoint      = contract.APIEndpoint(verbStoreDelete)
+	TypeDeleteEndpoint       = contract.APIEndpoint(verbTypeDelete)
+	MemberSetRoleEndpoint    = contract.APIEndpoint(verbMemberSetRole)
 	PingEndpoint             = contract.APIEndpoint(verbPing)
 	// ApplyEndpoint is the verified write's: CHRON.API.*.APPLY.>, the
 	// store and the instance's tail after the verb.
@@ -298,6 +322,49 @@ type MemberRevokeResponse struct {
 	PublicKey string `json:"public_key,omitempty"`
 }
 
+// StoreDeleteRequest deletes a store (decision 0062): total and
+// irreversible — its history, state and indexes go, whatever the history
+// policy — in a fixed order a second request finishes from any step of.
+// The name may be created again once it is gone.
+type StoreDeleteRequest struct {
+	Store string `json:"store"`
+}
+
+// StoreDeleteResponse acknowledges the deletion.
+type StoreDeleteResponse struct {
+	Deleted bool `json:"deleted"`
+}
+
+// TypeDeleteRequest deletes a type (decision 0062): the record goes and
+// the store's state is rebuilt under what remains, so every instance that
+// resolved through the type is untyped from then on — its history kept,
+// no state derived for it beyond a snapshot's, absent from the listings
+// until the type is defined again, which restores it.
+type TypeDeleteRequest struct {
+	Store string `json:"store"`
+	Type  string `json:"type"`
+}
+
+// TypeDeleteResponse acknowledges the deletion.
+type TypeDeleteResponse struct {
+	Deleted bool `json:"deleted"`
+}
+
+// MemberSetRoleRequest changes a membership's role in place (decision
+// 0062) — a member's or a service account's — effective from the
+// principal's next request; the credential is untouched. The account's
+// only admin cannot be demoted.
+type MemberSetRoleRequest struct {
+	Member string `json:"member"`
+	Role   string `json:"role"`
+}
+
+// MemberSetRoleResponse names the membership and the role it now holds.
+type MemberSetRoleResponse struct {
+	Member string `json:"member"`
+	Role   string `json:"role"`
+}
+
 // About answers the ping verb.
 type About struct {
 	Name    string `json:"name"`
@@ -477,10 +544,39 @@ func (c *Client) AddMember(ctx context.Context, member, role string, opts ...Mem
 	return Request[MemberAddRequest, MemberAddResponse](ctx, c.nc, MemberAddSubject(c.author), r)
 }
 
-// RevokeMember retires a membership (admin only).
+// RevokeMember retires a membership (admin only). The account's only
+// admin cannot be revoked.
 func (c *Client) RevokeMember(ctx context.Context, member string) (MemberRevokeResponse, error) {
 	return Request[MemberRevokeRequest, MemberRevokeResponse](ctx, c.nc, MemberRevokeSubject(c.author), MemberRevokeRequest{
 		Member: member,
+	})
+}
+
+// SetRole changes a membership's role in place (admin only): effective
+// from the principal's next request, the credential untouched. The
+// account's only admin cannot be demoted.
+func (c *Client) SetRole(ctx context.Context, member, role string) (MemberSetRoleResponse, error) {
+	return Request[MemberSetRoleRequest, MemberSetRoleResponse](ctx, c.nc, MemberSetRoleSubject(c.author), MemberSetRoleRequest{
+		Member: member,
+		Role:   role,
+	})
+}
+
+// DeleteStore deletes a store (admin only): total and irreversible, its
+// history, state and indexes gone whatever the history policy. A second
+// call on a store mid-deletion finishes it.
+func (c *Client) DeleteStore(ctx context.Context, store string) (StoreDeleteResponse, error) {
+	return Request[StoreDeleteRequest, StoreDeleteResponse](ctx, c.nc, StoreDeleteSubject(c.author), StoreDeleteRequest{
+		Store: store,
+	})
+}
+
+// DeleteType deletes a type (admin only): its instances keep their
+// history and are untyped until the type is defined again.
+func (c *Client) DeleteType(ctx context.Context, store, name string) (TypeDeleteResponse, error) {
+	return Request[TypeDeleteRequest, TypeDeleteResponse](ctx, c.nc, TypeDeleteSubject(c.author), TypeDeleteRequest{
+		Store: store,
+		Type:  name,
 	})
 }
 
