@@ -356,6 +356,7 @@ type opRow struct {
 	Author    string          `json:"author"`
 	Verified  bool            `json:"verified"`
 	Time      string          `json:"time,omitempty"`
+	Mark      string          `json:"mark,omitempty"`
 	ID        string          `json:"id"`
 	Parents   []string        `json:"parents,omitempty"`
 	Data      json.RawMessage `json:"data"`
@@ -373,7 +374,7 @@ func toOpRow(op contract.Op) opRow {
 }
 
 func (x *runner) instanceHistory(ctx context.Context, args []string, out io.Writer) error {
-	fs := flags("instance history", "history PATH [--from SEQ] [--follow] [--children]", "an instance's operations in order", out)
+	fs := flags("instance history", "history PATH [--from SEQ] [--follow] [--children]", "an instance's operations in order; one the state did not take — applied out of turn, off the type's schema, invalid, or unverified where the store requires it — shows its reason under MARK, judged when the history is read from its start (not with --from)", out)
 	cf := x.connect(fs)
 	format := outputFlag(fs)
 	from := fs.Uint64("from", 0, "start after this sequence")
@@ -414,12 +415,23 @@ func (x *runner) instanceHistory(ctx context.Context, args []string, out io.Writ
 	default:
 		ops = c.History(ctx, store, pos[0])
 	}
+	// The marks: a history read from its start is judged as the state is
+	// derived (decisions 0011, 0057, 0059), so an operation the state did
+	// not take is shown with its reason. From a later sequence the state
+	// before it is unknown, and no mark is claimed.
+	var marks *marker
+	if *from == 0 {
+		marks, err = newMarker(ctx, c, store)
+		if err != nil {
+			return err
+		}
+	}
 	// A history streams: each row prints as it arrives, so --follow and a
 	// long history read the same way; a table holds its header only.
 	if *format == formatTable {
-		header := []string{"SEQ", "OPERATION", "AUTHOR", "VERIFIED", "TIME", "DATA"}
+		header := []string{"SEQ", "OPERATION", "AUTHOR", "VERIFIED", "TIME", "MARK", "DATA"}
 		if *children {
-			header = []string{"SEQ", "PATH", "OPERATION", "AUTHOR", "VERIFIED", "TIME", "DATA"}
+			header = []string{"SEQ", "PATH", "OPERATION", "AUTHOR", "VERIFIED", "TIME", "MARK", "DATA"}
 		}
 		table(out, header, nil)
 	}
@@ -436,6 +448,9 @@ func (x *runner) instanceHistory(ctx context.Context, args []string, out io.Writ
 		if *children {
 			row.Path = contract.TailPath(contract.InstanceFromSubject(store, op.Subject))
 		}
+		if marks != nil {
+			row.Mark = marks.judge(ctx, op)
+		}
 		// The author is the writer's word unless chronicle vouched for it:
 		// the row says verified when it did, nothing when it did not.
 		verified := ""
@@ -445,9 +460,9 @@ func (x *runner) instanceHistory(ctx context.Context, args []string, out io.Writ
 		switch *format {
 		case formatTable:
 			if *children {
-				fmt.Fprintf(out, "%d  %s  %s  %s  %s  %s  %s\n", row.Seq, row.Path, row.Operation, row.Author, verified, row.Time, compact(row.Data))
+				fmt.Fprintf(out, "%d  %s  %s  %s  %s  %s  %s  %s\n", row.Seq, row.Path, row.Operation, row.Author, verified, row.Time, row.Mark, compact(row.Data))
 			} else {
-				fmt.Fprintf(out, "%d  %s  %s  %s  %s  %s\n", row.Seq, row.Operation, row.Author, verified, row.Time, compact(row.Data))
+				fmt.Fprintf(out, "%d  %s  %s  %s  %s  %s  %s\n", row.Seq, row.Operation, row.Author, verified, row.Time, row.Mark, compact(row.Data))
 			}
 		case formatYAML:
 			if err := printYAML(out, []any{row}); err != nil {
@@ -528,4 +543,51 @@ func (x *runner) instanceSnapshot(ctx context.Context, args []string, out io.Wri
 	}
 	fmt.Fprintf(out, "snapshot taken of %s (sequence %d)\n", pos[0], resp.Seq)
 	return nil
+}
+
+// marker judges a history as the state is derived from it: the author
+// gate of a store that requires verified authors (0057), then the fold
+// step under the current declarations (0011, 0059), per path, from the
+// start. It says why an operation took no effect, in the user's words,
+// and nothing for one that did.
+type marker struct {
+	c               *client.Client
+	store           string
+	requireVerified bool
+	resolved        map[string]contract.Resolution
+	state           map[string]json.RawMessage
+}
+
+func newMarker(ctx context.Context, c *client.Client, store string) (*marker, error) {
+	cfg, err := c.GetStore(ctx, store)
+	if err != nil {
+		return nil, err
+	}
+	return &marker{c: c, store: store, requireVerified: cfg.VerifiedAuthors, resolved: map[string]contract.Resolution{}, state: map[string]json.RawMessage{}}, nil
+}
+
+func (m *marker) judge(ctx context.Context, op contract.Op) string {
+	tail := contract.InstanceFromSubject(m.store, op.Subject)
+	if m.requireVerified && !op.Verified {
+		return "invalid: unverified author"
+	}
+	res, ok := m.resolved[tail]
+	if !ok {
+		r, err := m.c.Resolve(ctx, m.store, contract.TailPath(tail))
+		if err != nil {
+			return ""
+		}
+		res, m.resolved[tail] = r, r
+	}
+	out := contract.FoldStep(res, m.state[tail], op)
+	if out.Moved {
+		m.state[tail] = out.State
+	}
+	switch out.Decision {
+	case contract.Merge, contract.None, contract.Reset:
+		return ""
+	case contract.PreconditionUnmet:
+		return "invalid: " + strings.TrimPrefix(out.Detail, "the operation's ")
+	}
+	return "invalid: " + out.Detail
 }

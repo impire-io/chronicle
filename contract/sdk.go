@@ -10,7 +10,7 @@ import "time"
 // leaves every request, and the verified write joins the interactions.
 // 3.1.0 is decision 0061: role joins the reserved store names, and the
 // role resolver's two refusals join the catalog.
-const ContractVersion = "3.1.0"
+const ContractVersion = "3.2.0"
 
 // The interaction shapes an SDK may implement (design 12 § the shapes).
 // Every shape is describable in the artifact; an SDK implements the ones

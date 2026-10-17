@@ -194,6 +194,12 @@ type TypeRecord struct {
 type OpDef struct {
 	Schema json.RawMessage `json:"schema"`
 	Effect string          `json:"effect,omitempty"`
+	// Precondition is a JSON Schema the instance's current state must
+	// satisfy for the operation to take effect (decision 0059): judged by
+	// the fold after the payload's schema and before the effect, refused
+	// by pre-flight before a write is sent. Absent, the operation applies
+	// in any state. On a create the state judged is the empty object.
+	Precondition json.RawMessage `json:"precondition,omitempty"`
 }
 
 // The effect vocabulary (decision 0011). It grows additively; the fold

@@ -106,6 +106,10 @@ func (p *Pass) Fold(ctx context.Context, thing string, op contract.Op) {
 		p.Warn("marked invalid payload", "thing", thing, "op", op.ID, "type", op.Type, "detail", out.Detail)
 	case contract.Undeclared:
 		p.Warn("marked undeclared aspect", "thing", thing, "op", op.ID, "detail", out.Detail)
+	case contract.PreconditionUnmet:
+		p.Warn("marked precondition not met", "thing", thing, "op", op.ID, "type", op.Type, "detail", out.Detail)
+	case contract.OffSchema:
+		p.Warn("marked state off schema", "thing", thing, "op", op.ID, "type", op.Type, "detail", out.Detail)
 	}
 }
 

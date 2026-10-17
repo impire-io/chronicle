@@ -479,3 +479,82 @@ func TestContextDial(t *testing.T) {
 		t.Fatalf("a context without a url must be refused: %v", err)
 	}
 }
+
+// Decision 0059 on the CLI: an operation may state a precondition, op
+// create takes it, op get shows it, instance apply refuses an operation
+// out of turn or a merge that would leave the state off the type's
+// schema before anything is sent, and instance history marks what the
+// state did not take.
+func TestCLIPreconditions(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	startLocal(ctx, t)
+
+	run(ctx, t, "store", "create", "tickets")
+	const ticketType = `schema:
+  type: object
+  required: [status]
+  properties:
+    status: { enum: [open, closed] }
+history: full
+operations:
+  create:
+    schema: { type: object }
+    effect: merge
+  close:
+    schema: { type: object, required: [status] }
+    effect: merge
+    precondition: { properties: { status: { const: open } }, required: [status] }
+  drop:
+    schema: { type: object }
+    effect: merge
+`
+	out := run(ctx, t, "type", "create", "ticket", "-f", writeFile(t, "ticket.yaml", ticketType))
+	if !strings.Contains(out, "operations: close (merge, precondition), create (merge), drop (merge)") {
+		t.Fatalf("type create must echo the precondition: %s", out)
+	}
+	out = run(ctx, t, "op", "get", "ticket", "close")
+	if !strings.Contains(out, "precondition (the state must satisfy):") || !strings.Contains(out, `"const": "open"`) {
+		t.Fatalf("op get must print the precondition: %s", out)
+	}
+	out = run(ctx, t, "op", "create", "ticket", "reopen", "--schema", `{"type":"object","required":["status"]}`, "--effect", "merge", "--precondition", `{"properties":{"status":{"const":"closed"}},"required":["status"]}`)
+	if !strings.Contains(out, "operation reopen created on ticket (effect merge, with a precondition;") {
+		t.Fatalf("op create --precondition: %s", out)
+	}
+	// Re-stating the same precondition announces no rebuild; changing it does.
+	out = run(ctx, t, "op", "create", "ticket", "reopen", "--schema", `{"type":"object","required":["status"]}`, "--effect", "merge", "--precondition", `{"required":["status"],"properties":{"status":{"const":"closed"}}}`)
+	if strings.Contains(out, "rebuilt") {
+		t.Fatalf("the same precondition must not announce a rebuild: %s", out)
+	}
+	out = run(ctx, t, "op", "create", "ticket", "reopen", "--schema", `{"type":"object","required":["status"]}`, "--effect", "merge", "--precondition", `{"required":["closed"]}`)
+	if !strings.Contains(out, "the precondition changes: the state of store tickets is rebuilt from its history") {
+		t.Fatalf("a changed precondition must announce the rebuild: %s", out)
+	}
+
+	run(ctx, t, "instance", "create", "ticket/t-1", "--data", `{"status":"open"}`)
+	out = run(ctx, t, "instance", "apply", "ticket/t-1", "close", "--data", `{"status":"closed"}`)
+	if !strings.Contains(out, "applied close to ticket/t-1") {
+		t.Fatalf("close in turn: %s", out)
+	}
+	if _, err := runErr(ctx, "instance", "apply", "ticket/t-1", "close", "--data", `{"status":"closed"}`); err == nil || !strings.Contains(err.Error(), "precondition is not met") {
+		t.Fatalf("a close out of turn must be refused with its reason: %v", err)
+	}
+	if _, err := runErr(ctx, "instance", "apply", "ticket/t-1", "drop", "--data", `{"status":null}`); err == nil || !strings.Contains(err.Error(), "fails the type's schema") {
+		t.Fatalf("a merge leaving the state off schema must be refused with its reason: %v", err)
+	}
+	out = run(ctx, t, "instance", "get", "ticket/t-1")
+	if !strings.Contains(out, `"status": "closed"`) {
+		t.Fatalf("the state stands at closed: %s", out)
+	}
+
+	// The history's marks: once close leaves the vocabulary, its operation
+	// in the history is judged invalid, and the column says why.
+	run(ctx, t, "op", "delete", "ticket", "close")
+	out = run(ctx, t, "instance", "history", "ticket/t-1")
+	if !strings.Contains(out, "MARK") || !strings.Contains(out, "invalid: the type defines no operation close") {
+		t.Fatalf("history must mark the operation the type no longer defines: %s", out)
+	}
+	if strings.Count(out, "invalid") != 1 {
+		t.Fatalf("only the deleted operation is marked: %s", out)
+	}
+}

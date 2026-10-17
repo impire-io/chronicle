@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"strings"
 
 	"github.com/impire-io/chronicle/client"
@@ -42,12 +43,19 @@ children: {}
 
 # The operations this type allows. Each has a schema for its data and an
 # effect: merge (updates the state: named fields overwrite, null deletes)
-# or none (recorded in history only; the state is unchanged).
+# or none (recorded in history only; the state is unchanged). An operation
+# may also state a precondition: a JSON Schema the instance's current state
+# must satisfy for it to apply — one applied out of turn is refused before
+# it is sent, and kept as invalid if written anyway.
 operations:
   create:          # applied by: chronicle instance create %s/<id>
     schema:
       type: object
     effect: merge
+  # close:
+  #   schema: { type: object }
+  #   effect: merge
+  #   precondition: { properties: { status: { const: open } }, required: [status] }
 `
 
 func (x *runner) typeNoun() *noun {
@@ -70,7 +78,7 @@ func (x *runner) opNoun() *noun {
 		verbs: []command{
 			{"list TYPE", "the operations the type allows", x.opList},
 			{"get TYPE OP", "one operation: its effect and its schema", x.opGet},
-			{"create TYPE OP --schema FILE --effect merge|none", "add or replace one operation on the type", x.opCreate},
+			{"create TYPE OP --schema FILE --effect merge|none [--precondition FILE]", "add or replace one operation on the type", x.opCreate},
 			{"delete TYPE OP", "remove one operation from the type", x.opDelete},
 		},
 	}
@@ -290,9 +298,27 @@ func echoDefinition(out io.Writer, def typeDefinition) {
 	}
 	parts := make([]string, 0, len(def.Operations))
 	for _, name := range sortedKeys(def.Operations) {
-		parts = append(parts, fmt.Sprintf("%s (%s)", name, contract.NormalizeEffect(def.Operations[name].Effect)))
+		op := def.Operations[name]
+		if len(op.Precondition) > 0 {
+			parts = append(parts, fmt.Sprintf("%s (%s, precondition)", name, contract.NormalizeEffect(op.Effect)))
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s (%s)", name, contract.NormalizeEffect(op.Effect)))
 	}
 	fmt.Fprintf(out, "  operations: %s\n", strings.Join(parts, ", "))
+}
+
+// sameJSON says whether two JSON documents are the same value, so a
+// re-stated precondition is not announced as a change.
+func sameJSON(a, b json.RawMessage) bool {
+	if len(a) == 0 || len(b) == 0 {
+		return len(a) == 0 && len(b) == 0
+	}
+	var va, vb any
+	if json.Unmarshal(a, &va) != nil || json.Unmarshal(b, &vb) != nil {
+		return string(a) == string(b)
+	}
+	return reflect.DeepEqual(va, vb)
 }
 
 // loadType is the operation verbs' shared preamble: the connection, the
@@ -377,7 +403,10 @@ func (x *runner) opGet(ctx context.Context, args []string, out io.Writer) error 
 	}
 	return printValue(out, *format, func() {
 		fmt.Fprintf(out, "operation %s on %s  effect %s\n%s\n", pos[1], pos[0], contract.NormalizeEffect(def.Effect), pretty(def.Schema))
-	}, map[string]any{"name": pos[1], "type": pos[0], "effect": contract.NormalizeEffect(def.Effect), "schema": def.Schema})
+		if len(def.Precondition) > 0 {
+			fmt.Fprintf(out, "precondition (the state must satisfy):\n%s\n", pretty(def.Precondition))
+		}
+	}, map[string]any{"name": pos[1], "type": pos[0], "effect": contract.NormalizeEffect(def.Effect), "schema": def.Schema, "precondition": def.Precondition})
 }
 
 // undefinedOperation is the teaching refusal: what the type does define.
@@ -389,10 +418,11 @@ func undefinedOperation(typeName, op string, ops map[string]contract.OpDef) erro
 }
 
 func (x *runner) opCreate(ctx context.Context, args []string, out io.Writer) error {
-	fs := flags("op create", "create TYPE OP --schema FILE --effect merge|none", "add or replace one operation on the type", out)
+	fs := flags("op create", "create TYPE OP --schema FILE --effect merge|none [--precondition FILE]", "add or replace one operation on the type", out)
 	cf := x.connect(fs)
 	schema := fs.String("schema", "", "the data's schema (JSON Schema): a YAML or JSON file, or inline JSON (required)")
 	effect := fs.String("effect", "", "what applying it does to the state: merge (updates the state) or none (recorded in history only) (required)")
+	precondition := fs.String("precondition", "", "a JSON Schema the instance's current state must satisfy for the operation to apply: a YAML or JSON file, or inline JSON (optional)")
 	pos, err := parse(fs, args)
 	if err != nil {
 		return done(err)
@@ -411,6 +441,13 @@ func (x *runner) opCreate(ctx context.Context, args []string, out io.Writer) err
 	if err != nil {
 		return fmt.Errorf("--schema: %w", err)
 	}
+	var pre json.RawMessage
+	if *precondition != "" {
+		pre, err = fileOrInline(*precondition)
+		if err != nil {
+			return fmt.Errorf("--precondition: %w", err)
+		}
+	}
 	c, store, rec, err := x.loadType(ctx, cf, out, pos[0])
 	if err != nil {
 		return err
@@ -419,17 +456,26 @@ func (x *runner) opCreate(ctx context.Context, args []string, out io.Writer) err
 	if rec.Operations == nil {
 		rec.Operations = map[string]contract.OpDef{}
 	}
-	// The consequence, said before the write: a changed effect makes the
-	// derived state suspect, and the store's state is rebuilt.
-	if old, ok := rec.Operations[pos[1]]; ok && contract.NormalizeEffect(old.Effect) != *effect {
-		fmt.Fprintf(out, "effect changes %s → %s: the state of store %s is rebuilt from its history\n", contract.NormalizeEffect(old.Effect), *effect, store)
+	// The consequence, said before the write: a changed effect or a changed
+	// precondition makes the derived state suspect, and the store's state
+	// is rebuilt.
+	if old, ok := rec.Operations[pos[1]]; ok {
+		if contract.NormalizeEffect(old.Effect) != *effect {
+			fmt.Fprintf(out, "effect changes %s → %s: the state of store %s is rebuilt from its history\n", contract.NormalizeEffect(old.Effect), *effect, store)
+		} else if *effect == contract.EffectMerge && !sameJSON(old.Precondition, pre) {
+			fmt.Fprintf(out, "the precondition changes: the state of store %s is rebuilt from its history\n", store)
+		}
 	}
-	rec.Operations[pos[1]] = contract.OpDef{Schema: raw, Effect: *effect}
+	rec.Operations[pos[1]] = contract.OpDef{Schema: raw, Effect: *effect, Precondition: pre}
 	revision, err := redefine(ctx, c, store, pos[0], rec)
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "operation %s created on %s (effect %s; %s is at revision %d)\n", pos[1], pos[0], *effect, pos[0], revision)
+	with := ""
+	if len(pre) > 0 {
+		with = ", with a precondition"
+	}
+	fmt.Fprintf(out, "operation %s created on %s (effect %s%s; %s is at revision %d)\n", pos[1], pos[0], *effect, with, pos[0], revision)
 	return nil
 }
 

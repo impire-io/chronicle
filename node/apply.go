@@ -77,6 +77,10 @@ func (n *node) handleApply(req micro.Request) {
 			code = contract.CodeUndeclaredChild
 		case errors.Is(err, client.ErrSchemaViolation):
 			code = contract.CodeSchemaViolation
+		case errors.Is(err, client.ErrPreconditionFailed):
+			code = contract.CodePreconditionFailed
+		case errors.Is(err, client.ErrStateOffSchema):
+			code = contract.CodeStateOffSchema
 		default:
 			_ = req.Error(contract.CodeInternal, fmt.Sprintf("pre-flight: %v", err), nil)
 			return

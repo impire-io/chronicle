@@ -444,6 +444,12 @@ func (n *node) handleTypeDefine(req micro.Request) {
 			_ = req.Error(contract.CodeBadSchema, fmt.Sprintf("operation %s: %v", opType, err), nil)
 			return
 		}
+		if len(def.Precondition) > 0 {
+			if _, err := contract.CompileSchema(def.Precondition); err != nil {
+				_ = req.Error(contract.CodeBadSchema, fmt.Sprintf("operation %s: precondition: %v", opType, err), nil)
+				return
+			}
+		}
 	}
 	if _, err := n.meta.Get(ctx, contract.MetaStoreConfig(r.Store)); err != nil {
 		_ = req.Error(contract.CodeNoSuchStore, fmt.Sprintf("store %q does not exist", r.Store), nil)

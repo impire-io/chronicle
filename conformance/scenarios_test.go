@@ -166,6 +166,10 @@ func matchesError(err error, want string) bool {
 		return errors.Is(err, client.ErrNoResponder)
 	case "no-state":
 		return errors.Is(err, client.ErrNoState)
+	case "precondition-failed":
+		return errors.Is(err, client.ErrPreconditionFailed) || (errors.As(err, &serr) && serr.Code == want)
+	case "state-off-schema":
+		return errors.Is(err, client.ErrStateOffSchema) || (errors.As(err, &serr) && serr.Code == want)
 	case "refused":
 		// The server dropped a publish the member may not make: nobody
 		// answers, and the request runs out of time or the connection
@@ -211,7 +215,13 @@ func (r *runner) perform(label string, s step) error {
 		}
 		msg := nats.NewMsg(contract.OpsSubject(s.Store, tail))
 		msg.Header = contract.Op{ID: nuid.Next(), Type: s.Op, Author: r.c.Author(), Ts: time.Now()}.Header()
-		msg.Header.Set(contract.HdrExpectedLastSubjSeq, "0")
+		// A create-if-absent unless the step names the sequence it expects
+		// — a bare write onto an instance that exists.
+		guard := "0"
+		if s.ExpectSeq != nil {
+			guard = fmt.Sprint(*s.ExpectSeq)
+		}
+		msg.Header.Set(contract.HdrExpectedLastSubjSeq, guard)
 		msg.Data = s.Payload
 		_, err = js.PublishMsg(ctx, msg)
 		return err

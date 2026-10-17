@@ -1,0 +1,220 @@
+{
+  "name": "preconditions",
+  "$comment": "Decision 0059 over the quick start: an operation applied out of turn is refused before it is sent, on the direct route and through the node alike; a merge that would leave the state off the type's schema is refused the same way; a bare publish of either lands in the history and the fold marks it, the state standing where it was.",
+  "steps": [
+    {
+      "do": "store.create",
+      "store": "tickets"
+    },
+    {
+      "do": "type.define",
+      "store": "tickets",
+      "type": "ticket",
+      "def": {
+        "schema": {
+          "type": "object",
+          "required": [
+            "status"
+          ],
+          "properties": {
+            "status": {
+              "enum": [
+                "open",
+                "closed"
+              ]
+            }
+          },
+          "if": {
+            "properties": {
+              "status": {
+                "const": "closed"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "closed"
+            ]
+          },
+          "else": {
+            "not": {
+              "required": [
+                "closed"
+              ]
+            }
+          }
+        },
+        "operations": {
+          "create": {
+            "schema": {
+              "type": "object"
+            },
+            "effect": "merge"
+          },
+          "close": {
+            "schema": {
+              "type": "object",
+              "required": [
+                "status",
+                "closed"
+              ]
+            },
+            "effect": "merge",
+            "precondition": {
+              "properties": {
+                "status": {
+                  "const": "open"
+                }
+              },
+              "required": [
+                "status"
+              ]
+            }
+          },
+          "reopen": {
+            "schema": {
+              "type": "object",
+              "required": [
+                "status"
+              ]
+            },
+            "effect": "merge",
+            "precondition": {
+              "properties": {
+                "status": {
+                  "const": "closed"
+                }
+              },
+              "required": [
+                "status"
+              ]
+            }
+          },
+          "drop": {
+            "schema": {
+              "type": "object"
+            },
+            "effect": "merge"
+          }
+        }
+      }
+    },
+    {
+      "do": "instance.create",
+      "store": "tickets",
+      "instance": "ticket/t-1",
+      "payload": {
+        "status": "open"
+      }
+    },
+    {
+      "do": "get",
+      "store": "tickets",
+      "instance": "ticket/t-1",
+      "expect": {
+        "state": {
+          "status": "open"
+        }
+      }
+    },
+    {
+      "do": "apply",
+      "store": "tickets",
+      "instance": "ticket/t-1",
+      "op": "reopen",
+      "payload": {
+        "status": "open"
+      },
+      "expect": {
+        "error": "precondition-failed"
+      },
+      "$comment": "the SDK's pre-flight: the current state does not satisfy reopen's precondition; nothing is sent"
+    },
+    {
+      "do": "apply",
+      "store": "tickets",
+      "instance": "ticket/t-1",
+      "op": "reopen",
+      "payload": {
+        "status": "open"
+      },
+      "verified": true,
+      "expect": {
+        "error": "precondition-failed"
+      },
+      "$comment": "the node's pre-flight refuses the same at the door of a verified write"
+    },
+    {
+      "do": "apply",
+      "store": "tickets",
+      "instance": "ticket/t-1",
+      "op": "drop",
+      "payload": {
+        "status": null
+      },
+      "expect": {
+        "error": "state-off-schema"
+      },
+      "$comment": "the state after the merge would lack the status the type requires"
+    },
+    {
+      "do": "apply.direct",
+      "store": "tickets",
+      "instance": "ticket/t-1",
+      "op": "reopen",
+      "payload": {
+        "status": "open"
+      },
+      "$comment": "a bare publish lands; the fold marks it precondition-unmet (expectSeq: the create is the store's first operation)",
+      "expectSeq": 1
+    },
+    {
+      "do": "apply.direct",
+      "store": "tickets",
+      "instance": "ticket/t-1",
+      "op": "drop",
+      "payload": {
+        "status": null
+      },
+      "$comment": "a bare publish lands; the fold marks it off-schema",
+      "expectSeq": 2
+    },
+    {
+      "do": "apply",
+      "store": "tickets",
+      "instance": "ticket/t-1",
+      "op": "close",
+      "payload": {
+        "status": "closed",
+        "closed": "2026-10-15"
+      },
+      "$comment": "in turn: open to closed"
+    },
+    {
+      "do": "get",
+      "store": "tickets",
+      "instance": "ticket/t-1",
+      "expect": {
+        "state": {
+          "status": "closed",
+          "closed": "2026-10-15"
+        }
+      },
+      "$comment": "the two marked operations moved nothing; the close did"
+    },
+    {
+      "do": "history",
+      "store": "tickets",
+      "instance": "ticket/t-1",
+      "expect": {
+        "types": [
+          "create",
+          "reopen",
+          "drop",
+          "close"
+        ]
+      },
+      "$comment": "the history keeps what was written, marked or not"
+    }
+  ]
+}

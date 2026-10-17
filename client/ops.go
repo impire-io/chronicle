@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -117,6 +118,10 @@ func applyRefusal(code, desc, log, thing string, mode writeMode) error {
 		return fmt.Errorf("%w: %s", ErrUndeclaredChild, desc)
 	case contract.CodeSchemaViolation:
 		return fmt.Errorf("%w: %s", ErrSchemaViolation, desc)
+	case contract.CodePreconditionFailed:
+		return fmt.Errorf("%w: %s", ErrPreconditionFailed, desc)
+	case contract.CodeStateOffSchema:
+		return fmt.Errorf("%w: %s", ErrStateOffSchema, desc)
 	case contract.CodeInstanceExists:
 		return fmt.Errorf("%w: %s in %s", ErrInstanceExists, thing, log)
 	case contract.CodeInstanceMoved:
@@ -487,6 +492,16 @@ var ErrUndeclaredChild = errors.New("undeclared child")
 // no such operation (0021 § 2).
 var ErrUndefinedOperation = errors.New("operation not defined on the type")
 
+// ErrPreconditionFailed is a pre-flight refusal (0059): the operation
+// declares a precondition and the instance's current state does not
+// satisfy it. The fold would mark the operation; the SDK refuses first.
+var ErrPreconditionFailed = errors.New("the operation's precondition is not met")
+
+// ErrStateOffSchema is a pre-flight refusal (0059): the state after the
+// operation would fail the type's schema — the shape every derived state
+// keeps. The fold would mark the operation; the SDK refuses first.
+var ErrStateOffSchema = errors.New("the state after the operation fails the type's schema")
+
 // Preflight runs the writer-side checks on an operation without sending
 // it: the type is declared, the operation defined, the data valid under
 // its schema, a create's type among its parent's children — the SDK's own
@@ -507,13 +522,49 @@ type typeCache struct {
 
 	mu        sync.Mutex
 	meta      jetstream.KeyValue
+	states    map[string]jetstream.KeyValue
 	compiled  map[string]*jsonschema.Schema
 	verified  map[string]bool
 	attesters map[string]bool
 }
 
 func newTypeCache(js jetstream.JetStream) *typeCache {
-	return &typeCache{js: js, compiled: map[string]*jsonschema.Schema{}, verified: map[string]bool{}, attesters: map[string]bool{}}
+	return &typeCache{js: js, states: map[string]jetstream.KeyValue{}, compiled: map[string]*jsonschema.Schema{}, verified: map[string]bool{}, attesters: map[string]bool{}}
+}
+
+// stateOf reads the thing's current derived state from the store's state
+// bucket — the read a caller makes to learn the sequence it expects — for
+// the pre-flight that judges a precondition or the state after a merge
+// (0059). No entry is no state yet: nil, which the judgement reads as the
+// empty object. The value is derived and may trail the history; a writer
+// that wants the judgement exact carries the expected sequence, and the
+// fold is the judge either way.
+func (t *typeCache) stateOf(ctx context.Context, log, thing string) (json.RawMessage, error) {
+	t.mu.Lock()
+	kv, ok := t.states[log]
+	t.mu.Unlock()
+	if !ok {
+		var err error
+		kv, err = t.js.KeyValue(ctx, contract.StateBucket(log))
+		if err != nil {
+			return nil, fmt.Errorf("cannot read state of store %s: %w", log, err)
+		}
+		t.mu.Lock()
+		t.states[log] = kv
+		t.mu.Unlock()
+	}
+	entry, err := kv.Get(ctx, thing)
+	if errors.Is(err, jetstream.ErrKeyNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read state: %w", err)
+	}
+	var v contract.StateValue
+	if err := json.Unmarshal(entry.Value(), &v); err != nil {
+		return nil, fmt.Errorf("decode state value: %w", err)
+	}
+	return v.State, nil
 }
 
 // requiresVerified reads whether the store requires verified authors —
@@ -666,6 +717,29 @@ func (t *typeCache) preflightAppend(ctx context.Context, log, thing, opType stri
 		}
 		if err := sch.Validate(v); err != nil {
 			return fmt.Errorf("%w: %s %s: %v", ErrSchemaViolation, log, opType, err)
+		}
+		// The state's rules (0059): where the operation declares a
+		// precondition, or the type a schema a merge must keep, the
+		// current state is read once and judged as the fold will judge it.
+		merges := contract.NormalizeEffect(def.Effect) == contract.EffectMerge && len(res.Record.Schema) > 0
+		if len(def.Precondition) == 0 && !merges {
+			return nil
+		}
+		state, err := t.stateOf(ctx, log, thing)
+		if err != nil {
+			return err
+		}
+		if detail := contract.JudgePrecondition(def, state); detail != "" {
+			return fmt.Errorf("%w: %s %s: %s", ErrPreconditionFailed, log, opType, strings.TrimPrefix(detail, "the operation's precondition is not met: "))
+		}
+		if merges {
+			merged, err := contract.MergePatch(state, payload)
+			if err != nil {
+				return fmt.Errorf("%w: %s %s: %v", ErrSchemaViolation, log, opType, err)
+			}
+			if detail := contract.JudgeSnapshot(res.Record, merged); detail != "" {
+				return fmt.Errorf("%w: %s %s: %s", ErrStateOffSchema, log, res.TypeName, strings.TrimPrefix(detail, "state fails the type's schema: "))
+			}
 		}
 	}
 	return nil

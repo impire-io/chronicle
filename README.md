@@ -129,7 +129,12 @@ under it (`invoice/inv-1/comments/c-3`), and its **history policy**
 (`compactable`, or `full` to keep every operation). An **instance** is
 named by its **path**, `type/id`; `instance create` applies the type's
 `create` operation, `instance apply` any other; the data is checked
-against the operation's schema before it is sent. `instance get` reads
+against the operation's schema before it is sent. An operation may also
+declare a **precondition** — a schema the instance's current state must
+satisfy — and one applied out of turn is refused before it is sent, as is
+a `merge` that would leave the state off the type's schema; a bare write
+that gets past both is kept in the history and marked, the state
+unchanged. `instance get` reads
 the state, `instance history` the operations, `instance list --type
 invoice --where status=sent` the instances of a type with a filter, and
 `instance snapshot` writes the current state as a snapshot and compacts
