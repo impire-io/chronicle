@@ -38,6 +38,7 @@ func (x *runner) serviceAccountNoun() *noun {
 			{"create NAME [--role admin|writer|reader] [--public-key KEY] [--out FILE]", "create a service account; hosted, its credential is shown once", x.serviceAccountCreate},
 			{"rotate NAME [--public-key KEY] [--out FILE]", "a new credential for the service account; the old one no longer connects", x.serviceAccountRotate},
 			{"revoke NAME", "revoke a service account; it can act no more", x.serviceAccountRevoke},
+			{"set-role NAME ROLE", "change a service account's role", x.serviceAccountSetRole},
 		},
 	}
 }
@@ -148,10 +149,21 @@ func (x *runner) memberRemove(ctx context.Context, args []string, out io.Writer)
 	return nil
 }
 
-// memberSetRole waits on the role-change verb (design 13 § members, design
-// 07 § members): the CLI says so rather than pretending.
-func (x *runner) memberSetRole(_ context.Context, args []string, out io.Writer) error {
-	fs := flags("member set-role", "set-role NAME ROLE", "change a member's role", out)
+// memberSetRole changes a member's role in place (decision 0062):
+// effective from their next request, the credential untouched; the
+// account's only admin cannot be demoted, and the node says so.
+func (x *runner) memberSetRole(ctx context.Context, args []string, out io.Writer) error {
+	return x.setRole(ctx, args, out, "member", "change a member's role")
+}
+
+// serviceAccountSetRole is the same verb for the other noun.
+func (x *runner) serviceAccountSetRole(ctx context.Context, args []string, out io.Writer) error {
+	return x.setRole(ctx, args, out, "service-account", "change a service account's role")
+}
+
+func (x *runner) setRole(ctx context.Context, args []string, out io.Writer, noun, summary string) error {
+	fs := flags(noun+" set-role", "set-role NAME ROLE", summary, out)
+	cf := x.connect(fs)
 	pos, err := parse(fs, args)
 	if err != nil {
 		return done(err)
@@ -159,7 +171,24 @@ func (x *runner) memberSetRole(_ context.Context, args []string, out io.Writer) 
 	if err := positionals(fs, pos, 2, "NAME ROLE"); err != nil {
 		return err
 	}
-	return fmt.Errorf("changing a role is not available yet: remove the member and add them again with the new role (chronicle member remove %s; chronicle member add %s --role %s)", pos[0], pos[0], pos[1])
+	if !contract.KnownRole(pos[1]) {
+		return fmt.Errorf("role %q: admin, writer or reader", pos[1])
+	}
+	c, _, err := x.session(cf, out)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	resp, err := c.SetRole(ctx, pos[0], pos[1])
+	if err != nil {
+		return err
+	}
+	what := "member"
+	if noun == "service-account" {
+		what = "service account"
+	}
+	fmt.Fprintf(out, "%s %s is now %s (from its next request on; its credential is unchanged)\n", what, resp.Member, resp.Role)
+	return nil
 }
 
 // accountNoun is the open `account`: `create NAME`, a further account of

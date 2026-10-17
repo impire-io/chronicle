@@ -1,6 +1,6 @@
 {
   "$comment": "The chronicle SDK contract (chronicle-hq design 12): the wire described once, restated by every SDK. The Go contract package proves it matches; an SDK generates its types, constants and error enum from it and nothing else. The words are the user's (chronicle-hq/00-META/vocabulary.md, decision 0044): a store, its types, their instances named by paths, children, snapshots; the protocol tokens underneath — subjects, verb names, headers, resource names, the log. META prefix — do not change with the words. Since decision 0057 every verb's subject carries the caller — CHRON.API.<principal>.<VERB…>, the caller's alone under the member baseline — and no request carries a principal; an operation may be written through the node, which attests its author.",
-  "version": "3.2.0",
+  "version": "3.3.0",
   "shapes": [
     {
       "name": "request-reply",
@@ -540,6 +540,18 @@
     {
       "code": "state-off-schema",
       "meaning": "the state after the operation would fail the type's schema"
+    },
+    {
+      "code": "store-deleting",
+      "meaning": "the store is being deleted: nothing can be done in it, and the name is free once it is gone"
+    },
+    {
+      "code": "no-such-type",
+      "meaning": "the store does not define the type"
+    },
+    {
+      "code": "sole-admin",
+      "meaning": "the account's only admin keeps the role: make another member admin first"
     }
   ],
   "interactions": [
@@ -633,9 +645,52 @@
         "bad-store-name",
         "bad-history",
         "store-exists",
-        "role-source-unavailable"
+        "role-source-unavailable",
+        "store-deleting"
       ],
       "caller": "the <principal> token of the subject; the request carries no principal"
+    },
+    {
+      "name": "store.delete",
+      "shape": "request-reply",
+      "subject": "CHRON.API.<principal>.LOG.DELETE",
+      "role": "admin",
+      "request": {
+        "type": "object",
+        "properties": {
+          "store": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]+$"
+          }
+        },
+        "required": [
+          "store"
+        ],
+        "additionalProperties": false
+      },
+      "reply": {
+        "type": "object",
+        "properties": {
+          "deleted": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "deleted"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "500",
+        "bad-request",
+        "forbidden",
+        "not-a-member",
+        "bad-store-name",
+        "no-such-store",
+        "role-source-unavailable"
+      ],
+      "caller": "the <principal> token of the subject; the request carries no principal",
+      "description": "total and irreversible, in a fixed order a second request finishes from any step of: the store's status goes to deleting, every other verb on it refuses, its indexes, state and stream go — every operation and schedule with them, whatever the history policy — then its types and its configuration; the name may be created again once it is gone"
     },
     {
       "name": "type.define",
@@ -741,9 +796,60 @@
         "bad-child-name",
         "bad-child-type",
         "no-such-store",
-        "role-source-unavailable"
+        "role-source-unavailable",
+        "store-deleting"
       ],
       "caller": "the <principal> token of the subject; the request carries no principal"
+    },
+    {
+      "name": "type.delete",
+      "shape": "request-reply",
+      "subject": "CHRON.API.<principal>.TYPE.DELETE",
+      "role": "admin",
+      "request": {
+        "type": "object",
+        "properties": {
+          "store": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]+$"
+          },
+          "type": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]+$"
+          }
+        },
+        "required": [
+          "store",
+          "type"
+        ],
+        "additionalProperties": false
+      },
+      "reply": {
+        "type": "object",
+        "properties": {
+          "deleted": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "deleted"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "500",
+        "bad-request",
+        "forbidden",
+        "not-a-member",
+        "bad-store-name",
+        "bad-type-name",
+        "no-such-store",
+        "store-deleting",
+        "no-such-type",
+        "role-source-unavailable"
+      ],
+      "caller": "the <principal> token of the subject; the request carries no principal",
+      "description": "a declaration change: the store's state is rebuilt under what remains, and every instance that resolved through the type is untyped — its history kept, no state derived for it beyond a snapshot's, absent from the listings — until the type is defined again, which restores it"
     },
     {
       "name": "instance.snapshot",
@@ -797,7 +903,8 @@
         "bad-instance",
         "no-such-store",
         "no-such-instance",
-        "role-source-unavailable"
+        "role-source-unavailable",
+        "store-deleting"
       ],
       "caller": "the <principal> token of the subject; the request carries no principal"
     },
@@ -857,7 +964,8 @@
         "no-such-store",
         "index-exists",
         "reserved-state-index",
-        "role-source-unavailable"
+        "role-source-unavailable",
+        "store-deleting"
       ],
       "caller": "the <principal> token of the subject; the request carries no principal"
     },
@@ -1026,9 +1134,67 @@
         "not-a-member",
         "bad-principal-name",
         "role-source-unavailable",
-        "membership-elsewhere"
+        "membership-elsewhere",
+        "sole-admin"
       ],
       "caller": "the <principal> token of the subject; the request carries no principal"
+    },
+    {
+      "name": "member.set-role",
+      "shape": "request-reply",
+      "subject": "CHRON.API.<principal>.MEMBER.SET_ROLE",
+      "role": "admin",
+      "request": {
+        "type": "object",
+        "properties": {
+          "member": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]+$"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "admin",
+              "writer",
+              "reader"
+            ]
+          }
+        },
+        "required": [
+          "member",
+          "role"
+        ],
+        "additionalProperties": false
+      },
+      "reply": {
+        "type": "object",
+        "properties": {
+          "member": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "member",
+          "role"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "500",
+        "bad-request",
+        "forbidden",
+        "not-a-member",
+        "bad-principal-name",
+        "bad-role",
+        "sole-admin",
+        "role-source-unavailable",
+        "membership-elsewhere"
+      ],
+      "caller": "the <principal> token of the subject; the request carries no principal",
+      "description": "changes a membership's role in place — a member's or a service account's — effective from the principal's next request, the credential untouched; the account's only admin cannot be demoted"
     },
     {
       "name": "apply",
@@ -1081,7 +1247,8 @@
         "state-off-schema",
         "instance-exists",
         "instance-moved",
-        "role-source-unavailable"
+        "role-source-unavailable",
+        "store-deleting"
       ],
       "routing": "an SDK writes through this interaction when the store requires verified authors (its configuration's verified_authors), or when the caller asks for a verified author; everywhere else it appends directly",
       "retry": "keep Nats-Msg-Id across retries; the node judges a guard refusal as the SDK does and answers the landed sequence or the conflict"

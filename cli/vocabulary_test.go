@@ -64,13 +64,13 @@ func TestGrammarIsTheDesigns(t *testing.T) {
 	t.Setenv("CHRONICLE_CONFIG_HOME", t.TempDir())
 	texts := helpTexts(t)
 	want := map[string][]string{
-		"store":           {"list", "get", "create", "select"},
-		"type":            {"list", "get", "create", "init"},
+		"store":           {"list", "get", "create", "select", "delete"},
+		"type":            {"list", "get", "create", "init", "delete"},
 		"op":              {"list", "get", "create", "delete"},
 		"instance":        {"list", "get", "create", "apply", "history", "watch", "snapshot"},
 		"index":           {"list", "get", "create", "delete", "query"},
 		"member":          {"list", "add", "remove", "set-role"},
-		"service-account": {"list", "create", "rotate", "revoke"},
+		"service-account": {"list", "create", "set-role", "rotate", "revoke"},
 		"context":         {"list", "show", "select", "add", "remove"},
 		"account":         {"create"},
 	}

@@ -56,6 +56,12 @@ const (
 	// direct path the fold marks the same two cases.
 	CodePreconditionFailed = "precondition-failed"
 	CodeStateOffSchema     = "state-off-schema"
+	// Decision 0062: a verb on a store that is being deleted, a type
+	// delete of a type the store does not define, and a role change or a
+	// revoke that would leave the account without an admin.
+	CodeStoreDeleting = "store-deleting"
+	CodeNoSuchType    = "no-such-type"
+	CodeSoleAdmin     = "sole-admin"
 )
 
 // ErrorCode is one catalogued code and what it means.
@@ -104,6 +110,9 @@ var ErrorCatalog = []ErrorCode{
 	{CodeMembershipElsewhere, "membership is managed where the roles live: the roles come from the environment's responder, and the member verbs have nothing to record"},
 	{CodePreconditionFailed, "the operation's precondition is not met by the instance's current state"},
 	{CodeStateOffSchema, "the state after the operation would fail the type's schema"},
+	{CodeStoreDeleting, "the store is being deleted: nothing can be done in it, and the name is free once it is gone"},
+	{CodeNoSuchType, "the store does not define the type"},
+	{CodeSoleAdmin, "the account's only admin keeps the role: make another member admin first"},
 }
 
 // KnownErrorCode says whether a code is catalogued.

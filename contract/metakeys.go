@@ -141,8 +141,14 @@ type StoreConfig struct {
 	VerifiedAuthors bool `json:"verified_authors,omitempty"`
 }
 
-// StoreStatusActive is the one status the skeleton knows.
-const StoreStatusActive = "active"
+// The store statuses: active from creation, and deleting from the moment
+// LOG.DELETE claims the store (decision 0062) — from then on every other
+// verb on the store refuses, a create of the name refuses, and the fixed
+// order of removal runs until the config key itself is gone.
+const (
+	StoreStatusActive   = "active"
+	StoreStatusDeleting = "deleting"
+)
 
 // The history vocabulary (decision 0019). Write-side strict at LOG.CREATE,
 // read-side tolerant: an unknown stored value reads as compactable — the

@@ -1,0 +1,291 @@
+{
+  "name": "deleting and roles",
+  "$comment": "Decision 0062 over the quick start: a type is deleted and its instances leave the listing with their history intact and come back when the type is defined again; a role changes in place and the only admin keeps theirs; a store is deleted whole and its name is free to create again.",
+  "steps": [
+    {
+      "do": "store.create",
+      "store": "orders"
+    },
+    {
+      "do": "type.define",
+      "store": "orders",
+      "type": "invoice",
+      "def": {
+        "schema": {
+          "type": "object"
+        },
+        "operations": {
+          "create": {
+            "schema": {
+              "type": "object"
+            },
+            "effect": "merge"
+          }
+        }
+      }
+    },
+    {
+      "do": "type.define",
+      "store": "orders",
+      "type": "note",
+      "def": {
+        "schema": {
+          "type": "object"
+        },
+        "operations": {
+          "create": {
+            "schema": {
+              "type": "object"
+            },
+            "effect": "merge"
+          }
+        }
+      }
+    },
+    {
+      "do": "instance.create",
+      "store": "orders",
+      "instance": "invoice/inv-1",
+      "payload": {
+        "total": 120
+      }
+    },
+    {
+      "do": "instance.create",
+      "store": "orders",
+      "instance": "note/n-1",
+      "payload": {
+        "text": "x"
+      }
+    },
+    {
+      "do": "get",
+      "store": "orders",
+      "instance": "invoice/inv-1",
+      "expect": {
+        "state": {
+          "total": 120
+        }
+      }
+    },
+    {
+      "do": "type.delete",
+      "store": "orders",
+      "type": "ghost",
+      "expect": {
+        "error": "no-such-type"
+      }
+    },
+    {
+      "do": "type.delete",
+      "store": "orders",
+      "type": "invoice"
+    },
+    {
+      "do": "list.types",
+      "store": "orders",
+      "expect": {
+        "items": [
+          "note"
+        ]
+      }
+    },
+    {
+      "do": "list.instances",
+      "store": "orders",
+      "expect": {
+        "items": [
+          "note/n-1"
+        ]
+      },
+      "$comment": "the invoice is untyped now: no state is derived for it and it leaves the listing"
+    },
+    {
+      "do": "history",
+      "store": "orders",
+      "instance": "invoice/inv-1",
+      "expect": {
+        "types": [
+          "create"
+        ]
+      },
+      "$comment": "its history is whole"
+    },
+    {
+      "do": "instance.create",
+      "store": "orders",
+      "instance": "invoice/inv-2",
+      "payload": {
+        "total": 1
+      },
+      "expect": {
+        "error": "preflight"
+      },
+      "$comment": "a create of the deleted type is a create of an undefined type: refused before anything is sent"
+    },
+    {
+      "do": "type.define",
+      "store": "orders",
+      "type": "invoice",
+      "def": {
+        "schema": {
+          "type": "object"
+        },
+        "operations": {
+          "create": {
+            "schema": {
+              "type": "object"
+            },
+            "effect": "merge"
+          }
+        }
+      },
+      "$comment": "defining the type again restores its instances on the re-fold"
+    },
+    {
+      "do": "list.instances",
+      "store": "orders",
+      "expect": {
+        "items": [
+          "invoice/inv-1",
+          "note/n-1"
+        ]
+      }
+    },
+    {
+      "do": "get",
+      "store": "orders",
+      "instance": "invoice/inv-1",
+      "expect": {
+        "state": {
+          "total": 120
+        }
+      }
+    },
+    {
+      "do": "member.add",
+      "member": "bob",
+      "role": "reader"
+    },
+    {
+      "do": "member.set-role",
+      "member": "admin",
+      "role": "reader",
+      "expect": {
+        "error": "sole-admin"
+      },
+      "$comment": "the quick start's admin is the only one: it keeps the role"
+    },
+    {
+      "do": "member.revoke",
+      "member": "admin",
+      "expect": {
+        "error": "sole-admin"
+      }
+    },
+    {
+      "do": "member.set-role",
+      "member": "bob",
+      "role": "admin"
+    },
+    {
+      "do": "list.members",
+      "expect": {
+        "items": [
+          "admin",
+          "bob"
+        ],
+        "roles": {
+          "bob": "admin"
+        }
+      }
+    },
+    {
+      "do": "member.set-role",
+      "member": "bob",
+      "role": "admin",
+      "$comment": "the role already held is answered, not refused"
+    },
+    {
+      "do": "member.set-role",
+      "member": "nobody",
+      "role": "admin",
+      "expect": {
+        "error": "not-a-member"
+      }
+    },
+    {
+      "do": "member.set-role",
+      "member": "bob",
+      "role": "owner",
+      "expect": {
+        "error": "bad-role"
+      }
+    },
+    {
+      "do": "store.create",
+      "store": "scratch"
+    },
+    {
+      "do": "index.declare",
+      "store": "scratch",
+      "index": "text",
+      "kind": "search"
+    },
+    {
+      "do": "store.delete",
+      "store": "ghost",
+      "expect": {
+        "error": "no-such-store"
+      }
+    },
+    {
+      "do": "store.delete",
+      "store": "scratch"
+    },
+    {
+      "do": "list.stores",
+      "expect": {
+        "items": [
+          "orders"
+        ]
+      }
+    },
+    {
+      "do": "type.define",
+      "store": "scratch",
+      "type": "invoice",
+      "def": {
+        "schema": {
+          "type": "object"
+        }
+      },
+      "expect": {
+        "error": "no-such-store"
+      }
+    },
+    {
+      "do": "store.create",
+      "store": "scratch",
+      "$comment": "the name is free again"
+    },
+    {
+      "do": "list.types",
+      "store": "scratch",
+      "expect": {
+        "items": []
+      }
+    },
+    {
+      "do": "store.delete",
+      "store": "scratch"
+    },
+    {
+      "do": "store.delete",
+      "store": "scratch",
+      "expect": {
+        "error": "no-such-store"
+      }
+    }
+  ]
+}

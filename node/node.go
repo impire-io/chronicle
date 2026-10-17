@@ -209,6 +209,21 @@ func Start(ctx context.Context, nc *nats.Conn, cfg Config) (*Node, error) {
 		return nil, err
 	}
 	for _, log := range logs {
+		cfg, err := n.storeConfig(ctx, log)
+		if err != nil {
+			cancel()
+			return nil, fmt.Errorf("read store %s: %w", log, err)
+		}
+		// A store whose delete a previous run left unfinished is finished
+		// here, not folded (decision 0062): the order is idempotent and
+		// the config key is its last step.
+		if cfg.Status == contract.StoreStatusDeleting {
+			if err := n.deleteStore(ctx, log); err != nil {
+				cancel()
+				return nil, fmt.Errorf("finish deleting store %s: %w", log, err)
+			}
+			continue
+		}
 		if err := n.startFold(ctx, log); err != nil {
 			cancel()
 			return nil, fmt.Errorf("fold %s: %w", log, err)
@@ -249,6 +264,9 @@ func Start(ctx context.Context, nc *nats.Conn, cfg Config) (*Node, error) {
 		{"index-delete", client.IndexDeleteEndpoint, n.handleIndexDelete},
 		{"member-add", client.MemberAddEndpoint, n.handleMemberAdd},
 		{"member-revoke", client.MemberRevokeEndpoint, n.handleMemberRevoke},
+		{"log-delete", client.StoreDeleteEndpoint, n.handleStoreDelete},
+		{"type-delete", client.TypeDeleteEndpoint, n.handleTypeDelete},
+		{"member-set-role", client.MemberSetRoleEndpoint, n.handleMemberSetRole},
 	}
 	if n.signer != nil {
 		endpoints = append(endpoints, struct {
@@ -334,6 +352,12 @@ func (n *node) handleStoreCreate(req micro.Request) {
 	}
 	if _, err := n.meta.Create(ctx, contract.MetaStoreConfig(r.Store), cfg); err != nil {
 		if errors.Is(err, jetstream.ErrKeyExists) {
+			// The name is taken by a store on its way out (0062): the
+			// refusal says so, and the name is free once it is gone.
+			if current, cerr := n.storeConfig(ctx, r.Store); cerr == nil && current.Status == contract.StoreStatusDeleting {
+				_ = req.Error(contract.CodeStoreDeleting, fmt.Sprintf("store %q is being deleted; create it again once it is gone", r.Store), nil)
+				return
+			}
 			_ = req.Error(contract.CodeStoreExists, fmt.Sprintf("store %q already exists", r.Store), nil)
 			return
 		}
@@ -451,8 +475,7 @@ func (n *node) handleTypeDefine(req micro.Request) {
 			}
 		}
 	}
-	if _, err := n.meta.Get(ctx, contract.MetaStoreConfig(r.Store)); err != nil {
-		_ = req.Error(contract.CodeNoSuchStore, fmt.Sprintf("store %q does not exist", r.Store), nil)
+	if !n.requireStore(ctx, req, r.Store) {
 		return
 	}
 	// The thing schema must compile before it is declared: type and schema
@@ -510,8 +533,7 @@ func (n *node) handleInstanceSnapshot(req micro.Request) {
 		_ = req.Error(contract.CodeBadInstance, err.Error(), nil)
 		return
 	}
-	if _, err := n.meta.Get(ctx, contract.MetaStoreConfig(r.Store)); err != nil {
-		_ = req.Error(contract.CodeNoSuchStore, fmt.Sprintf("store %q does not exist", r.Store), nil)
+	if !n.requireStore(ctx, req, r.Store) {
 		return
 	}
 

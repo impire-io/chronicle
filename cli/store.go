@@ -20,6 +20,7 @@ func (x *runner) storeNoun() *noun {
 			{"get NAME", "one store's settings", x.storeGet},
 			{"create NAME [--history compactable|full] [--schedules] [--verified-authors] [--description TEXT]", "create a store and select it", x.storeCreate},
 			{"select NAME", "make a store the one commands speak to", x.storeSelect},
+			{"delete NAME", "delete a store: its history, state and indexes go with it; the name may be created again", x.storeDelete},
 		},
 	}
 }
@@ -62,10 +63,10 @@ func (x *runner) storeList(ctx context.Context, args []string, out io.Writer) er
 		if name == r.store {
 			marker = "*"
 		}
-		rows = append(rows, []string{marker, name, contract.NormalizeHistory(cfg.History), cfg.Description})
-		items = append(items, map[string]any{"name": name, "selected": name == r.store, "history": contract.NormalizeHistory(cfg.History), "description": cfg.Description})
+		rows = append(rows, []string{marker, name, contract.NormalizeHistory(cfg.History), describeStatus(cfg.Status), cfg.Description})
+		items = append(items, map[string]any{"name": name, "selected": name == r.store, "history": contract.NormalizeHistory(cfg.History), "status": describeStatus(cfg.Status), "description": cfg.Description})
 	}
-	return printList(out, *format, []string{"", "NAME", "HISTORY", "DESCRIPTION"}, rows, items)
+	return printList(out, *format, []string{"", "NAME", "HISTORY", "STATUS", "DESCRIPTION"}, rows, items)
 }
 
 func (x *runner) storeGet(ctx context.Context, args []string, out io.Writer) error {
@@ -97,6 +98,9 @@ func (x *runner) storeGet(ctx context.Context, args []string, out io.Writer) err
 	}
 	return printValue(out, *format, func() {
 		fmt.Fprintf(out, "store:        %s\n", pos[0])
+		if cfg.Status == contract.StoreStatusDeleting {
+			fmt.Fprintf(out, "status:       deleting (every other act on it is refused; the name is free once it is gone)\n")
+		}
 		fmt.Fprintf(out, "history:      %s\n", describeHistory(cfg.History))
 		if cfg.Description != "" {
 			fmt.Fprintf(out, "description:  %s\n", cfg.Description)
@@ -108,7 +112,16 @@ func (x *runner) storeGet(ctx context.Context, args []string, out io.Writer) err
 		if cfg.VerifiedAuthors {
 			fmt.Fprintf(out, "authors:      verified required (writes go through chronicle; an unverified operation is kept but takes no effect)\n")
 		}
-	}, map[string]any{"name": pos[0], "history": contract.NormalizeHistory(cfg.History), "description": cfg.Description, "max_bytes": usage.MaxBytes, "bytes": usage.Bytes, "schedules": cfg.Schedules, "verified_authors": cfg.VerifiedAuthors})
+	}, map[string]any{"name": pos[0], "history": contract.NormalizeHistory(cfg.History), "status": describeStatus(cfg.Status), "description": cfg.Description, "max_bytes": usage.MaxBytes, "bytes": usage.Bytes, "schedules": cfg.Schedules, "verified_authors": cfg.VerifiedAuthors})
+}
+
+// describeStatus is a store's status in the user's words: active, or
+// deleting while the delete runs (decision 0062).
+func describeStatus(status string) string {
+	if status == contract.StoreStatusDeleting {
+		return "deleting"
+	}
+	return "active"
 }
 
 // describeBudget says where a store's byte budget comes from: its own
@@ -235,5 +248,42 @@ func (x *runner) storeSelect(ctx context.Context, args []string, out io.Writer) 
 		return err
 	}
 	fmt.Fprintf(out, "store %s selected (context %s)\n", pos[0], name)
+	return nil
+}
+
+// storeDelete is irreversible and says so: it names what goes and acts,
+// with no --force and no prompt, as account destroy does (decision 0062).
+// A store mid-deletion is finished by a second run.
+func (x *runner) storeDelete(ctx context.Context, args []string, out io.Writer) error {
+	fs := flags("store delete", "delete NAME", "delete a store: its history, state and indexes go with it; the name may be created again", out)
+	cf := x.connect(fs)
+	pos, err := parse(fs, args)
+	if err != nil {
+		return done(err)
+	}
+	if err := positionals(fs, pos, 1, "one store name"); err != nil {
+		return err
+	}
+	c, r, err := x.session(cf, out)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	cfg, err := c.GetStore(ctx, pos[0])
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "deleting store %s: its history (%s), state and indexes go with it; this cannot be undone\n", pos[0], contract.NormalizeHistory(cfg.History))
+	if _, err := c.DeleteStore(ctx, pos[0]); err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "store %s deleted; the name may be created again\n", pos[0])
+	if r.store == pos[0] && r.context != "" {
+		if root, rerr := ConfigRoot(); rerr == nil {
+			if err := updateSelectedStore(root, r.context, ""); err == nil {
+				fmt.Fprintf(out, "no store selected now: chronicle store select NAME\n")
+			}
+		}
+	}
 	return nil
 }

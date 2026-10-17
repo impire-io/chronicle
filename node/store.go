@@ -41,6 +41,40 @@ func (n *node) listStores(ctx context.Context) ([]string, error) {
 	return logs, nil
 }
 
+// storeConfig reads log.<store>.config: jetstream.ErrKeyNotFound is no
+// such store.
+func (n *node) storeConfig(ctx context.Context, store string) (contract.StoreConfig, error) {
+	entry, err := n.meta.Get(ctx, contract.MetaStoreConfig(store))
+	if err != nil {
+		return contract.StoreConfig{}, err
+	}
+	var cfg contract.StoreConfig
+	if err := json.Unmarshal(entry.Value(), &cfg); err != nil {
+		return contract.StoreConfig{}, fmt.Errorf("decode store configuration: %w", err)
+	}
+	return cfg, nil
+}
+
+// requireStore answers a verb on a store that does not exist, or is being
+// deleted (decision 0062), with the refusal; true means the store is
+// there to act on.
+func (n *node) requireStore(ctx context.Context, req micro.Request, store string) bool {
+	cfg, err := n.storeConfig(ctx, store)
+	if errors.Is(err, jetstream.ErrKeyNotFound) {
+		_ = req.Error(contract.CodeNoSuchStore, fmt.Sprintf("store %q does not exist", store), nil)
+		return false
+	}
+	if err != nil {
+		_ = req.Error(contract.CodeInternal, err.Error(), nil)
+		return false
+	}
+	if cfg.Status == contract.StoreStatusDeleting {
+		_ = req.Error(contract.CodeStoreDeleting, fmt.Sprintf("store %q is being deleted", store), nil)
+		return false
+	}
+	return true
+}
+
 // requireRole asks the node's resolver for the caller's role (decision
 // 0061) and checks it against the roles a verb accepts — the shared check
 // every API-serving component runs.
