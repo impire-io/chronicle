@@ -15,6 +15,7 @@
 package foldcore
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -44,6 +45,8 @@ const (
 	Undeclared        = contract.Undeclared
 	Reset             = contract.Reset
 	MalformedSnapshot = contract.MalformedSnapshot
+	PreconditionUnmet = contract.PreconditionUnmet
+	OffSchema         = contract.OffSchema
 )
 
 // Lookup closes over one log's META bucket as a contract.TypeLookup.
@@ -71,29 +74,52 @@ func ResolveInstance(ctx context.Context, meta jetstream.KeyValue, log, thing st
 }
 
 // FoldFingerprint captures the facets of a type record whose change makes
-// derived state suspect (0021 § 5): history, aspects, and each effective
-// operation's effect. Schema-only revisions — thing or op — change no
-// derivation, and an added effect-none operation moves nothing either.
-// A nil record is the undeclared baseline, so a first definition carrying
-// anything effective reads as changed, and a deletion reads against it.
+// derived state suspect (0021 § 5): history, aspects, the thing schema,
+// and each effective operation's effect and precondition. Since 0059 the
+// thing schema judges every merge's result and a precondition judges
+// whether an effective operation applies, so a revision of either changes
+// the derivation; an op-schema-only revision, or an added effect-none
+// operation, still moves nothing. A nil record is the undeclared
+// baseline, so a first definition carrying anything effective reads as
+// changed, and a deletion reads against it.
 func FoldFingerprint(rec *contract.TypeRecord) string {
 	if rec == nil {
 		rec = &contract.TypeRecord{}
 	}
 	fp := struct {
-		History  string            `json:"h"`
-		Children map[string]string `json:"a,omitempty"`
-		Effects  map[string]string `json:"e,omitempty"`
+		History       string            `json:"h"`
+		Children      map[string]string `json:"a,omitempty"`
+		Schema        json.RawMessage   `json:"s,omitempty"`
+		Effects       map[string]string `json:"e,omitempty"`
+		Preconditions map[string]string `json:"p,omitempty"`
 	}{History: contract.NormalizeHistory(rec.History)}
 	if len(rec.Children) > 0 {
 		fp.Children = rec.Children
 	}
+	if len(rec.Schema) > 0 && json.Valid(rec.Schema) {
+		var compact bytes.Buffer
+		if json.Compact(&compact, rec.Schema) == nil {
+			fp.Schema = json.RawMessage(compact.Bytes())
+		}
+	}
 	for op, def := range rec.Operations {
-		if contract.NormalizeEffect(def.Effect) != contract.EffectNone {
-			if fp.Effects == nil {
-				fp.Effects = map[string]string{}
+		if contract.NormalizeEffect(def.Effect) == contract.EffectNone {
+			continue
+		}
+		if fp.Effects == nil {
+			fp.Effects = map[string]string{}
+		}
+		fp.Effects[op] = contract.NormalizeEffect(def.Effect)
+		if len(def.Precondition) > 0 {
+			if fp.Preconditions == nil {
+				fp.Preconditions = map[string]string{}
 			}
-			fp.Effects[op] = contract.NormalizeEffect(def.Effect)
+			var compact bytes.Buffer
+			if json.Compact(&compact, def.Precondition) == nil {
+				fp.Preconditions[op] = compact.String()
+			} else {
+				fp.Preconditions[op] = string(def.Precondition)
+			}
 		}
 	}
 	b, _ := json.Marshal(fp)
@@ -142,6 +168,6 @@ func JudgeSnapshot(rec *contract.TypeRecord, state json.RawMessage) string {
 }
 
 // JudgeRecord is contract.JudgeRecord under its old name.
-func JudgeRecord(rec *contract.TypeRecord, op contract.Op) (Decision, string) {
-	return contract.JudgeRecord(rec, op)
+func JudgeRecord(rec *contract.TypeRecord, state json.RawMessage, op contract.Op) (Decision, string) {
+	return contract.JudgeRecord(rec, state, op)
 }

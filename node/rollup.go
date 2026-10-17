@@ -239,10 +239,13 @@ func captureTyped(rec *contract.TypeRecord, op contract.Op, state *json.RawMessa
 		*hasFloor = true
 		return
 	}
-	if decision, _ := foldcore.JudgeRecord(rec, op); decision != foldcore.Merge {
+	if decision, _ := foldcore.JudgeRecord(rec, *state, op); decision != foldcore.Merge {
 		return // none, unknown, or marked; absorbed
 	}
 	if merged, err := contract.MergePatch(*state, op.Payload); err == nil {
+		if foldcore.JudgeSnapshot(rec, merged) != "" {
+			return // off schema (0059): marked; absorbed
+		}
 		*state = merged
 		*hasFloor = true
 	}

@@ -49,6 +49,13 @@ const (
 	// where membership is managed elsewhere.
 	CodeRoleSourceUnavailable = "role-source-unavailable"
 	CodeMembershipElsewhere   = "membership-elsewhere"
+
+	// The pre-flight refusals of decision 0059: the operation's
+	// precondition is not met by the instance's current state, or the
+	// state after the operation would fail the type's schema. On the
+	// direct path the fold marks the same two cases.
+	CodePreconditionFailed = "precondition-failed"
+	CodeStateOffSchema     = "state-off-schema"
 )
 
 // ErrorCode is one catalogued code and what it means.
@@ -95,6 +102,8 @@ var ErrorCatalog = []ErrorCode{
 	{CodeInstanceMoved, "the instance moved past the expected sequence"},
 	{CodeRoleSourceUnavailable, "the environment's role responder did not answer, or answered outside the vocabulary; the request is refused, never answered from the registry"},
 	{CodeMembershipElsewhere, "membership is managed where the roles live: the roles come from the environment's responder, and the member verbs have nothing to record"},
+	{CodePreconditionFailed, "the operation's precondition is not met by the instance's current state"},
+	{CodeStateOffSchema, "the state after the operation would fail the type's schema"},
 }
 
 // KnownErrorCode says whether a code is catalogued.

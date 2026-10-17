@@ -67,6 +67,128 @@
       "children": {
         "kids": "ghost"
       }
+    },
+    "ticket": {
+      "revision": 1,
+      "schema": {
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "enum": [
+              "open",
+              "closed"
+            ]
+          }
+        },
+        "if": {
+          "properties": {
+            "status": {
+              "const": "closed"
+            }
+          }
+        },
+        "then": {
+          "required": [
+            "closed"
+          ]
+        },
+        "else": {
+          "not": {
+            "required": [
+              "closed"
+            ]
+          }
+        }
+      },
+      "operations": {
+        "create": {
+          "schema": {
+            "type": "object"
+          },
+          "effect": "merge"
+        },
+        "close": {
+          "schema": {
+            "type": "object",
+            "required": [
+              "status",
+              "closed"
+            ]
+          },
+          "effect": "merge",
+          "precondition": {
+            "properties": {
+              "status": {
+                "const": "open"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          }
+        },
+        "reopen": {
+          "schema": {
+            "type": "object",
+            "required": [
+              "status"
+            ]
+          },
+          "effect": "merge",
+          "precondition": {
+            "properties": {
+              "status": {
+                "const": "closed"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          }
+        },
+        "drop": {
+          "schema": {
+            "type": "object"
+          },
+          "effect": "merge"
+        },
+        "remark": {
+          "schema": {
+            "type": "object"
+          },
+          "effect": "none",
+          "precondition": {
+            "properties": {
+              "status": {
+                "const": "open"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          }
+        }
+      }
+    },
+    "token": {
+      "revision": 1,
+      "schema": {
+        "type": "object"
+      },
+      "operations": {
+        "create": {
+          "schema": {
+            "type": "object"
+          },
+          "effect": "merge",
+          "precondition": {
+            "maxProperties": 0
+          }
+        }
+      }
     }
   },
   "cases": [
@@ -375,6 +497,149 @@
         "total": 1
       },
       "tail": "invoice.inv-1"
+    },
+    {
+      "name": "a precondition met applies (0059)",
+      "tail": "ticket.t-1",
+      "ops": [
+        {
+          "type": "create",
+          "payload": {
+            "status": "open"
+          }
+        },
+        {
+          "type": "close",
+          "payload": {
+            "status": "closed",
+            "closed": "2026-10-15"
+          }
+        }
+      ],
+      "decisions": [
+        "merge",
+        "merge"
+      ],
+      "state": {
+        "status": "closed",
+        "closed": "2026-10-15"
+      }
+    },
+    {
+      "name": "a precondition not met is marked and moves nothing (0059)",
+      "tail": "ticket.t-2",
+      "ops": [
+        {
+          "type": "create",
+          "payload": {
+            "status": "open"
+          }
+        },
+        {
+          "type": "reopen",
+          "payload": {
+            "status": "open"
+          }
+        }
+      ],
+      "decisions": [
+        "merge",
+        "precondition-unmet"
+      ],
+      "state": {
+        "status": "open"
+      }
+    },
+    {
+      "name": "a precondition judges an operation with effect none too (0059)",
+      "tail": "ticket.t-3",
+      "ops": [
+        {
+          "type": "create",
+          "payload": {
+            "status": "open"
+          }
+        },
+        {
+          "type": "close",
+          "payload": {
+            "status": "closed",
+            "closed": "2026-10-15"
+          }
+        },
+        {
+          "type": "remark",
+          "payload": {
+            "text": "late"
+          }
+        }
+      ],
+      "decisions": [
+        "merge",
+        "merge",
+        "precondition-unmet"
+      ],
+      "state": {
+        "status": "closed",
+        "closed": "2026-10-15"
+      }
+    },
+    {
+      "name": "a merge whose result fails the thing schema is marked and moves nothing (0059)",
+      "tail": "ticket.t-4",
+      "ops": [
+        {
+          "type": "create",
+          "payload": {
+            "status": "open"
+          }
+        },
+        {
+          "type": "drop",
+          "payload": {
+            "status": null
+          }
+        },
+        {
+          "type": "drop",
+          "payload": {
+            "closed": "2026-10-15"
+          }
+        }
+      ],
+      "decisions": [
+        "merge",
+        "off-schema",
+        "off-schema"
+      ],
+      "state": {
+        "status": "open"
+      }
+    },
+    {
+      "name": "a precondition on create is judged against the empty object (0059)",
+      "tail": "token.k-1",
+      "ops": [
+        {
+          "type": "create",
+          "payload": {
+            "owner": "a"
+          }
+        },
+        {
+          "type": "create",
+          "payload": {
+            "owner": "b"
+          }
+        }
+      ],
+      "decisions": [
+        "merge",
+        "precondition-unmet"
+      ],
+      "state": {
+        "owner": "a"
+      }
     }
   ]
 }

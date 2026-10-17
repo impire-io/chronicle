@@ -47,6 +47,14 @@ const (
 	// carries no attestation that verifies against an attester key in
 	// META: marked, takes no effect, the history keeps it.
 	Unverified
+	// PreconditionUnmet — the operation declares a precondition (0059)
+	// and the thing's current state does not satisfy it: marked, takes
+	// no effect, the history keeps it.
+	PreconditionUnmet
+	// OffSchema — a declared merge whose result fails the type's thing
+	// schema (0059): the schema is the shape every derived state keeps,
+	// so the op is marked and the state stands where it was.
+	OffSchema
 )
 
 // String names the decision as the artifact and the fixtures spell it.
@@ -72,6 +80,10 @@ func (d Decision) String() string {
 		return "malformed-snapshot"
 	case Unverified:
 		return "unverified"
+	case PreconditionUnmet:
+		return "precondition-unmet"
+	case OffSchema:
+		return "off-schema"
 	}
 	return fmt.Sprintf("decision(%d)", int(d))
 }
@@ -98,12 +110,15 @@ func JudgeSnapshot(rec *TypeRecord, state json.RawMessage) string {
 	return ""
 }
 
-// JudgeRecord decides one non-snapshot op under one type record — latest
-// declaration wins (0011 § 3), so the same op can judge differently after
-// a declaration changes, and derived state is rebuilt by replay when it
-// does. The detail carries the specifics a caller may want in its warning
-// or veto; it is empty for Merge and None.
-func JudgeRecord(rec *TypeRecord, op Op) (Decision, string) {
+// JudgeRecord decides one non-snapshot op under one type record, against
+// the thing's current state — latest declaration wins (0011 § 3), so the
+// same op can judge differently after a declaration changes, and derived
+// state is rebuilt by replay when it does. The payload's schema is judged
+// first, then the operation's precondition against the state (0059; the
+// empty object when the thing has none yet), then the effect. The detail
+// carries the specifics a caller may want in its warning or veto; it is
+// empty for Merge and None.
+func JudgeRecord(rec *TypeRecord, state json.RawMessage, op Op) (Decision, string) {
 	def, ok := rec.Operations[op.Type]
 	if !ok {
 		return UnknownType, fmt.Sprintf("the type defines no operation %s", op.Type)
@@ -119,6 +134,9 @@ func JudgeRecord(rec *TypeRecord, op Op) (Decision, string) {
 	if err := sch.Validate(v); err != nil {
 		return Invalid, fmt.Sprintf("payload fails its schema: %v", err)
 	}
+	if detail := JudgePrecondition(def, state); detail != "" {
+		return PreconditionUnmet, detail
+	}
 	switch effect := NormalizeEffect(def.Effect); effect {
 	case EffectNone:
 		return None, ""
@@ -127,6 +145,31 @@ func JudgeRecord(rec *TypeRecord, op Op) (Decision, string) {
 	default:
 		return UnknownEffect, fmt.Sprintf("effect %q is outside this build's vocabulary", effect)
 	}
+}
+
+// JudgePrecondition validates the thing's current state against the
+// operation's precondition (0059). Empty detail means the operation may
+// apply: no precondition declared, or the state satisfies it. A thing
+// with no state yet is judged as the empty object — a precondition on
+// create sees what a create sees.
+func JudgePrecondition(def OpDef, state json.RawMessage) string {
+	if len(def.Precondition) == 0 {
+		return ""
+	}
+	pre, err := CompileSchema(def.Precondition)
+	if err != nil {
+		return fmt.Sprintf("the operation's precondition does not compile: %v", err)
+	}
+	var cur any = map[string]any{}
+	if len(state) > 0 {
+		if err := json.Unmarshal(state, &cur); err != nil {
+			return fmt.Sprintf("the operation's precondition is not met: state is not JSON: %v", err)
+		}
+	}
+	if err := pre.Validate(cur); err != nil {
+		return fmt.Sprintf("the operation's precondition is not met: %v", err)
+	}
+	return ""
 }
 
 // FoldOutcome is one fold step's result: what the op did, why, and the
@@ -144,9 +187,12 @@ type FoldOutcome struct {
 // — the per-op rules of 03-meta-and-state.md § the state buckets, complete
 // and pure: a marked subject takes no effect; a snapshot resets state to
 // its payload's, judged against the thing schema where the thing is typed;
-// a declared merge applies onto current state, empty state included; none,
-// an unknown type, an unknown effect, a bad record or an invalid payload
-// moves nothing; an untyped subject moves only by snapshot.
+// a declared merge applies onto current state, empty state included, and
+// its result is judged against the thing schema as a snapshot's is (0059:
+// the schema is the shape every derived state keeps); a precondition the
+// state does not satisfy marks the op; none, an unknown type, an unknown
+// effect, a bad record or an invalid payload moves nothing; an untyped
+// subject moves only by snapshot.
 func FoldStep(res Resolution, state json.RawMessage, op Op) FoldOutcome {
 	if res.Kind == ResolvedUndeclared {
 		return FoldOutcome{Decision: Undeclared, Detail: res.Detail, State: state}
@@ -166,13 +212,16 @@ func FoldStep(res Resolution, state json.RawMessage, op Op) FoldOutcome {
 	if res.Kind != ResolvedTyped {
 		return FoldOutcome{Decision: UnknownType, Detail: "instance is untyped: " + res.Detail, State: state}
 	}
-	decision, detail := JudgeRecord(res.Record, op)
+	decision, detail := JudgeRecord(res.Record, state, op)
 	if decision != Merge {
 		return FoldOutcome{Decision: decision, Detail: detail, State: state}
 	}
 	merged, err := MergePatch(state, op.Payload)
 	if err != nil {
 		return FoldOutcome{Decision: Invalid, Detail: "merge failed: " + err.Error(), State: state}
+	}
+	if detail := JudgeSnapshot(res.Record, merged); detail != "" {
+		return FoldOutcome{Decision: OffSchema, Detail: "after the operation, " + detail, State: state}
 	}
 	return FoldOutcome{Decision: Merge, State: merged, Moved: true}
 }

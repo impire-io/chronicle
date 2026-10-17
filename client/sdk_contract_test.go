@@ -246,7 +246,7 @@ func TestArtifactMatchesTheContractPackage(t *testing.T) {
 
 	// The fold's decisions, in the package's order.
 	var decisions []string
-	for dec := contract.Merge; dec <= contract.Unverified; dec++ {
+	for dec := contract.Merge; dec <= contract.OffSchema; dec++ {
 		decisions = append(decisions, dec.String())
 	}
 	if !reflect.DeepEqual(a.Fold.Decisions, decisions) {

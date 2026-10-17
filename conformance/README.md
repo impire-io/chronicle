@@ -25,7 +25,7 @@ A sequence of sentences against `chronicle up` in the open form, with the observ
 | Sentence | Interaction | Expectations |
 |---|---|---|
 | `store.create`, `type.define`, `index.declare`, `index.delete`, `snapshot` | the control verbs | `error` (a catalogued code or a typed client error), `taken` |
-| `instance.create.snapshot`, `instance.create`, `apply`, `apply.guarded` | a create from a snapshot, a create through the type's `create`, an operation, an operation with the expected sequence | `error`: `instance-exists`, `instance-moved`, `preflight`, `undefined-operation` |
+| `instance.create.snapshot`, `instance.create`, `apply`, `apply.guarded` | a create from a snapshot, a create through the type's `create`, an operation, an operation with the expected sequence | `error`: `instance-exists`, `instance-moved`, `preflight`, `undefined-operation`, `precondition-failed`, `state-off-schema` |
 | `get` | the state read | `state`: every named key equals |
 | `history`, `tail` | history and the live tail | `types` in order; `type` arrives |
 | `query` | the streamed reply | `instances` (a set), `total`, `count`, `error: no-responder` |
